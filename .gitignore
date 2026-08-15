@@ -1,0 +1,30 @@
+# Python caches and local tooling state
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Rust build output
+native/mmd_physics_solver/target/
+
+# Local releases, backups, and generated packages
+_archive/
+/dist/
+/build/
+*.zip
+
+# Blender working files and temporary output
+*.blend
+*.blend1
+*.blend2
+*.log
+*.tmp
+*.bak
+*~
+
+# Editor and operating-system metadata
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
