@@ -1,0 +1,11 @@
+* text=auto
+.gitattributes text eol=lf
+
+*.py text eol=lf
+*.rs text eol=lf
+*.toml text eol=lf
+*.md text eol=lf
+*.ps1 text eol=crlf
+
+native/mmd_physics_solver/vendor/** -text
+*.dll binary
