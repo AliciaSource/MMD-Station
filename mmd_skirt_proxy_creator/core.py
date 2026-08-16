@@ -253,18 +253,260 @@ def _round_terminal_profiles(radius_columns, blend=0.65, closed=True):
     return result
 
 
-def _open_arc_angles(samples, columns):
-    ordered = sorted(sample["angle"] for sample in samples)
-    gaps = [
-        ((ordered[(index + 1) % len(ordered)] - ordered[index]) % math.tau, index)
-        for index in range(len(ordered))
+def _open_primary_axis(vertices):
+    center_x = sum(vertex[0] for vertex in vertices) / len(vertices)
+    center_y = sum(vertex[1] for vertex in vertices) / len(vertices)
+    xx = sum((vertex[0] - center_x) ** 2 for vertex in vertices)
+    yy = sum((vertex[1] - center_y) ** 2 for vertex in vertices)
+    xy = sum(
+        (vertex[0] - center_x) * (vertex[1] - center_y)
+        for vertex in vertices
+    )
+    angle = 0.5 * math.atan2(2.0 * xy, xx - yy)
+    axis = (math.cos(angle), math.sin(angle))
+    if (abs(axis[0]) >= abs(axis[1]) and axis[0] < 0.0) or (
+        abs(axis[1]) > abs(axis[0]) and axis[1] < 0.0
+    ):
+        axis = (-axis[0], -axis[1])
+    return (center_x, center_y), axis
+
+
+def _sample_open_point(samples, target_u, target_z, horizontal_scale, vertical_scale, count):
+    nearest = sorted(
+        samples,
+        key=lambda sample: (
+            (sample["u"] - target_u) / horizontal_scale
+        )
+        ** 2
+        + ((sample["z"] - target_z) / vertical_scale) ** 2,
+    )[:count]
+    weighted_x = 0.0
+    weighted_y = 0.0
+    total_weight = 0.0
+    for sample in nearest:
+        distance_squared = (
+            (sample["u"] - target_u) / horizontal_scale
+        ) ** 2 + ((sample["z"] - target_z) / vertical_scale) ** 2
+        weight = 1.0 / (distance_squared + 0.02)
+        weighted_x += sample["x"] * weight
+        weighted_y += sample["y"] * weight
+        total_weight += weight
+    return weighted_x / total_weight, weighted_y / total_weight
+
+
+def _solve_dense_system(matrix, values):
+    size = len(values)
+    matrix = [list(row) for row in matrix]
+    values = list(values)
+    for column in range(size):
+        pivot = max(range(column, size), key=lambda row: abs(matrix[row][column]))
+        if abs(matrix[pivot][column]) <= 1.0e-12:
+            return None
+        matrix[column], matrix[pivot] = matrix[pivot], matrix[column]
+        values[column], values[pivot] = values[pivot], values[column]
+        divisor = matrix[column][column]
+        for index in range(column, size):
+            matrix[column][index] /= divisor
+        values[column] /= divisor
+        for row in range(size):
+            if row == column:
+                continue
+            factor = matrix[row][column]
+            for index in range(column, size):
+                matrix[row][index] -= factor * matrix[column][index]
+            values[row] -= factor * values[column]
+    return values
+
+
+def _fit_anchored_open_coordinate(values):
+    degree = min(3, len(values) - 1)
+    origin = values[0]
+    matrix = [[0.0] * degree for _index in range(degree)]
+    right_hand = [0.0] * degree
+    denominator = len(values) - 1
+    for index, value in enumerate(values):
+        t = index / denominator
+        weight = 0.05 if index == denominator else 0.5 if index == denominator - 1 else 1.0
+        basis = [t ** (power + 1) for power in range(degree)]
+        delta = value - origin
+        for row in range(degree):
+            right_hand[row] += weight * basis[row] * delta
+            for column in range(degree):
+                matrix[row][column] += weight * basis[row] * basis[column]
+    coefficients = _solve_dense_system(matrix, right_hand)
+    if coefficients is None:
+        return list(values)
+    return [
+        origin
+        + sum(
+            coefficient * t ** (power + 1)
+            for power, coefficient in enumerate(coefficients)
+        )
+        for t in (index / denominator for index in range(len(values)))
     ]
-    largest_gap, gap_index = max(gaps)
-    start = ordered[(gap_index + 1) % len(ordered)]
-    span = max(math.tau - largest_gap, 0.0)
+
+
+def _smooth_open_column(column, bounds):
+    if len(column) < 3:
+        return list(column)
+    original = list(column)
+    fitted_x = _fit_anchored_open_coordinate([point[0] for point in original])
+    fitted_y = _fit_anchored_open_coordinate([point[1] for point in original])
+    result = [
+        (x, y, source[2])
+        for source, x, y in zip(original, fitted_x, fitted_y)
+    ]
+    range_scale = 1.0
+    top_x, top_y = result[0][0], result[0][1]
+    for x, y, _z in result[1:]:
+        for origin, coordinate, minimum, maximum in (
+            (top_x, x, bounds[0], bounds[1]),
+            (top_y, y, bounds[2], bounds[3]),
+        ):
+            delta = coordinate - origin
+            if coordinate > maximum and delta > 1.0e-8:
+                range_scale = min(range_scale, (maximum - origin) / delta)
+            elif coordinate < minimum and delta < -1.0e-8:
+                range_scale = min(range_scale, (minimum - origin) / delta)
+    range_scale = min(max(range_scale, 0.0), 1.0)
+    if range_scale < 1.0:
+        result = [
+            (
+                top_x + (point[0] - top_x) * range_scale,
+                top_y + (point[1] - top_y) * range_scale,
+                point[2],
+            )
+            for point in result
+        ]
+    previous_z_step = result[-2][2] - result[-3][2]
+    terminal_z_step = result[-1][2] - result[-2][2]
+    factor = (
+        terminal_z_step / previous_z_step
+        if abs(previous_z_step) > 1.0e-8
+        else 1.0
+    )
+    terminal_delta_x = (result[-2][0] - result[-3][0]) * factor
+    terminal_delta_y = (result[-2][1] - result[-3][1]) * factor
+    terminal_scale = 1.0
+    for coordinate, delta, minimum, maximum in (
+        (result[-2][0], terminal_delta_x, bounds[0], bounds[1]),
+        (result[-2][1], terminal_delta_y, bounds[2], bounds[3]),
+    ):
+        if delta > 1.0e-8:
+            terminal_scale = min(terminal_scale, (maximum - coordinate) / delta)
+        elif delta < -1.0e-8:
+            terminal_scale = min(terminal_scale, (minimum - coordinate) / delta)
+    terminal_scale = min(max(terminal_scale, 0.0), 1.0)
+    result[-1] = (
+        result[-2][0] + terminal_delta_x * terminal_scale,
+        result[-2][1] + terminal_delta_y * terminal_scale,
+        result[-1][2],
+    )
+    return result
+
+
+def _build_open_surface_grid(vertices, columns, max_rows, radial_offset):
+    minimum_z = min(vertex[2] for vertex in vertices)
+    maximum_z = max(vertex[2] for vertex in vertices)
+    height = maximum_z - minimum_z
+    if height <= 1.0e-7:
+        raise ProxyBuildError("The selected region has no height")
+
+    center, axis = _open_primary_axis(vertices)
+    bounds = (
+        min(vertex[0] for vertex in vertices),
+        max(vertex[0] for vertex in vertices),
+        min(vertex[1] for vertex in vertices),
+        max(vertex[1] for vertex in vertices),
+    )
+    samples = [
+        {
+            "x": vertex[0],
+            "y": vertex[1],
+            "z": vertex[2],
+            "u": (vertex[0] - center[0]) * axis[0]
+            + (vertex[1] - center[1]) * axis[1],
+        }
+        for vertex in vertices
+    ]
+    ordered_u = sorted(sample["u"] for sample in samples)
+    minimum_u = _quantile(ordered_u, 0.02)
+    maximum_u = _quantile(ordered_u, 0.98)
+    width = maximum_u - minimum_u
+    if columns > 1 and width <= 1.0e-7:
+        raise ProxyBuildError("The selected region has no usable width")
     if columns == 1:
-        return [start + span * 0.5], max(span, math.tau / 16.0)
-    return [start + span * index / (columns - 1) for index in range(columns)], span / (columns - 1)
+        target_columns = [_quantile(ordered_u, 0.5)]
+        column_spacing = max(width, 1.0e-7)
+    else:
+        target_columns = [
+            minimum_u + width * index / (columns - 1)
+            for index in range(columns)
+        ]
+        column_spacing = width / (columns - 1)
+
+    horizontal_window = max(column_spacing * 1.75, width / max(columns * 2, 1), 1.0e-7)
+    minimum_candidates = min(len(samples), max(24, len(samples) // columns))
+    raw_bottom = []
+    top_values = []
+    for target_u in target_columns:
+        ordered = sorted(samples, key=lambda sample: abs(sample["u"] - target_u))
+        candidates = [
+            sample
+            for sample in ordered
+            if abs(sample["u"] - target_u) <= horizontal_window
+        ]
+        if len(candidates) < minimum_candidates:
+            candidates = ordered[:minimum_candidates]
+        raw_bottom.append(_quantile([sample["z"] for sample in candidates], 0.02))
+        top_values.append(_quantile([sample["z"] for sample in candidates], 0.98))
+
+    bottom_values = _periodic_smooth(raw_bottom, passes=5, closed=False)
+    global_bottom = min(bottom_values)
+    vertical_span = max(top_values) - global_bottom
+    if vertical_span <= 1.0e-7:
+        raise ProxyBuildError("The fitted surface has no usable height")
+    level_spacing = vertical_span / (max_rows - 1)
+    vertical_scale = max(height / max(max_rows - 1, 1), 1.0e-7)
+    horizontal_scale = max(column_spacing, width / max(columns, 1), 1.0e-7)
+    neighbour_count = min(len(samples), max(16, len(samples) // (columns * max_rows)))
+    last_levels = [
+        min(
+            max(int(round((top - bottom) / level_spacing)), 1),
+            max_rows - 1,
+        )
+        for top, bottom in zip(top_values, bottom_values)
+    ]
+    last_levels = _regularize_last_levels(last_levels, closed=False)
+
+    result = []
+    for target_u, top, last_level in zip(target_columns, top_values, last_levels):
+        column = []
+        for level_index in range(last_level + 1):
+            target_z = top - level_spacing * level_index
+            x, y = _sample_open_point(
+                samples,
+                target_u,
+                target_z,
+                horizontal_scale,
+                vertical_scale,
+                neighbour_count,
+            )
+            column.append((x, y, target_z))
+        column = _smooth_open_column(column, bounds)
+        if radial_offset:
+            offset_column = []
+            for x, y, target_z in column:
+                delta_x = x - center[0]
+                delta_y = y - center[1]
+                distance = math.hypot(delta_x, delta_y)
+                if distance > 1.0e-8:
+                    x += delta_x / distance * radial_offset
+                    y += delta_y / distance * radial_offset
+                offset_column.append((x, y, target_z))
+            column = offset_column
+        result.append(column)
+    return result
 
 
 def build_cylindrical_surface_grid(
@@ -282,6 +524,9 @@ def build_cylindrical_surface_grid(
         raise ProxyBuildError("At least two maximum height rows are required")
     if not vertices:
         raise ProxyBuildError("The selection must contain vertices")
+
+    if not closed:
+        return _build_open_surface_grid(vertices, columns, max_rows, radial_offset)
 
     minimum_z = min(vertex[2] for vertex in vertices)
     maximum_z = max(vertex[2] for vertex in vertices)
@@ -307,11 +552,8 @@ def build_cylindrical_surface_grid(
     if len(samples) < max(columns * 2, 2):
         raise ProxyBuildError("The selection has too few radial samples")
 
-    if closed:
-        angles = [math.tau * column_index / columns for column_index in range(columns)]
-        angle_step = math.tau / columns
-    else:
-        angles, angle_step = _open_arc_angles(samples, columns)
+    angles = [math.tau * column_index / columns for column_index in range(columns)]
+    angle_step = math.tau / columns
     angular_window = min(max(angle_step * 1.75, math.tau / 64.0), math.pi)
     minimum_candidates = min(len(samples), max(24, len(samples) // columns))
     raw_bottom = []
@@ -439,8 +681,31 @@ def grid_faces(grid, closed=True):
     return faces
 
 
-def bone_name(prefix, column_index, row_index):
-    return f"{prefix}_C{column_index + 1:02d}_R{row_index + 1:02d}"
+def bone_name(prefix, column_index, row_index, side=""):
+    name = f"{prefix}_C{column_index + 1:02d}_R{row_index + 1:02d}"
+    return f"{name}.{side}" if side else name
+
+
+def proxy_bone_name(proxy_object, prefix, column_index, row_index):
+    exact_names = list(proxy_object.get("surface_proxy_bone_names", []))
+    bone_counts = [
+        int(value)
+        for value in proxy_object.get("surface_proxy_column_bones", [])
+    ]
+    if column_index < len(bone_counts) and 0 <= row_index < bone_counts[column_index]:
+        name_index = sum(bone_counts[:column_index]) + row_index
+        if name_index < len(exact_names) and exact_names[name_index]:
+            return str(exact_names[name_index])
+    sides = list(proxy_object.get("surface_proxy_column_sides", []))
+    local_indices = list(proxy_object.get("surface_proxy_column_local_indices", []))
+    if column_index < len(sides) and column_index < len(local_indices):
+        return bone_name(
+            prefix,
+            int(local_indices[column_index]),
+            row_index,
+            str(sides[column_index]),
+        )
+    return bone_name(prefix, column_index, row_index)
 
 
 def _column_weights(z, column):

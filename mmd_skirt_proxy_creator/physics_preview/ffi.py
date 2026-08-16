@@ -3,7 +3,7 @@ import pathlib
 import platform
 
 
-ABI_VERSION = 2
+ABI_VERSION = 3
 
 
 class Vec3(ctypes.Structure):
@@ -109,6 +109,7 @@ class SolverLibrary:
             ctypes.c_uint32,
             ctypes.POINTER(JointDesc),
             ctypes.c_uint32,
+            ctypes.c_float,
         )
         dll.mmd_solver_create.restype = ctypes.c_void_p
         dll.mmd_solver_destroy.argtypes = (ctypes.c_void_p,)
@@ -146,7 +147,7 @@ class SolverLibrary:
 
 
 class Solver:
-    def __init__(self, bodies, joints, library=None):
+    def __init__(self, bodies, joints, world_scale, library=None):
         self.library = library or SolverLibrary()
         self.body_count = len(bodies)
         self.joint_count = len(joints)
@@ -157,6 +158,7 @@ class Solver:
             len(bodies),
             joint_array,
             len(joints),
+            float(world_scale),
         )
         if not self.handle:
             raise RuntimeError("Rust 物理求解器初始化失败")

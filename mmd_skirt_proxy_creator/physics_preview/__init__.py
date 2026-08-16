@@ -1,9 +1,18 @@
-from .runtime import stop_preview
+import bpy
+
+from .runtime import stop_preview, unregister_model_id_service
 from .ui import CLASSES, draw_preview, register_settings
 
 
 def unregister_runtime():
     stop_preview(restore=True)
+    unregister_model_id_service()
+    if hasattr(bpy.types.Object, "spx_physics_preview_selected"):
+        del bpy.types.Object.spx_physics_preview_selected
+    if hasattr(bpy.types.Object, "spx_mmd_import_scale_override"):
+        del bpy.types.Object.spx_mmd_import_scale_override
+    if hasattr(bpy.types.Object, "spx_mmd_interaction_group_id"):
+        del bpy.types.Object.spx_mmd_interaction_group_id
 
 
 __all__ = (
@@ -12,4 +21,3 @@ __all__ = (
     "register_settings",
     "unregister_runtime",
 )
-

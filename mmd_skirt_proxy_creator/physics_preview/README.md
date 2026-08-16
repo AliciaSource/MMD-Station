@@ -3,7 +3,8 @@
 模块边界：
 
 - `ffi.py`：稳定 C ABI 和 DLL 生命周期；
-- `runtime.py`：从 Blender 当前 MMD 模型提取刚体/Joint，固定步长求解并非破坏性地回写 Pose Bone；
+- `runtime.py`：从 Blender 当前 MMD 模型提取刚体/Joint，按 MMD 时间语义驱动固定子步求解并非破坏性地回写 Pose Bone；
+- `time_driver.py`：把 Blender timeline 或暂停交互的单调时钟转换为 Bullet `frameSeconds`；
 - `ui.py`：启动、停止、重置和少量运行参数；
 - `bin/win_amd64/mmd_physics_solver.dll`：Rust `cdylib`，内部静态链接 Bullet；
 - `native/mmd_physics_solver/`：DLL 源码和可重复构建入口。
@@ -15,6 +16,8 @@
 运行时会对比上一求解输出与当前动态骨姿态。Blender `pose.user_transforms_clear(only_selected=False)` 造成大范围姿态跳变时，固定恢复完整启动快照，丢弃旧 Bullet world、从该快照创建新 solver，然后继续同一预览会话。手工“重置物理预览”和 tick 异常复用完全相同的恢复路径，不再接受当前局部状态或分别推导刚体/Joint 位置。0 型刚体在重建后继续每步读取骨骼目标。当前输出属于运行期预览，不写关键帧、不保存烘焙结果。
 
 GUI timer 遇到步进异常会立即恢复启动快照并重建 solver。即使本次重建失败，也保留 session、timer 和运行标志并在下一 tick 重试，不会自动调用停止；面板状态行会显示快照恢复或继续重试的原因。
+
+GUI timer 只负责唤醒预览，不再假定每次回调严格等于一个 `1/60 s` 物理步。动画播放时以 Blender timeline 的实际时间差作为 `frameSeconds`；暂停播放并手动拖动时以 `time.perf_counter()` 的实际间隔作为 `frameSeconds`。DLL 仍固定使用 `1/60 s` Bullet 子步和面板指定的 `maxSubSteps`，默认 `10` 与 MMD/PmxNLib 一致。播放状态切换只重建时钟基准；倒放、暂停时跳帧或时钟回退会走启动快照重置路径。
 
 Blender 的姿态清理或撤销系统可能替换 RNA 数据块，使先前持有的 `bpy.types.Object` 引用变成 `StructRNA ... has been removed`。运行时因此在每个 tick、恢复和停止入口按名称重新解析当前 root、Armature、刚体与 Joint；检测到实例替换时，先恢复启动快照，再创建只引用当前数据的新 solver。
 
