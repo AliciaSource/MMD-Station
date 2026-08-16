@@ -1,6 +1,8 @@
 #include "mmd_bullet_api.h"
 
 #include <btBulletDynamicsCommon.h>
+#include <BulletSoftBody/btSoftBodyRigidBodyCollisionConfiguration.h>
+#include <BulletSoftBody/btSoftRigidDynamicsWorld.h>
 
 #include <cmath>
 #include <memory>
@@ -17,11 +19,11 @@ struct RigidBodyEntry {
 };
 
 struct mmd_anim_bullet_world {
-    std::unique_ptr<btDefaultCollisionConfiguration> collision_configuration;
+    std::unique_ptr<btSoftBodyRigidBodyCollisionConfiguration> collision_configuration;
     std::unique_ptr<btCollisionDispatcher> dispatcher;
     std::unique_ptr<btDbvtBroadphase> broadphase;
     std::unique_ptr<btSequentialImpulseConstraintSolver> solver;
-    std::unique_ptr<btDiscreteDynamicsWorld> dynamics_world;
+    std::unique_ptr<btSoftRigidDynamicsWorld> dynamics_world;
     std::vector<RigidBodyEntry> rigidbodies;
     std::vector<std::unique_ptr<btTypedConstraint>> constraints;
 };
@@ -31,13 +33,15 @@ static mmd_anim_bullet_status fail(mmd_anim_bullet_status status, const char *me
     return status;
 }
 
-static btTransform make_transform(const float position[3], const float euler[3]) {
+static btTransform make_transform(const float position[3], const float rotation_xyzw[4]) {
     btTransform transform;
     transform.setIdentity();
     transform.setOrigin(btVector3(position[0], position[1], position[2]));
-    btQuaternion rotation;
-    rotation.setEulerZYX(euler[2], euler[1], euler[0]);
-    transform.setRotation(rotation);
+    transform.setRotation(btQuaternion(
+        rotation_xyzw[0],
+        rotation_xyzw[1],
+        rotation_xyzw[2],
+        rotation_xyzw[3]));
     return transform;
 }
 
@@ -51,24 +55,36 @@ static void set_angular_limit(btGeneric6DofSpringConstraint &constraint, const f
     constraint.setAngularUpperLimit(btVector3(upper[0], upper[1], upper[2]));
 }
 
-static void configure_spring_axis(btGeneric6DofSpringConstraint &constraint, int axis, float stiffness) {
-    if (stiffness > 0.0f) {
+static void configure_linear_spring_axis(
+    btGeneric6DofSpringConstraint &constraint,
+    int axis,
+    float stiffness) {
+    constraint.enableSpring(axis, false);
+    if (stiffness != 0.0f) {
         constraint.enableSpring(axis, true);
         constraint.setStiffness(axis, stiffness);
     }
 }
 
+static void configure_angular_spring_axis(
+    btGeneric6DofSpringConstraint &constraint,
+    int axis,
+    float stiffness) {
+    constraint.enableSpring(axis, true);
+    constraint.setStiffness(axis, stiffness);
+}
+
 static btCollisionShape *make_shape(const mmd_anim_bullet_rigidbody_desc &desc) {
     switch (desc.shape_type) {
     case MMD_ANIM_BULLET_SHAPE_SPHERE:
-        return new btSphereShape(btMax(desc.shape_size[0], 0.0001f));
+        return new btSphereShape(desc.shape_size[0]);
     case MMD_ANIM_BULLET_SHAPE_BOX:
         return new btBoxShape(btVector3(
-            btMax(desc.shape_size[0], 0.0001f),
-            btMax(desc.shape_size[1], 0.0001f),
-            btMax(desc.shape_size[2], 0.0001f)));
+            desc.shape_size[0],
+            desc.shape_size[1],
+            desc.shape_size[2]));
     case MMD_ANIM_BULLET_SHAPE_CAPSULE:
-        return new btCapsuleShapeZ(btMax(desc.shape_size[0], 0.0001f), btMax(desc.shape_size[1], 0.0001f));
+        return new btCapsuleShape(desc.shape_size[0], desc.shape_size[1]);
     default:
         return nullptr;
     }
@@ -111,18 +127,19 @@ mmd_anim_bullet_status mmd_anim_bullet_world_create(mmd_anim_bullet_world **out_
 
     try {
         auto world = std::make_unique<mmd_anim_bullet_world>();
-        world->collision_configuration = std::make_unique<btDefaultCollisionConfiguration>();
+        world->collision_configuration = std::make_unique<btSoftBodyRigidBodyCollisionConfiguration>();
         world->dispatcher = std::make_unique<btCollisionDispatcher>(world->collision_configuration.get());
         world->broadphase = std::make_unique<btDbvtBroadphase>();
         world->solver = std::make_unique<btSequentialImpulseConstraintSolver>();
-        world->dynamics_world = std::make_unique<btDiscreteDynamicsWorld>(
+        world->dynamics_world = std::make_unique<btSoftRigidDynamicsWorld>(
             world->dispatcher.get(),
             world->broadphase.get(),
             world->solver.get(),
             world->collision_configuration.get());
-        world->dynamics_world->getSolverInfo().m_numIterations = 20;
+        world->dynamics_world->setSynchronizeAllMotionStates(true);
+        world->dynamics_world->getSolverInfo().m_numIterations = 10;
         world->dynamics_world->getSolverInfo().m_solverMode |= SOLVER_USE_WARMSTARTING;
-        world->dynamics_world->setGravity(btVector3(0.0f, -98.0f, 0.0f));
+        world->dynamics_world->setGravity(btVector3(0.0f, 0.0f, -98.0f));
         *out_world = world.release();
         g_last_error.clear();
         return MMD_ANIM_BULLET_OK;
@@ -255,23 +272,22 @@ mmd_anim_bullet_status mmd_anim_bullet_world_add_rigidbody(
             return fail(MMD_ANIM_BULLET_INVALID_ARGUMENT, "unknown shape type");
         }
 
-        btTransform initial_transform = make_transform(desc->position, desc->rotation_euler);
+        btTransform initial_transform = make_transform(desc->position, desc->rotation_xyzw);
         btVector3 inertia(0.0f, 0.0f, 0.0f);
-        const btScalar mass = btMax(desc->mass, 0.0f);
+        const btScalar mass = desc->mass;
         if (mass > 0.0f) {
             shape->calculateLocalInertia(mass, inertia);
         }
 
         auto motion_state = std::make_unique<btDefaultMotionState>(initial_transform);
         btRigidBody::btRigidBodyConstructionInfo info(mass, motion_state.get(), shape.get(), inertia);
-        info.m_linearDamping = btMax(desc->linear_damping, 0.0f);
-        info.m_angularDamping = btMax(desc->angular_damping, 0.0f);
-        info.m_friction = btMax(desc->friction, 0.0f);
-        info.m_restitution = btMax(desc->restitution, 0.0f);
-        info.m_additionalDamping = true;
+        info.m_linearDamping = desc->linear_damping;
+        info.m_angularDamping = desc->angular_damping;
+        info.m_friction = desc->friction;
+        info.m_restitution = desc->restitution;
+        info.m_additionalDamping = false;
 
         auto body = std::make_unique<btRigidBody>(info);
-        body->setSleepingThresholds(0.01f, SIMD_RADS_PER_DEG * 0.1f);
         if (mass == 0.0f) {
             body->setCollisionFlags(body->getCollisionFlags() | btCollisionObject::CF_KINEMATIC_OBJECT);
         }
@@ -316,9 +332,8 @@ mmd_anim_bullet_status mmd_anim_bullet_world_get_rigidbody_transform(
         return fail(MMD_ANIM_BULLET_INVALID_ARGUMENT, "rigidbody index out of range");
     }
 
-    btTransform transform;
     const auto &entry = world->rigidbodies[static_cast<size_t>(index)];
-    entry.body->getMotionState()->getWorldTransform(transform);
+    const btTransform &transform = entry.body->getWorldTransform();
     const btVector3 origin = transform.getOrigin();
     const btQuaternion rotation = transform.getRotation();
     out_position[0] = origin.x();
@@ -377,26 +392,28 @@ mmd_anim_bullet_status mmd_anim_bullet_world_add_6dof_spring_joint(
     try {
         auto &body_a = *world->rigidbodies[static_cast<size_t>(desc->rigidbody_index_a)].body;
         auto &body_b = *world->rigidbodies[static_cast<size_t>(desc->rigidbody_index_b)].body;
-        btTransform joint_transform = make_transform(desc->position, desc->rotation_euler);
+        btTransform joint_transform = make_transform(desc->position, desc->rotation_xyzw);
         btTransform frame_a = body_a.getWorldTransform().inverse() * joint_transform;
         btTransform frame_b = body_b.getWorldTransform().inverse() * joint_transform;
 
         auto constraint = std::make_unique<btGeneric6DofSpringConstraint>(body_a, body_b, frame_a, frame_b, true);
-#if BT_BULLET_VERSION > 275
-        constraint->setUseFrameOffset(false);
-#endif
         set_vec3_limit(*constraint, desc->translation_lower_limit, desc->translation_upper_limit);
         set_angular_limit(*constraint, desc->rotation_lower_limit, desc->rotation_upper_limit);
         for (int axis = 0; axis < 3; ++axis) {
-            configure_spring_axis(*constraint, axis, desc->spring_translation_factor[axis]);
-            constraint->setStiffness(axis + 3, desc->spring_rotation_factor[axis]);
-            constraint->enableSpring(axis + 3, true);
+            configure_linear_spring_axis(
+                *constraint,
+                axis,
+                desc->spring_translation_factor[axis]);
+            configure_angular_spring_axis(
+                *constraint,
+                axis + 3,
+                desc->spring_rotation_factor[axis]);
         }
 #if BT_BULLET_VERSION > 275
         constraint->setOverrideNumSolverIterations(world->dynamics_world->getSolverInfo().m_numIterations);
 #endif
-
-        world->dynamics_world->addConstraint(constraint.get(), true);
+        constraint->setEquilibriumPoint();
+        world->dynamics_world->addConstraint(constraint.get(), false);
         world->constraints.push_back(std::move(constraint));
         *out_index = static_cast<int32_t>(world->constraints.size() - 1);
         g_last_error.clear();

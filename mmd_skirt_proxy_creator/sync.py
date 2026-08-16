@@ -7,12 +7,12 @@ from bpy.app.handlers import persistent
 from bpy.types import Operator
 from mathutils import Vector
 
-from .core import ProxyBuildError, bilinear_grid_weights, bone_name
+from .core import ProxyBuildError, bilinear_grid_weights, bone_name, proxy_bone_name
 
 
 SCHEMA_VERSION = 2
-_DIRTY_PROXIES = set()
 _DIRTY_PHYSICS_PROXIES = set()
+_PROXY_MODES = {}
 _TIMER_PENDING = False
 _DRAW_HANDLE = None
 
@@ -38,7 +38,7 @@ def _mesh_state(proxy_object):
 
 
 def _matching_armature(prefix):
-    pattern = re.compile(rf"^{re.escape(prefix)}_C\d+_R\d+$")
+    pattern = re.compile(rf"^{re.escape(prefix)}_C\d+_R\d+(?:\.[LR])?$")
     matches = []
     for obj in bpy.data.objects:
         if obj.type == "ARMATURE" and any(pattern.match(bone.name) for bone in obj.data.bones):
@@ -52,16 +52,28 @@ def _matching_armature(prefix):
 
 def _bone_layout(armature_object, prefix):
     pattern = re.compile(
-        rf"^{re.escape(prefix)}_C(?P<column>\d+)_R(?P<row>\d+)$"
+        rf"^{re.escape(prefix)}_C(?P<column>\d+)_R(?P<row>\d+)(?:\.(?P<side>[LR]))?$"
     )
-    layout = {}
+    keyed_layout = {}
     for bone in armature_object.data.bones:
         match = pattern.match(bone.name)
         if match:
             column = int(match.group("column")) - 1
             row = int(match.group("row")) - 1
-            layout.setdefault(column, {})[row] = bone
-    if not layout or sorted(layout) != list(range(len(layout))):
+            side = match.group("side") or ""
+            keyed_layout.setdefault((side, column), {})[row] = bone
+    if not keyed_layout:
+        raise ProxyBuildError("没有找到代理骨骼")
+    ordered_keys = sorted(
+        keyed_layout,
+        key=lambda key: (("L", "R", "").index(key[0]), key[1]),
+    )
+    for side in {key[0] for key in ordered_keys}:
+        columns = sorted(key[1] for key in ordered_keys if key[0] == side)
+        if columns != list(range(len(columns))):
+            raise ProxyBuildError("代理骨骼列编号不连续")
+    layout = {index: keyed_layout[key] for index, key in enumerate(ordered_keys)}
+    if not layout:
         raise ProxyBuildError("代理骨骼列编号不连续")
     row_counts = []
     for column in range(len(layout)):
@@ -69,13 +81,16 @@ def _bone_layout(armature_object, prefix):
         if sorted(rows) != list(range(len(rows))):
             raise ProxyBuildError(f"代理第 {column + 1} 列骨骼编号不连续")
         row_counts.append(len(rows) + 1)
-    return layout, row_counts
+    sides = [key[0] for key in ordered_keys]
+    local_indices = [key[1] for key in ordered_keys]
+    groups = [0 if side in {"", "L"} else 1 for side in sides]
+    return layout, row_counts, sides, local_indices, groups
 
 
 def _recover_vertex_map(proxy_object, armature_object, layout, row_counts):
     coordinates, _signature = _mesh_state(proxy_object)
-    if len(coordinates) != sum(row_counts):
-        raise ProxyBuildError("代理顶点数量与骨链结构不匹配")
+    if len(coordinates) < sum(row_counts):
+        raise ProxyBuildError("代理顶点数量少于骨链控制点数量")
     armature_to_proxy = proxy_object.matrix_world.inverted() @ armature_object.matrix_world
     targets = []
     for column, count in enumerate(row_counts):
@@ -128,7 +143,7 @@ def identify_proxy(proxy_object):
         else [obj for obj in bpy.data.objects if obj.type == "ARMATURE"]
     )
     candidates = []
-    portable_pattern = re.compile(r"^(?P<prefix>.+)_C\d+_R\d+$")
+    portable_pattern = re.compile(r"^(?P<prefix>.+)_C\d+_R\d+(?:\.[LR])?$")
     for armature_object in armatures:
         prefixes = [prefix for prefix in (stored_prefix, name_prefix) if prefix]
         prefixes.extend(
@@ -138,20 +153,40 @@ def identify_proxy(proxy_object):
         )
         for prefix in dict.fromkeys(prefixes):
             try:
-                layout, row_counts = _bone_layout(armature_object, prefix)
+                layout, row_counts, sides, local_indices, groups = _bone_layout(
+                    armature_object, prefix
+                )
                 vertex_map = _recover_vertex_map(
                     proxy_object, armature_object, layout, row_counts
                 )
             except ProxyBuildError:
                 continue
             candidates.append(
-                (armature_object, prefix, layout, row_counts, vertex_map)
+                (
+                    armature_object,
+                    prefix,
+                    layout,
+                    row_counts,
+                    vertex_map,
+                    sides,
+                    local_indices,
+                    groups,
+                )
             )
     if len(candidates) != 1:
         raise ProxyBuildError(
             "无法唯一恢复代理身份" if candidates else "没有找到与所选网格匹配的代理骨链"
         )
-    armature_object, prefix, layout, row_counts, vertex_map = candidates[0]
+    (
+        armature_object,
+        prefix,
+        layout,
+        row_counts,
+        vertex_map,
+        sides,
+        local_indices,
+        groups,
+    ) = candidates[0]
     _coordinates, signature = _mesh_state(proxy_object)
     proxy_object["surface_proxy_schema"] = SCHEMA_VERSION
     proxy_object["surface_proxy_prefix"] = prefix
@@ -162,6 +197,10 @@ def identify_proxy(proxy_object):
     proxy_object["surface_proxy_vertex_map"] = vertex_map
     proxy_object["surface_proxy_topology"] = signature
     proxy_object["surface_proxy_armature"] = armature_object.name
+    proxy_object["surface_proxy_column_sides"] = sides
+    proxy_object["surface_proxy_column_local_indices"] = local_indices
+    proxy_object["surface_proxy_column_groups"] = groups
+    proxy_object["surface_proxy_mirror_mode"] = any(sides)
     if "surface_proxy_closed" not in proxy_object:
         proxy_object["surface_proxy_closed"] = _infer_closed(
             proxy_object,
@@ -224,7 +263,7 @@ def rebind_proxy_weights(proxy_object):
     if signature != str(proxy_object["surface_proxy_topology"]):
         raise ProxyBuildError("代理拓扑已改变，不能重新计算权重")
     generated_names = {
-        bone_name(prefix, column, row)
+        proxy_bone_name(proxy_object, prefix, column, row)
         for column, count in enumerate(row_counts)
         for row in range(count - 1)
     }
@@ -259,12 +298,28 @@ def rebind_proxy_weights(proxy_object):
         offset += count
     total_affected = 0
     proxy_inverse = proxy_object.matrix_world.inverted()
+    column_groups = list(
+        proxy_object.get("surface_proxy_column_groups", [0] * len(grid))
+    )
+    if len(column_groups) != len(grid):
+        column_groups = [0] * len(grid)
+    grouped_columns = {
+        group: [column for column, value in enumerate(column_groups) if value == group]
+        for group in dict.fromkeys(column_groups)
+    }
+    bone_groups = {
+        proxy_bone_name(proxy_object, prefix, column, row): column_groups[column]
+        for column, count in enumerate(row_counts)
+        for row in range(count - 1)
+    }
     for source_object, affected in source_meshes:
         generated_groups = {
             (column, row): source_object.vertex_groups.get(
-                bone_name(prefix, column, row)
+                proxy_bone_name(proxy_object, prefix, column, row)
             )
-            or source_object.vertex_groups.new(name=bone_name(prefix, column, row))
+            or source_object.vertex_groups.new(
+                name=proxy_bone_name(proxy_object, prefix, column, row)
+            )
             for column, count in enumerate(row_counts)
             for row in range(count - 1)
         }
@@ -275,19 +330,45 @@ def rebind_proxy_weights(proxy_object):
         ]
         source_to_proxy = proxy_inverse @ source_object.matrix_world
         for vertex_index in affected:
+            existing_group_weights = {}
+            for membership in source_object.data.vertices[vertex_index].groups:
+                name = source_object.vertex_groups[membership.group].name
+                group = bone_groups.get(name)
+                if group is not None:
+                    existing_group_weights[group] = (
+                        existing_group_weights.get(group, 0.0) + membership.weight
+                    )
             for group in unlocked_deform_groups:
                 group.remove([vertex_index])
             available = max(
                 0.0, 1.0 - locked_sums[source_object.name][vertex_index]
             )
             point = source_to_proxy @ source_object.data.vertices[vertex_index].co
+            if existing_group_weights:
+                selected_group = max(
+                    existing_group_weights, key=existing_group_weights.get
+                )
+            else:
+                selected_group = min(
+                    grouped_columns,
+                    key=lambda group: min(
+                        (Vector(grid[column][row]) - point).length_squared
+                        for column in grouped_columns[group]
+                        for row in range(len(grid[column]))
+                    ),
+                )
+            columns = grouped_columns[selected_group]
+            side_grid = [grid[column] for column in columns]
             weights = bilinear_grid_weights(
                 tuple(point),
-                grid,
-                closed=bool(proxy_object.get("surface_proxy_closed", True)),
+                side_grid,
+                closed=(
+                    len(grouped_columns) == 1
+                    and bool(proxy_object.get("surface_proxy_closed", True))
+                ),
             )
-            for key, weight in weights.items():
-                generated_groups[key].add(
+            for (local_column, row), weight in weights.items():
+                generated_groups[(columns[local_column], row)].add(
                     [vertex_index], available * weight, "REPLACE"
                 )
         total_affected += len(affected)
@@ -360,11 +441,11 @@ def sync_proxy_bones(context, proxy_object, restore_mode=True):
         for column, count in enumerate(row_counts):
             for row in range(count - 1):
                 edit_bone = armature_object.data.edit_bones.get(
-                    bone_name(prefix, column, row)
+                    proxy_bone_name(proxy_object, prefix, column, row)
                 )
                 if edit_bone is None:
                     raise ProxyBuildError(
-                        f"缺少代理骨骼：{bone_name(prefix, column, row)}"
+                        f"缺少代理骨骼：{proxy_bone_name(proxy_object, prefix, column, row)}"
                     )
                 edit_bone.head = proxy_to_armature @ coordinates[vertex_map[offset + row]]
                 edit_bone.tail = proxy_to_armature @ coordinates[vertex_map[offset + row + 1]]
@@ -501,33 +582,6 @@ def _draw_proxy_bones():
 
 def _run_pending_sync():
     global _TIMER_PENDING
-    pending = list(_DIRTY_PROXIES)
-    for name in pending:
-        proxy_object = bpy.data.objects.get(name)
-        if proxy_object is None:
-            _DIRTY_PROXIES.discard(name)
-            continue
-        if proxy_object.mode != "OBJECT" or (
-            bpy.context.object is not None and bpy.context.object.mode != "OBJECT"
-        ):
-            continue
-        try:
-            sync_proxy_bones(bpy.context, proxy_object, restore_mode=False)
-            settings = getattr(bpy.context.scene, "surface_proxy_creator", None)
-            if (
-                settings is not None
-                and settings.auto_sync_physics
-                and settings.physics_proxy == proxy_object
-            ):
-                from .mmd_physics import sync_proxy_physics_transforms
-
-                sync_proxy_physics_transforms(proxy_object)
-                _DIRTY_PHYSICS_PROXIES.discard(name)
-            if "surface_proxy_sync_error" in proxy_object:
-                del proxy_object["surface_proxy_sync_error"]
-        except ProxyBuildError as error:
-            proxy_object["surface_proxy_sync_error"] = str(error)
-        _DIRTY_PROXIES.discard(name)
     for name in list(_DIRTY_PHYSICS_PROXIES):
         proxy_object = bpy.data.objects.get(name)
         if proxy_object is None:
@@ -550,10 +604,50 @@ def _run_pending_sync():
         except ProxyBuildError as error:
             proxy_object["surface_proxy_physics_sync_error"] = str(error)
         _DIRTY_PHYSICS_PROXIES.discard(name)
-    if _DIRTY_PROXIES or _DIRTY_PHYSICS_PROXIES:
+    if _DIRTY_PHYSICS_PROXIES:
         return 0.25
     _TIMER_PENDING = False
     return None
+
+
+def _schedule_pending_sync():
+    global _TIMER_PENDING
+    if not bpy.app.timers.is_registered(_run_pending_sync):
+        bpy.app.timers.register(_run_pending_sync, first_interval=0.1)
+    _TIMER_PENDING = True
+
+
+def _sync_on_proxy_mode_exit():
+    scene = getattr(bpy.context, "scene", None)
+    settings = getattr(scene, "surface_proxy_creator", None)
+    live_names = set()
+    for obj in bpy.data.objects:
+        if obj.type != "MESH" or "surface_proxy_schema" not in obj:
+            continue
+        live_names.add(obj.name)
+        current_mode = obj.mode
+        previous_mode = _PROXY_MODES.get(obj.name, current_mode)
+        _PROXY_MODES[obj.name] = current_mode
+        if (
+            settings is None
+            or not settings.auto_sync
+            or previous_mode not in {"EDIT", "SCULPT"}
+            or current_mode != "OBJECT"
+        ):
+            continue
+        try:
+            sync_proxy_bones(bpy.context, obj, restore_mode=False)
+            if settings.auto_sync_physics and settings.physics_proxy == obj:
+                from .mmd_physics import sync_proxy_physics_transforms
+
+                sync_proxy_physics_transforms(obj)
+            if "surface_proxy_sync_error" in obj:
+                del obj["surface_proxy_sync_error"]
+        except (ProxyBuildError, RuntimeError) as error:
+            obj["surface_proxy_sync_error"] = str(error)
+    for name in set(_PROXY_MODES) - live_names:
+        del _PROXY_MODES[name]
+    return 0.1
 
 
 @persistent
@@ -569,14 +663,6 @@ def _depsgraph_proxy_update(_scene, depsgraph):
                 identify_proxy(obj)
             except ProxyBuildError:
                 pass
-        if (
-            settings is not None
-            and settings.auto_sync
-            and "surface_proxy_schema" in obj
-            and (obj in updated_ids or obj.data in updated_ids)
-        ):
-            if obj.mode in {"EDIT", "SCULPT"}:
-                _DIRTY_PROXIES.add(obj.name)
     if settings is not None and settings.auto_sync_physics:
         proxy_object = settings.physics_proxy
         if proxy_object is not None:
@@ -592,19 +678,32 @@ def _depsgraph_proxy_update(_scene, depsgraph):
                 )
             ):
                 _DIRTY_PHYSICS_PROXIES.add(proxy_object.name)
-    if (_DIRTY_PROXIES or _DIRTY_PHYSICS_PROXIES) and not _TIMER_PENDING:
-        _TIMER_PENDING = True
-        bpy.app.timers.register(_run_pending_sync, first_interval=0.25)
+    if _DIRTY_PHYSICS_PROXIES:
+        _schedule_pending_sync()
 
 
 @persistent
 def _load_proxy_identity(_unused):
     for obj in bpy.data.objects:
-        if obj.type == "MESH" and "surface_proxy_schema" not in obj and _prefix_from_name(obj.name):
+        if obj.type != "MESH":
+            continue
+        if "surface_proxy_schema" not in obj and _prefix_from_name(obj.name):
             try:
                 identify_proxy(obj)
             except ProxyBuildError:
                 pass
+        if "surface_proxy_schema" in obj:
+            _PROXY_MODES[obj.name] = obj.mode
+
+
+def _initialize_proxy_services():
+    try:
+        _load_proxy_identity(None)
+    except AttributeError as error:
+        if "_RestrictData" not in str(error):
+            raise
+        return 0.1
+    return None
 
 
 def register_services():
@@ -613,6 +712,14 @@ def register_services():
         bpy.app.handlers.depsgraph_update_post.append(_depsgraph_proxy_update)
     if _load_proxy_identity not in bpy.app.handlers.load_post:
         bpy.app.handlers.load_post.append(_load_proxy_identity)
+    if not bpy.app.timers.is_registered(_initialize_proxy_services):
+        bpy.app.timers.register(_initialize_proxy_services, first_interval=0.1)
+    if not bpy.app.timers.is_registered(_sync_on_proxy_mode_exit):
+        bpy.app.timers.register(
+            _sync_on_proxy_mode_exit,
+            first_interval=0.1,
+            persistent=True,
+        )
     if not bpy.app.background and _DRAW_HANDLE is None:
         _DRAW_HANDLE = bpy.types.SpaceView3D.draw_handler_add(
             _draw_proxy_bones, (), "WINDOW", "POST_VIEW"
@@ -630,6 +737,10 @@ def unregister_services():
         _DRAW_HANDLE = None
     if bpy.app.timers.is_registered(_run_pending_sync):
         bpy.app.timers.unregister(_run_pending_sync)
-    _DIRTY_PROXIES.clear()
+    if bpy.app.timers.is_registered(_initialize_proxy_services):
+        bpy.app.timers.unregister(_initialize_proxy_services)
+    if bpy.app.timers.is_registered(_sync_on_proxy_mode_exit):
+        bpy.app.timers.unregister(_sync_on_proxy_mode_exit)
     _DIRTY_PHYSICS_PROXIES.clear()
+    _PROXY_MODES.clear()
     _TIMER_PENDING = False

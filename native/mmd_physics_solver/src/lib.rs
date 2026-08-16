@@ -7,8 +7,10 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::ptr;
 use std::slice;
 
-const ABI_VERSION: u32 = 2;
-const MMD_WORLD_SCALE: f32 = 12.5;
+const ABI_VERSION: u32 = 3;
+#[cfg(test)]
+const DEFAULT_WORLD_SCALE: f32 = 12.5;
+const MMD_GRAVITY_SCALE: f32 = 10.0;
 
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
@@ -23,12 +25,8 @@ impl Vec3 {
         [self.x, self.y, self.z]
     }
 
-    fn scaled_array(self) -> [f32; 3] {
-        [
-            self.x * MMD_WORLD_SCALE,
-            self.y * MMD_WORLD_SCALE,
-            self.z * MMD_WORLD_SCALE,
-        ]
+    fn scaled_array(self, scale: f32) -> [f32; 3] {
+        [self.x * scale, self.y * scale, self.z * scale]
     }
 
     fn add(self, other: Self) -> Self {
@@ -44,6 +42,22 @@ impl Vec3 {
             x: -self.x,
             y: -self.y,
             z: -self.z,
+        }
+    }
+
+    fn mmd_basis(self) -> Self {
+        Self {
+            x: self.x,
+            y: self.z,
+            z: self.y,
+        }
+    }
+
+    fn mmd_angular_basis(self) -> Self {
+        Self {
+            x: -self.x,
+            y: -self.z,
+            z: -self.y,
         }
     }
 }
@@ -69,6 +83,19 @@ impl Default for Quat {
 }
 
 impl Quat {
+    fn array(self) -> [f32; 4] {
+        [self.x, self.y, self.z, self.w]
+    }
+
+    fn mmd_basis(self) -> Self {
+        Self {
+            x: -self.x,
+            y: -self.z,
+            z: -self.y,
+            w: self.w,
+        }
+    }
+
     fn normalized(self) -> Self {
         let length = (self.x * self.x + self.y * self.y + self.z * self.z + self.w * self.w).sqrt();
         if length <= 1.0e-8 {
@@ -80,19 +107,6 @@ impl Quat {
             z: self.z / length,
             w: self.w / length,
         }
-    }
-
-    fn euler_xyz(self) -> [f32; 3] {
-        let q = self.normalized();
-        let sin_x = 2.0 * (q.w * q.x + q.y * q.z);
-        let cos_x = 1.0 - 2.0 * (q.x * q.x + q.y * q.y);
-        let x = sin_x.atan2(cos_x);
-        let sin_y = (2.0 * (q.w * q.y - q.z * q.x)).clamp(-1.0, 1.0);
-        let y = sin_y.asin();
-        let sin_z = 2.0 * (q.w * q.z + q.x * q.y);
-        let cos_z = 1.0 - 2.0 * (q.y * q.y + q.z * q.z);
-        let z = sin_z.atan2(cos_z);
-        [x, y, z]
     }
 
     fn inverse(self) -> Self {
@@ -159,6 +173,13 @@ impl Transform {
             rotation,
         }
     }
+
+    fn mmd_basis(self) -> Self {
+        Self {
+            position: self.position.mmd_basis(),
+            rotation: self.rotation.mmd_basis(),
+        }
+    }
 }
 
 #[repr(C)]
@@ -218,35 +239,50 @@ struct JointBinding {
 
 struct Solver {
     world: BulletWorld,
+    world_scale: f32,
     bodies: Vec<RigidBodyHandle>,
     bindings: Vec<BodyBinding>,
     joints: Vec<JointBinding>,
 }
 
 impl Solver {
+    #[cfg(test)]
     fn new(body_descs: &[BodyDesc], joint_descs: &[JointDesc]) -> Result<Self, String> {
+        Self::new_with_world_scale(body_descs, joint_descs, DEFAULT_WORLD_SCALE)
+    }
+
+    fn new_with_world_scale(
+        body_descs: &[BodyDesc],
+        joint_descs: &[JointDesc],
+        world_scale: f32,
+    ) -> Result<Self, String> {
+        if !world_scale.is_finite() || world_scale <= 0.0 {
+            return Err("world scale must be positive and finite".to_owned());
+        }
         let mut world = BulletWorld::new().map_err(|error| error.to_string())?;
         let mut bodies = Vec::with_capacity(body_descs.len());
         let mut bindings = Vec::with_capacity(body_descs.len());
         for desc in body_descs {
+            let transform = desc.transform.mmd_basis();
+            let bone_transform = desc.bone_transform.mmd_basis();
             let shape = match desc.shape {
                 0 => RigidBodyShape::Sphere {
-                    radius: desc.size.x * MMD_WORLD_SCALE,
+                    radius: desc.size.x * world_scale,
                 },
                 1 => RigidBodyShape::Box {
-                    half_extents: desc.size.scaled_array(),
+                    half_extents: desc.size.scaled_array(world_scale),
                 },
                 2 => RigidBodyShape::Capsule {
-                    radius: desc.size.x * MMD_WORLD_SCALE,
-                    height: desc.size.y * MMD_WORLD_SCALE,
+                    radius: desc.size.x * world_scale,
+                    height: desc.size.y * world_scale,
                 },
                 _ => return Err(format!("unsupported rigid body shape {}", desc.shape)),
             };
             let handle = world
                 .add_rigidbody(BulletBodyDesc {
                     shape,
-                    position: desc.transform.position.scaled_array(),
-                    rotation_euler: desc.transform.rotation.euler_xyz(),
+                    position: transform.position.scaled_array(world_scale),
+                    rotation_xyzw: transform.rotation.array(),
                     mass: if desc.mode == 0 { 0.0 } else { desc.mass },
                     linear_damping: desc.linear_damping,
                     angular_damping: desc.angular_damping,
@@ -260,12 +296,13 @@ impl Solver {
             bindings.push(BodyBinding {
                 mode: desc.mode,
                 has_bone: desc.has_bone != 0,
-                body_from_bone: desc.bone_transform.inverse().compose(desc.transform),
-                animation_bone: desc.bone_transform,
+                body_from_bone: bone_transform.inverse().compose(transform),
+                animation_bone: bone_transform,
             });
         }
         let mut joints = Vec::with_capacity(joint_descs.len());
         for desc in joint_descs {
+            let transform = desc.transform.mmd_basis();
             let body_a = *bodies
                 .get(desc.body_a as usize)
                 .ok_or_else(|| format!("joint body A {} is out of range", desc.body_a))?;
@@ -276,33 +313,37 @@ impl Solver {
                 .add_6dof_spring_joint(SixDofSpringJointDesc {
                     rigidbody_a: body_a,
                     rigidbody_b: body_b,
-                    position: desc.transform.position.scaled_array(),
-                    rotation_euler: desc.transform.rotation.euler_xyz(),
-                    translation_lower_limit: desc.linear_lower.scaled_array(),
-                    translation_upper_limit: desc.linear_upper.scaled_array(),
-                    rotation_lower_limit: desc.angular_lower.array(),
-                    rotation_upper_limit: desc.angular_upper.array(),
-                    spring_translation_factor: desc.linear_spring.array(),
-                    spring_rotation_factor: desc.angular_spring.array(),
+                    position: transform.position.scaled_array(world_scale),
+                    rotation_xyzw: transform.rotation.array(),
+                    translation_lower_limit: desc
+                        .linear_lower
+                        .mmd_basis()
+                        .scaled_array(world_scale),
+                    translation_upper_limit: desc
+                        .linear_upper
+                        .mmd_basis()
+                        .scaled_array(world_scale),
+                    rotation_lower_limit: desc.angular_upper.mmd_angular_basis().array(),
+                    rotation_upper_limit: desc.angular_lower.mmd_angular_basis().array(),
+                    spring_translation_factor: desc.linear_spring.mmd_basis().array(),
+                    spring_rotation_factor: desc.angular_spring.mmd_basis().array(),
                 })
                 .map_err(|error| error.to_string())?;
-            let body_a_transform = body_descs[desc.body_a as usize].transform;
-            let body_b_transform = body_descs[desc.body_b as usize].transform;
+            let body_a_transform = body_descs[desc.body_a as usize].transform.mmd_basis();
+            let body_b_transform = body_descs[desc.body_b as usize].transform.mmd_basis();
             joints.push(JointBinding {
                 body_a: desc.body_a as usize,
                 body_b: desc.body_b as usize,
-                frame_a: body_a_transform.inverse().compose(desc.transform),
-                frame_b: body_b_transform.inverse().compose(desc.transform),
+                frame_a: body_a_transform.inverse().compose(transform),
+                frame_b: body_b_transform.inverse().compose(transform),
             });
         }
         world
-            .set_solver_iterations(20)
-            .map_err(|error| error.to_string())?;
-        world
-            .settle_to_current()
+            .set_solver_iterations(10)
             .map_err(|error| error.to_string())?;
         Ok(Self {
             world,
+            world_scale,
             bodies,
             bindings,
             joints,
@@ -311,7 +352,7 @@ impl Solver {
 
     fn set_gravity(&mut self, gravity: Vec3) -> Result<(), String> {
         self.world
-            .set_gravity(gravity.scaled_array())
+            .set_gravity(gravity.mmd_basis().scaled_array(MMD_GRAVITY_SCALE))
             .map_err(|error| error.to_string())
     }
 
@@ -329,6 +370,7 @@ impl Solver {
         if !binding.has_bone {
             return Ok(());
         }
+        let target = target.mmd_basis();
         binding.animation_bone = target;
         if binding.mode != 0 {
             return Ok(());
@@ -342,7 +384,7 @@ impl Solver {
             .set_rigidbody_transform(
                 handle,
                 BulletTransform {
-                    position: body_target.position.scaled_array(),
+                    position: body_target.position.scaled_array(self.world_scale),
                     rotation_xyzw: [
                         body_target.rotation.x,
                         body_target.rotation.y,
@@ -358,9 +400,9 @@ impl Solver {
         if !dt.is_finite() || dt <= 0.0 {
             return Err("delta time must be positive and finite".to_owned());
         }
-        let substeps = substeps.clamp(1, 32);
+        let max_substeps = substeps.clamp(1, 32);
         self.world
-            .step_with_fixed_substep(dt, substeps as i32, dt / substeps as f32)
+            .step_with_fixed_substep(dt, max_substeps as i32, 1.0 / 60.0)
             .map_err(|error| error.to_string())
     }
 
@@ -375,9 +417,9 @@ impl Solver {
                 .map_err(|error| error.to_string())?;
             *target = Transform {
                 position: Vec3 {
-                    x: value.position[0] / MMD_WORLD_SCALE,
-                    y: value.position[1] / MMD_WORLD_SCALE,
-                    z: value.position[2] / MMD_WORLD_SCALE,
+                    x: value.position[0] / self.world_scale,
+                    y: value.position[1] / self.world_scale,
+                    z: value.position[2] / self.world_scale,
                 },
                 rotation: Quat {
                     x: value.rotation_xyzw[0],
@@ -385,7 +427,8 @@ impl Solver {
                     z: value.rotation_xyzw[2],
                     w: value.rotation_xyzw[3],
                 },
-            };
+            }
+            .mmd_basis();
         }
         Ok(())
     }
@@ -399,11 +442,12 @@ impl Solver {
         for (index, target) in output.iter_mut().take(self.bodies.len()).enumerate() {
             let binding = self.bindings[index];
             if !binding.has_bone || binding.mode == 0 {
-                *target = binding.animation_bone;
+                *target = binding.animation_bone.mmd_basis();
                 continue;
             }
-            let physics_bone = body_transforms[index].compose(binding.body_from_bone.inverse());
-            *target = if binding.mode == 2 {
+            let body_transform = body_transforms[index].mmd_basis();
+            let physics_bone = body_transform.compose(binding.body_from_bone.inverse());
+            let result = if binding.mode == 2 {
                 Transform {
                     position: binding.animation_bone.position,
                     rotation: physics_bone.rotation,
@@ -411,6 +455,7 @@ impl Solver {
             } else {
                 physics_bone
             };
+            *target = result.mmd_basis();
         }
         Ok(())
     }
@@ -421,10 +466,17 @@ impl Solver {
         }
         let mut body_transforms = vec![Transform::default(); self.bodies.len()];
         self.transforms(&mut body_transforms)?;
+        for transform in &mut body_transforms {
+            *transform = transform.mmd_basis();
+        }
         for (target, binding) in output.iter_mut().zip(&self.joints) {
             *target = JointState {
-                frame_a: body_transforms[binding.body_a].compose(binding.frame_a),
-                frame_b: body_transforms[binding.body_b].compose(binding.frame_b),
+                frame_a: body_transforms[binding.body_a]
+                    .compose(binding.frame_a)
+                    .mmd_basis(),
+                frame_b: body_transforms[binding.body_b]
+                    .compose(binding.frame_b)
+                    .mmd_basis(),
             };
         }
         Ok(())
@@ -450,6 +502,7 @@ pub unsafe extern "C" fn mmd_solver_create(
     body_count: u32,
     joints: *const JointDesc,
     joint_count: u32,
+    world_scale: f32,
 ) -> *mut c_void {
     ffi_guard(ptr::null_mut(), || {
         if bodies.is_null() || (joint_count > 0 && joints.is_null()) {
@@ -461,7 +514,7 @@ pub unsafe extern "C" fn mmd_solver_create(
         } else {
             unsafe { slice::from_raw_parts(joints, joint_count as usize) }
         };
-        Solver::new(body_slice, joint_slice)
+        Solver::new_with_world_scale(body_slice, joint_slice, world_scale)
             .map(|solver| Box::into_raw(Box::new(solver)) as *mut c_void)
             .unwrap_or(ptr::null_mut())
     })
@@ -641,6 +694,89 @@ mod tests {
     }
 
     #[test]
+    fn max_substeps_does_not_change_a_60_hz_step_when_capacity_is_sufficient() {
+        let body = BodyDesc {
+            mode: 1,
+            shape: 0,
+            size: Vec3 {
+                x: 0.2,
+                y: 0.2,
+                z: 0.2,
+            },
+            mass: 1.0,
+            ..BodyDesc::default()
+        };
+        let mut solver_two = Solver::new(&[body], &[]).unwrap();
+        let mut solver_ten = Solver::new(&[body], &[]).unwrap();
+        for solver in [&mut solver_two, &mut solver_ten] {
+            solver
+                .set_gravity(Vec3 {
+                    x: 0.0,
+                    y: 0.0,
+                    z: -9.80665,
+                })
+                .unwrap();
+        }
+        solver_two.step(1.0 / 60.0, 2).unwrap();
+        solver_ten.step(1.0 / 60.0, 10).unwrap();
+        let mut output_two = [Transform::default()];
+        let mut output_ten = [Transform::default()];
+        solver_two.transforms(&mut output_two).unwrap();
+        solver_ten.transforms(&mut output_ten).unwrap();
+        assert!((output_two[0].position.z - output_ten[0].position.z).abs() < 1.0e-6);
+    }
+
+    #[test]
+    fn independent_import_scale_instances_match_in_mmd_space() {
+        fn body_for_import_scale(import_scale: f32) -> BodyDesc {
+            BodyDesc {
+                mode: 1,
+                shape: 0,
+                transform: Transform {
+                    position: Vec3 {
+                        x: 0.0,
+                        y: 0.0,
+                        z: import_scale,
+                    },
+                    rotation: Quat::default(),
+                },
+                size: Vec3 {
+                    x: 0.2 * import_scale,
+                    y: 0.2 * import_scale,
+                    z: 0.2 * import_scale,
+                },
+                mass: 1.0,
+                ..BodyDesc::default()
+            }
+        }
+
+        let mut solver_008 =
+            Solver::new_with_world_scale(&[body_for_import_scale(0.08)], &[], 12.5).unwrap();
+        let mut solver_010 =
+            Solver::new_with_world_scale(&[body_for_import_scale(0.1)], &[], 10.0).unwrap();
+        for solver in [&mut solver_008, &mut solver_010] {
+            solver
+                .set_gravity(Vec3 {
+                    x: 0.0,
+                    y: 0.0,
+                    z: -9.8,
+                })
+                .unwrap();
+        }
+        for _ in 0..60 {
+            solver_008.step(1.0 / 60.0, 2).unwrap();
+            solver_010.step(1.0 / 60.0, 10).unwrap();
+        }
+        let mut output_008 = [Transform::default()];
+        let mut output_010 = [Transform::default()];
+        solver_008.transforms(&mut output_008).unwrap();
+        solver_010.transforms(&mut output_010).unwrap();
+        let mmd_z_008 = output_008[0].position.z / 0.08;
+        let mmd_z_010 = output_010[0].position.z / 0.1;
+        assert!((mmd_z_008 - mmd_z_010).abs() < 1.0e-5);
+    }
+
+    #[test]
     fn bullet_joint_is_created_in_input_order() {
         let anchor = BodyDesc {
             mode: 0,
@@ -749,7 +885,11 @@ mod tests {
                     },
                     rotation: Quat::default(),
                 },
-                size: Vec3 { x: 0.2, y: 0.2, z: 0.2 },
+                size: Vec3 {
+                    x: 0.2,
+                    y: 0.2,
+                    z: 0.2,
+                },
                 ..BodyDesc::default()
             },
             BodyDesc {
@@ -763,7 +903,11 @@ mod tests {
                     },
                     rotation: Quat::default(),
                 },
-                size: Vec3 { x: 0.2, y: 0.2, z: 0.2 },
+                size: Vec3 {
+                    x: 0.2,
+                    y: 0.2,
+                    z: 0.2,
+                },
                 mass: 1.0,
                 ..BodyDesc::default()
             },
@@ -779,5 +923,44 @@ mod tests {
         solver.joint_states(&mut states).unwrap();
         let difference = states[0].frame_a.position.x - states[0].frame_b.position.x;
         assert!(difference.abs() < 1.0e-6);
+    }
+
+    #[test]
+    fn blender_basis_round_trips_through_mmd_space() {
+        let transform = Transform {
+            position: Vec3 {
+                x: 1.0,
+                y: 2.0,
+                z: 3.0,
+            },
+            rotation: Quat {
+                x: 0.1,
+                y: 0.2,
+                z: 0.3,
+                w: 0.9,
+            },
+        };
+        let round_trip = transform.mmd_basis().mmd_basis();
+        assert_eq!(round_trip.position.array(), transform.position.array());
+        assert_eq!(round_trip.rotation.array(), transform.rotation.array());
+
+        let blender_lower = Vec3 {
+            x: -0.5,
+            y: -0.25,
+            z: -1.0,
+        };
+        let blender_upper = Vec3 {
+            x: 0.75,
+            y: 0.5,
+            z: 1.25,
+        };
+        assert_eq!(
+            blender_upper.mmd_angular_basis().array(),
+            [-0.75, -1.25, -0.5]
+        );
+        assert_eq!(
+            blender_lower.mmd_angular_basis().array(),
+            [0.5, 1.0, 0.25]
+        );
     }
 }

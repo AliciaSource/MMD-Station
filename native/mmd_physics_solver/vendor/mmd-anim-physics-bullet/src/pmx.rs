@@ -12,6 +12,11 @@ use crate::RigidBodyShape;
 use crate::{
     BulletError, BulletWorld, RigidBodyDesc, RigidBodyHandle, SixDofSpringJointDesc, Transform,
 };
+use glam::{EulerRot, Quat};
+
+fn quaternion_from_euler_xyz(rotation: [f32; 3]) -> [f32; 4] {
+    Quat::from_euler(EulerRot::ZYX, rotation[2], rotation[1], rotation[0]).to_array()
+}
 
 #[derive(Debug, Error)]
 pub enum PmxBulletBuildError {
@@ -353,7 +358,7 @@ fn rigidbody_desc_from_pmx(
     Ok(RigidBodyDesc {
         shape,
         position: body.position,
-        rotation_euler: body.rotation,
+        rotation_xyzw: quaternion_from_euler_xyz(body.rotation),
         mass: if body.mode == "static" {
             0.0
         } else {
@@ -426,7 +431,7 @@ fn joint_desc_from_descriptor(
         rigidbody_a,
         rigidbody_b,
         position: joint.position,
-        rotation_euler: joint.rotation_euler,
+        rotation_xyzw: quaternion_from_euler_xyz(joint.rotation_euler),
         translation_lower_limit: joint.translation_lower_limit,
         translation_upper_limit: joint.translation_upper_limit,
         rotation_lower_limit: joint.rotation_lower_limit,
@@ -614,7 +619,10 @@ mod tests {
         assert_eq!(desc.rigidbody_a, body_a);
         assert_eq!(desc.rigidbody_b, body_b);
         assert_eq!(desc.position, joint.position);
-        assert_eq!(desc.rotation_euler, joint.rotation);
+        assert_eq!(
+            desc.rotation_xyzw,
+            quaternion_from_euler_xyz(joint.rotation)
+        );
         assert_eq!(desc.translation_lower_limit, joint.translation_lower_limit);
         assert_eq!(desc.translation_upper_limit, joint.translation_upper_limit);
         assert_eq!(desc.rotation_lower_limit, joint.rotation_lower_limit);

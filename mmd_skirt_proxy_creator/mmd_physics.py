@@ -19,8 +19,9 @@ from bpy.types import Menu, Operator, PropertyGroup, UIList
 from mathutils import Euler, Matrix, Vector
 
 from .bone_physics_creator import draw as draw_bone_physics_creator
-from .core import ProxyBuildError, bone_name
+from .core import ProxyBuildError, proxy_bone_name
 from .mmd_ordering import draw as draw_mmd_ordering
+from .mirror_physics import CLASSES as MIRROR_PHYSICS_CLASSES, draw_mirror_tools
 
 
 PHYSICS_SCHEMA = 1
@@ -91,6 +92,16 @@ JOINT_INTERPOLATION_NAMES = (
     "horizontal_spring_angular",
 )
 
+ADAPTIVE_SCALAR_NAMES = RIGID_INTERPOLATED_NAMES + tuple(
+    f"{name}_end" for name in RIGID_INTERPOLATED_NAMES
+)
+ADAPTIVE_VECTOR_NAMES = JOINT_VECTOR_NAMES + tuple(
+    f"{name}_end" for name in JOINT_VECTOR_NAMES
+)
+ANGLE_VECTOR_NAMES = {
+    name for name in ADAPTIVE_VECTOR_NAMES if "limit_angular" in name
+}
+
 PHYSICS_SETTING_NAMES += tuple(
     name
     for base_name in RIGID_INTERPOLATED_NAMES
@@ -108,6 +119,74 @@ PHYSICS_SETTING_NAMES += (
 )
 
 PHYSICS_PRESET_SUBDIR = "mmd_skirt_proxy_creator/physics"
+AUTO_RIGID_WIDTH_HALF_SPAN = 0.55
+AUTO_RIGID_LENGTH_SPAN = 1.10
+AUTO_RIGID_DEPTH_SPAN = 0.20
+
+
+def _adaptive_number_text(value, angle=False):
+    numeric = math.degrees(value) if angle else float(value)
+    if abs(numeric) < 0.00005:
+        numeric = 0.0
+    text = f"{numeric:.4f}".rstrip("0").rstrip(".")
+    if "." not in text:
+        text += ".00"
+    else:
+        decimals = len(text.rsplit(".", 1)[1])
+        if decimals < 2:
+            text += "0" * (2 - decimals)
+    return f"{text}°" if angle else text
+
+
+def _adaptive_number_value(text, angle=False):
+    cleaned = str(text).strip().removesuffix("°").strip().replace(",", ".")
+    numeric = float(cleaned)
+    return math.radians(numeric) if angle else numeric
+
+
+def _adaptive_scalar_property_name(name):
+    return f"adaptive_number_{name}"
+
+
+def _adaptive_vector_property_name(name, index):
+    return f"adaptive_number_{name}_{index}"
+
+
+def _adaptive_scalar_getter(name):
+    def getter(settings):
+        return _adaptive_number_text(getattr(settings, name))
+
+    return getter
+
+
+def _adaptive_scalar_setter(name):
+    def setter(settings, text):
+        try:
+            setattr(settings, name, _adaptive_number_value(text))
+        except ValueError:
+            pass
+
+    return setter
+
+
+def _adaptive_vector_getter(name, index, angle):
+    def getter(settings):
+        return _adaptive_number_text(getattr(settings, name)[index], angle=angle)
+
+    return getter
+
+
+def _adaptive_vector_setter(name, index, angle):
+    def setter(settings, text):
+        try:
+            value = _adaptive_number_value(text, angle=angle)
+        except ValueError:
+            return
+        values = list(getattr(settings, name))
+        values[index] = value
+        setattr(settings, name, values)
+
+    return setter
 
 
 def _mmd_api():
@@ -138,7 +217,7 @@ def _proxy_structure(proxy_object, armature):
     prefix = str(proxy_object.get("surface_proxy_prefix", ""))
     row_counts = list(proxy_object.get("surface_proxy_column_rows", []))
     expected = {
-        bone_name(prefix, column, row)
+        proxy_bone_name(proxy_object, prefix, column, row)
         for column, count in enumerate(row_counts)
         for row in range(count - 1)
     }
@@ -237,11 +316,105 @@ def _resolve_root(context, requested_root=None, proxy_object=None):
     raise ProxyBuildError("找不到 MMD 模型根对象；请在查看面板中指定模型")
 
 
+def _assigned_to_other_proxy(obj, proxy_object, proxy_id):
+    if obj.get("surface_proxy_physics_schema") != PHYSICS_SCHEMA:
+        return False
+    assigned_id = str(obj.get("surface_proxy_physics_id", ""))
+    assigned_name = str(obj.get("surface_proxy_object", ""))
+    return (assigned_id and assigned_id != proxy_id) or (
+        assigned_name and assigned_name != proxy_object.name
+    )
+
+
+def associate_existing_proxy_physics(proxy_object):
+    exact_names = list(proxy_object.get("surface_proxy_bone_names", []))
+    if not exact_names:
+        return 0, 0
+    proxy_id = str(proxy_object.get("surface_proxy_physics_id", ""))
+    if not proxy_id:
+        proxy_id = uuid.uuid4().hex
+        proxy_object["surface_proxy_physics_id"] = proxy_id
+    armature = _proxy_armature(proxy_object)
+    prefix, row_counts = _proxy_structure(proxy_object, armature)
+    slots_by_bone = {
+        proxy_bone_name(proxy_object, prefix, column, row): (column, row)
+        for column, count in enumerate(row_counts)
+        for row in range(count - 1)
+    }
+    FnModel, _FnRigidBody, _rigid_module = _mmd_api()
+    root = FnModel.find_root_object(armature)
+    if root is None:
+        return 0, 0
+    proxy_object["surface_proxy_mmd_root"] = root.name
+
+    rigid_slots = {}
+    for rigid in FnModel.iterate_rigid_body_objects(root):
+        if _assigned_to_other_proxy(rigid, proxy_object, proxy_id):
+            continue
+        slot = slots_by_bone.get(str(getattr(rigid.mmd_rigid, "bone", "")))
+        if slot is None:
+            continue
+        _mark_physics_object(rigid, proxy_object, "RIGID", slot[0], slot[1])
+        rigid_slots[rigid] = slot
+
+    closed = bool(proxy_object.get("surface_proxy_closed", True))
+    column_groups = _column_groups(proxy_object, len(row_counts))
+    horizontal_pairs = set(_column_pairs(column_groups, closed))
+    joint_count = 0
+    for joint in FnModel.iterate_joint_objects(root):
+        if _assigned_to_other_proxy(joint, proxy_object, proxy_id):
+            continue
+        constraint = joint.rigid_body_constraint
+        if constraint is None:
+            continue
+        rigid_a = constraint.object1
+        rigid_b = constraint.object2
+        slot_a = rigid_slots.get(rigid_a)
+        slot_b = rigid_slots.get(rigid_b)
+        role = ""
+        column = -1
+        row = -1
+        following = -1
+        if slot_a is not None and slot_b is not None:
+            if slot_a[0] == slot_b[0] and abs(slot_a[1] - slot_b[1]) == 1:
+                role = "JOINT_VERTICAL"
+                column = slot_a[0]
+                row = max(slot_a[1], slot_b[1])
+            elif slot_a[1] == slot_b[1]:
+                if (slot_a[0], slot_b[0]) in horizontal_pairs:
+                    column, following = slot_a[0], slot_b[0]
+                elif (slot_b[0], slot_a[0]) in horizontal_pairs:
+                    column, following = slot_b[0], slot_a[0]
+                if following >= 0:
+                    role = "JOINT_HORIZONTAL"
+                    row = slot_a[1]
+        elif slot_a is not None or slot_b is not None:
+            slot = slot_a if slot_a is not None else slot_b
+            other = rigid_b if slot_a is not None else rigid_a
+            if slot[1] == 0 and other is not None:
+                top_name = proxy_bone_name(proxy_object, prefix, slot[0], 0)
+                top_bone = armature.data.bones.get(top_name)
+                other_bone = str(getattr(other.mmd_rigid, "bone", ""))
+                if top_bone is not None and top_bone.parent is not None:
+                    if other_bone == top_bone.parent.name:
+                        role = "JOINT_ANCHOR"
+                        column = slot[0]
+                        row = 0
+        if not role:
+            continue
+        _mark_physics_object(joint, proxy_object, role, column, row)
+        if role == "JOINT_HORIZONTAL":
+            joint["surface_proxy_following_column"] = following
+        joint_count += 1
+    return len(rigid_slots), joint_count
+
+
 def _proxy_physics_objects(proxy_object):
     proxy_id = str(proxy_object.get("surface_proxy_physics_id", ""))
     if not proxy_id:
         proxy_id = uuid.uuid4().hex
         proxy_object["surface_proxy_physics_id"] = proxy_id
+    associate_existing_proxy_physics(proxy_object)
     result = []
     for obj in bpy.data.objects:
         if obj.get("surface_proxy_physics_schema") != PHYSICS_SCHEMA:
@@ -262,11 +435,10 @@ def _proxy_grid(proxy_object, armature, row_counts):
     for column, count in enumerate(row_counts):
         points = []
         for row in range(count - 1):
-            bone = armature.data.bones.get(bone_name(prefix, column, row))
+            name = proxy_bone_name(proxy_object, prefix, column, row)
+            bone = armature.data.bones.get(name)
             if bone is None:
-                raise ProxyBuildError(
-                    f"缺少代理骨骼：{bone_name(prefix, column, row)}"
-                )
+                raise ProxyBuildError(f"缺少代理骨骼：{name}")
             points.append(bone.head_local.copy())
         points.append(bone.tail_local.copy())
         grid.append(points)
@@ -280,7 +452,66 @@ def _segment_index(column, factor):
     )
 
 
-def _segment_geometry(grid, column, row, closed):
+def _column_groups(proxy_object, column_count):
+    groups = list(proxy_object.get("surface_proxy_column_groups", []))
+    return groups if len(groups) == column_count else [0] * column_count
+
+
+def _group_columns(column_groups, column):
+    group = column_groups[column]
+    return [index for index, value in enumerate(column_groups) if value == group]
+
+
+def _column_pairs(column_groups, closed):
+    pairs = []
+    for group in dict.fromkeys(column_groups):
+        columns = [index for index, value in enumerate(column_groups) if value == group]
+        pairs.extend(zip(columns, columns[1:]))
+        if closed and len(columns) > 2:
+            pairs.append((columns[-1], columns[0]))
+    return pairs
+
+
+def _following_column(column_groups, column, closed):
+    columns = _group_columns(column_groups, column)
+    position = columns.index(column)
+    if position + 1 < len(columns):
+        return columns[position + 1]
+    return columns[0] if closed and len(columns) > 2 else -1
+
+
+def _horizontal_joint_location(grid, column, following, row):
+    return (
+        grid[column][row]
+        + grid[column][row + 1]
+        + grid[following][row]
+        + grid[following][row + 1]
+    ) * 0.25
+
+
+def _joint_names_from_rigid_b(rigid_b, role):
+    name_j = rigid_b.mmd_rigid.name_j.strip() or rigid_b.name
+    name_e = rigid_b.mmd_rigid.name_e.strip() or name_j
+    if role == "JOINT_HORIZONTAL":
+        name_j = f"{name_j}_H"
+        name_e = f"{name_e}_H"
+    return name_j, name_e
+
+
+def _sync_joint_name_from_rigid_b(joint):
+    constraint = joint.rigid_body_constraint
+    rigid_b = constraint.object2 if constraint is not None else None
+    if rigid_b is None or rigid_b.mmd_type != "RIGID_BODY":
+        return False
+    role = str(joint.get("surface_proxy_role", ""))
+    name_j, name_e = _joint_names_from_rigid_b(rigid_b, role)
+    joint.name = f"J.{name_j}"
+    joint.mmd_joint.name_j = name_j
+    joint.mmd_joint.name_e = name_e
+    return True
+
+
+def _segment_geometry(grid, column, row, closed, column_groups=None):
     points = grid[column]
     head = points[row]
     tail = points[row + 1]
@@ -291,14 +522,21 @@ def _segment_geometry(grid, column, row, closed):
         raise ProxyBuildError(f"代理第 {column + 1} 列第 {row + 1} 段长度为零")
     vertical.normalize()
 
-    column_count = len(grid)
+    column_groups = column_groups or [0] * len(grid)
+    group_columns = _group_columns(column_groups, column)
     factor = row / max(len(points) - 2, 1)
     neighbours = []
-    if closed and column_count > 2:
-        neighbour_indices = ((column - 1) % column_count, (column + 1) % column_count)
+    position = group_columns.index(column)
+    if closed and len(group_columns) > 2:
+        neighbour_indices = (
+            group_columns[(position - 1) % len(group_columns)],
+            group_columns[(position + 1) % len(group_columns)],
+        )
     else:
         neighbour_indices = tuple(
-            index for index in (column - 1, column + 1) if 0 <= index < column_count
+            group_columns[index]
+            for index in (position - 1, position + 1)
+            if 0 <= index < len(group_columns)
         )
     for neighbour in neighbour_indices:
         neighbour_row = _segment_index(grid[neighbour], factor)
@@ -327,7 +565,8 @@ def _segment_geometry(grid, column, row, closed):
     normal.normalize()
 
     layer_midpoints = []
-    for candidate in grid:
+    for candidate_index in group_columns:
+        candidate = grid[candidate_index]
         candidate_row = _segment_index(candidate, factor)
         layer_midpoints.append(
             (candidate[candidate_row] + candidate[candidate_row + 1]) * 0.5
@@ -341,14 +580,12 @@ def _segment_geometry(grid, column, row, closed):
         tangent.negate()
 
     widths = [(neighbour_midpoint - midpoint).length for _index, neighbour_midpoint in neighbours]
-    if len(widths) == 2:
-        width = (widths[0] + widths[1]) * 0.5
-    elif widths:
-        width = widths[0]
+    if widths:
+        width = max(widths)
     else:
         width = length * 0.7
     width = max(width, length * 0.05, 0.001)
-    depth = max(min(width, length) * 0.16, 0.001)
+    depth = max(min(width, length) * AUTO_RIGID_DEPTH_SPAN, 0.001)
     rotation = Matrix((tangent, normal, vertical)).transposed().to_euler("YXZ")
     return {
         "head": head,
@@ -386,12 +623,12 @@ def _rigid_size(shape, geometry, source, factor):
     radius = (
         bone_length * radius_ratio * radius_scale
         if radius_ratio > 1.0e-8
-        else geometry["width"] * 0.48
+        else geometry["width"] * AUTO_RIGID_WIDTH_HALF_SPAN
     )
     length = (
         bone_length * length_ratio * length_scale
         if length_ratio > 1.0e-8
-        else geometry["length"] * 0.96
+        else geometry["length"] * AUTO_RIGID_LENGTH_SPAN
     )
     depth = (
         bone_length * depth_ratio
@@ -467,17 +704,17 @@ def _apply_stable_long_skirt_preset(settings):
     settings.body_rigid_type = "1"
     settings.rigid_radius_ratio = 0.0
     settings.rigid_length_ratio = 0.0
-    settings.rigid_depth_ratio = 0.0
+    settings.rigid_depth_ratio = 0.15
     settings.rigid_radius_multiply = False
     settings.rigid_length_multiply = False
 
     scalar_values = {
         "rigid_radius_ratio": (False, 0.0),
         "rigid_length_ratio": (False, 0.0),
-        "rigid_depth_ratio": (False, 0.0),
-        "mass": (True, 0.5),
-        "linear_damping": (True, 0.98),
-        "angular_damping": (True, 0.98),
+        "rigid_depth_ratio": (True, 0.5),
+        "mass": (True, 0.4),
+        "linear_damping": (True, 0.99),
+        "angular_damping": (True, 0.99),
         "restitution": (False, 0.0),
         "friction": (False, 0.3),
     }
@@ -486,6 +723,10 @@ def _apply_stable_long_skirt_preset(settings):
     settings.angular_damping = 0.995
     settings.restitution = 0.0
     settings.friction = 0.3
+    settings.collision_group_number = 5
+    collision_mask = [False] * 16
+    collision_mask[5] = True
+    settings.collision_group_mask = collision_mask
     for name, (interpolate, end) in scalar_values.items():
         setattr(settings, f"{name}_interpolate", interpolate)
         setattr(settings, f"{name}_end", end)
@@ -495,23 +736,23 @@ def _apply_stable_long_skirt_preset(settings):
         "limit_linear_lower": (0.0, 0.0, 0.0),
         "limit_linear_upper": (0.0, 0.0, 0.0),
         "limit_angular_lower": tuple(
-            math.radians(value) for value in (-8.0, -3.0, -3.0)
+            math.radians(value) for value in (-8.0, 0.0, 0.0)
         ),
         "limit_angular_upper": tuple(
-            math.radians(value) for value in (3.0, 3.0, 3.0)
+            math.radians(value) for value in (8.0, 0.0, 0.0)
         ),
         "spring_linear": (0.0, 800.0, 0.0),
         "spring_angular": (12.0, 5.0, 5.0),
         "horizontal_limit_linear_lower": (0.0, 0.0, 0.0),
-        "horizontal_limit_linear_upper": (0.0, 0.0, 0.0),
+        "horizontal_limit_linear_upper": (0.02, 0.0, 0.0),
         "horizontal_limit_angular_lower": tuple(
-            math.radians(value) for value in (-4.0, -3.0, -5.0)
+            math.radians(value) for value in (-10.0, -3.0, -5.0)
         ),
         "horizontal_limit_angular_upper": tuple(
-            math.radians(value) for value in (4.0, 3.0, 5.0)
+            math.radians(value) for value in (10.0, 3.0, 5.0)
         ),
-        "horizontal_spring_linear": (300.0, 80.0, 150.0),
-        "horizontal_spring_angular": (3.0, 1.5, 4.0),
+        "horizontal_spring_linear": (120.0, 0.0, 0.0),
+        "horizontal_spring_angular": (0.8, 1.5, 4.0),
     }
     joint_end_values = {
         "limit_linear_lower": (0.0, 0.0, 0.0),
@@ -520,32 +761,32 @@ def _apply_stable_long_skirt_preset(settings):
             math.radians(value) for value in (-18.0, -7.0, -7.0)
         ),
         "limit_angular_upper": tuple(
-            math.radians(value) for value in (8.0, 7.0, 7.0)
+            math.radians(value) for value in (18.0, 7.0, 7.0)
         ),
         "spring_linear": (0.0, 250.0, 0.0),
         "spring_angular": (4.0, 2.0, 2.0),
         "horizontal_limit_linear_lower": (0.0, 0.0, 0.0),
-        "horizontal_limit_linear_upper": (0.0, 0.0, 0.0),
+        "horizontal_limit_linear_upper": (0.03, 0.0, 0.0),
         "horizontal_limit_angular_lower": tuple(
-            math.radians(value) for value in (-8.0, -5.0, -12.0)
+            math.radians(value) for value in (-18.0, -5.0, -12.0)
         ),
         "horizontal_limit_angular_upper": tuple(
-            math.radians(value) for value in (8.0, 5.0, 12.0)
+            math.radians(value) for value in (18.0, 5.0, 12.0)
         ),
-        "horizontal_spring_linear": (120.0, 30.0, 60.0),
-        "horizontal_spring_angular": (1.0, 0.5, 1.5),
+        "horizontal_spring_linear": (40.0, 0.0, 0.0),
+        "horizontal_spring_angular": (0.25, 0.5, 1.5),
     }
     for name, value in joint_values.items():
         setattr(settings, name, value)
         setattr(settings, f"{name}_end", joint_end_values[name])
     joint_interpolation = {
         "limit_linear": (False, False, False),
-        "limit_angular": (True, True, True),
+        "limit_angular": (True, False, False),
         "spring_linear": (False, True, False),
         "spring_angular": (True, True, True),
-        "horizontal_limit_linear": (False, False, False),
+        "horizontal_limit_linear": (True, False, False),
         "horizontal_limit_angular": (True, True, True),
-        "horizontal_spring_linear": (True, True, True),
+        "horizontal_spring_linear": (True, False, False),
         "horizontal_spring_angular": (True, True, True),
     }
     for name, value in joint_interpolation.items():
@@ -561,7 +802,7 @@ def _mark_physics_object(obj, proxy_object, role, column, row):
     obj["surface_proxy_row"] = row
 
 
-def _anchor_rigid_map(armature, prefix, row_counts, grid, rigid_objects):
+def _anchor_rigid_map(proxy_object, armature, prefix, row_counts, grid, rigid_objects):
     rigids_by_bone = {}
     for rigid in rigid_objects:
         bone_name_value = str(getattr(rigid.mmd_rigid, "bone", ""))
@@ -570,7 +811,9 @@ def _anchor_rigid_map(armature, prefix, row_counts, grid, rigid_objects):
 
     anchors = {}
     for column in range(len(row_counts)):
-        top_bone = armature.data.bones.get(bone_name(prefix, column, 0))
+        top_bone = armature.data.bones.get(
+            proxy_bone_name(proxy_object, prefix, column, 0)
+        )
         if top_bone is None or top_bone.parent is None:
             continue
         candidates = rigids_by_bone.get(top_bone.parent.name, [])
@@ -599,8 +842,6 @@ def create_proxy_physics(context, proxy_object, settings):
     if FnModel.find_armature_object(root) != armature:
         raise ProxyBuildError("代理 Armature 不属于指定的 MMD 模型")
     existing = _proxy_physics_objects(proxy_object)
-    if existing:
-        raise ProxyBuildError("该代理已经生成刚体和 Joint；请使用“应用参数”更新")
 
     rigid_group = FnModel.ensure_rigid_group_object(context, root)
     joint_group = FnModel.ensure_joint_group_object(context, root)
@@ -609,7 +850,9 @@ def create_proxy_physics(context, proxy_object, settings):
     mask = list(settings.collision_group_mask)
     closed = bool(proxy_object.get("surface_proxy_closed", True))
     grid = _proxy_grid(proxy_object, armature, row_counts)
+    column_groups = _column_groups(proxy_object, len(row_counts))
     anchor_map = _anchor_rigid_map(
+        proxy_object,
         armature,
         prefix,
         row_counts,
@@ -620,7 +863,7 @@ def create_proxy_physics(context, proxy_object, settings):
         rigid_descriptors = []
         for column, point_count in enumerate(row_counts):
             for row in range(point_count - 1):
-                name = bone_name(prefix, column, row)
+                name = proxy_bone_name(proxy_object, prefix, column, row)
                 bone = armature.data.bones.get(name)
                 if bone is None:
                     raise ProxyBuildError(f"缺少代理骨骼：{name}")
@@ -630,7 +873,9 @@ def create_proxy_physics(context, proxy_object, settings):
                         column,
                         row,
                         name,
-                        _segment_geometry(grid, column, row, closed),
+                        _segment_geometry(
+                            grid, column, row, closed, column_groups
+                        ),
                         factor,
                         int(settings.top_rigid_type)
                         if row == 0
@@ -674,7 +919,9 @@ def create_proxy_physics(context, proxy_object, settings):
 
         joint_descriptors = []
         for column, anchor_rigid in anchor_map.items():
-            geometry = _segment_geometry(grid, column, 0, closed)
+            geometry = _segment_geometry(
+                grid, column, 0, closed, column_groups
+            )
             joint_descriptors.append(
                 (
                     "JOINT_ANCHOR",
@@ -689,7 +936,9 @@ def create_proxy_physics(context, proxy_object, settings):
             )
         for column, point_count in enumerate(row_counts):
             for row in range(1, point_count - 1):
-                geometry = _segment_geometry(grid, column, row, closed)
+                geometry = _segment_geometry(
+                    grid, column, row, closed, column_groups
+                )
                 joint_descriptors.append(
                     (
                         "JOINT_VERTICAL",
@@ -704,13 +953,12 @@ def create_proxy_physics(context, proxy_object, settings):
                 )
 
         if settings.create_horizontal_joints:
-            column_count = len(row_counts)
-            pair_count = column_count if closed and column_count > 2 else max(column_count - 1, 0)
-            for column in range(pair_count):
-                following = (column + 1) % column_count
+            for column, following in _column_pairs(column_groups, closed):
                 shared_bones = min(row_counts[column], row_counts[following]) - 1
-                for row in range(1, shared_bones):
-                    geometry = _segment_geometry(grid, column, row, closed)
+                for row in range(shared_bones):
+                    geometry = _segment_geometry(
+                        grid, column, row, closed, column_groups
+                    )
                     joint_descriptors.append(
                         (
                             "JOINT_HORIZONTAL",
@@ -718,9 +966,9 @@ def create_proxy_physics(context, proxy_object, settings):
                             row,
                             rigid_map[(column, row)],
                             rigid_map[(following, row)],
-                            (grid[column][row] + grid[following][row]) * 0.5,
+                            _horizontal_joint_location(grid, column, following, row),
                             geometry["rotation"],
-                            _joint_interpolation_factor(row, row_counts),
+                            _rigid_interpolation_factor(row, row_counts),
                         )
                     )
 
@@ -734,11 +982,11 @@ def create_proxy_physics(context, proxy_object, settings):
         for joint, descriptor in zip(joint_objects, joint_descriptors):
             role, column, row, rigid_a, rigid_b, location, rotation, factor = descriptor
             joint_args = _joint_vectors(settings, role, factor)
-            joint_name = f"{prefix}_{role}_C{column + 1:02d}_R{row + 1:02d}"
+            joint_name, joint_name_e = _joint_names_from_rigid_b(rigid_b, role)
             joint = FnRigidBody.setup_joint_object(
                 obj=joint,
                 name=joint_name,
-                name_e=joint_name,
+                name_e=joint_name_e,
                 location=location,
                 rotation=rotation,
                 rigid_a=rigid_a,
@@ -751,11 +999,19 @@ def create_proxy_physics(context, proxy_object, settings):
                 spring_linear=joint_args[5],
             )
             _mark_physics_object(joint, proxy_object, role, column, row)
+            if role == "JOINT_HORIZONTAL":
+                joint["surface_proxy_following_column"] = int(
+                    rigid_b["surface_proxy_column"]
+                )
     except Exception:
         for obj in reversed(created):
             if obj.name in bpy.data.objects:
                 bpy.data.objects.remove(obj, do_unlink=True)
         raise
+
+    for obj in sorted(existing, key=lambda item: item.mmd_type != "JOINT"):
+        if obj.name in bpy.data.objects:
+            bpy.data.objects.remove(obj, do_unlink=True)
 
     proxy_object["surface_proxy_mmd_root"] = root.name
     _save_proxy_physics_settings(proxy_object, settings)
@@ -780,6 +1036,7 @@ def update_proxy_physics(context, proxy_object, settings):
         raise ProxyBuildError("该代理尚未生成刚体和 Joint")
     closed = bool(proxy_object.get("surface_proxy_closed", True))
     grid = _proxy_grid(proxy_object, armature, row_counts)
+    column_groups = _column_groups(proxy_object, len(row_counts))
     rigid_count = 0
     joint_count = 0
     for obj in objects:
@@ -788,10 +1045,12 @@ def update_proxy_physics(context, proxy_object, settings):
         row = int(obj.get("surface_proxy_row", -1))
         if role == "RIGID":
             factor = _rigid_interpolation_factor(row, row_counts)
-            name = bone_name(prefix, column, row)
+            name = proxy_bone_name(proxy_object, prefix, column, row)
             if armature.data.bones.get(name) is None:
                 raise ProxyBuildError(f"缺少代理骨骼：{name}")
-            geometry = _segment_geometry(grid, column, row, closed)
+            geometry = _segment_geometry(
+                grid, column, row, closed, column_groups
+            )
             obj.location = geometry["location"]
             obj.rotation_euler = geometry["rotation"]
             obj.mmd_rigid.shape = settings.rigid_shape
@@ -829,35 +1088,39 @@ def update_proxy_physics(context, proxy_object, settings):
                 )
             else:
                 closed = bool(proxy_object.get("surface_proxy_closed", True))
-                following = (
-                    (column + 1) % len(row_counts)
-                    if closed
-                    else column + 1
+                following = int(
+                    obj.get(
+                        "surface_proxy_following_column",
+                        _following_column(column_groups, column, closed),
+                    )
                 )
-                if following >= len(row_counts):
+                if following < 0 or following >= len(row_counts):
                     continue
-                factor = _joint_interpolation_factor(row, row_counts)
+                factor = _rigid_interpolation_factor(row, row_counts)
             joint_args = _joint_vectors(settings, role, factor)
             constraint = obj.rigid_body_constraint
             if role in {"JOINT_ANCHOR", "JOINT_VERTICAL"}:
-                name = bone_name(
-                    prefix,
-                    column,
-                    row,
-                )
+                name = proxy_bone_name(proxy_object, prefix, column, row)
                 if armature.data.bones.get(name) is None:
                     raise ProxyBuildError(f"缺少代理骨骼：{name}")
-                geometry = _segment_geometry(grid, column, row, closed)
+                geometry = _segment_geometry(
+                    grid, column, row, closed, column_groups
+                )
                 obj.location = grid[column][row]
                 obj.rotation_euler = geometry["rotation"]
             elif constraint.object1 is not None and constraint.object2 is not None:
-                following = (
-                    (column + 1) % len(row_counts)
-                    if closed
-                    else column + 1
+                following = int(
+                    obj.get(
+                        "surface_proxy_following_column",
+                        _following_column(column_groups, column, closed),
+                    )
                 )
-                geometry = _segment_geometry(grid, column, row, closed)
-                obj.location = (grid[column][row] + grid[following][row]) * 0.5
+                geometry = _segment_geometry(
+                    grid, column, row, closed, column_groups
+                )
+                obj.location = _horizontal_joint_location(
+                    grid, column, following, row
+                )
                 obj.rotation_euler = geometry["rotation"]
             for axis, upper, lower in zip(
                 "xyz", joint_args[0], joint_args[1]
@@ -884,6 +1147,7 @@ def sync_proxy_physics_transforms(proxy_object):
         return 0, 0
     closed = bool(proxy_object.get("surface_proxy_closed", True))
     grid = _proxy_grid(proxy_object, armature, row_counts)
+    column_groups = _column_groups(proxy_object, len(row_counts))
     rigid_count = 0
     joint_count = 0
     joints = []
@@ -892,13 +1156,13 @@ def sync_proxy_physics_transforms(proxy_object):
         column = int(obj.get("surface_proxy_column", -1))
         row = int(obj.get("surface_proxy_row", -1))
         if role == "RIGID":
-            name = bone_name(prefix, column, row)
+            name = proxy_bone_name(proxy_object, prefix, column, row)
             bone = armature.data.bones.get(name)
             if bone is None:
                 raise ProxyBuildError(f"缺少代理骨骼：{name}")
-            geometry = _segment_geometry(grid, column, row, closed)
-            factor = _rigid_interpolation_factor(row, row_counts)
-            size = _rigid_size(obj.mmd_rigid.shape, geometry, proxy_object, factor)
+            geometry = _segment_geometry(
+                grid, column, row, closed, column_groups
+            )
             if (obj.location - geometry["location"]).length > 1.0e-8:
                 obj.location = geometry["location"]
             if any(
@@ -906,34 +1170,32 @@ def sync_proxy_physics_transforms(proxy_object):
                 for first, second in zip(obj.rotation_euler, geometry["rotation"])
             ):
                 obj.rotation_euler = geometry["rotation"]
-            if (Vector(obj.mmd_rigid.size) - size).length > 1.0e-8:
-                obj.mmd_rigid.size = size
-            if abs(float(obj.get("surface_proxy_bone_length", 0.0)) - geometry["length"]) > 1.0e-8:
-                obj["surface_proxy_bone_length"] = geometry["length"]
-            stored_normal = Vector(obj.get("surface_proxy_normal", geometry["normal"]))
-            if (stored_normal - geometry["normal"]).length > 1.0e-8:
-                obj["surface_proxy_normal"] = list(geometry["normal"])
             rigid_count += 1
         elif role.startswith("JOINT_"):
             joints.append((obj, role, column, row))
     for obj, role, column, row in joints:
         if role in {"JOINT_ANCHOR", "JOINT_VERTICAL"}:
-            name = bone_name(prefix, column, row)
+            name = proxy_bone_name(proxy_object, prefix, column, row)
             bone = armature.data.bones.get(name)
             if bone is None:
                 raise ProxyBuildError(f"缺少代理骨骼：{name}")
-            geometry = _segment_geometry(grid, column, row, closed)
+            geometry = _segment_geometry(
+                grid, column, row, closed, column_groups
+            )
             location = grid[column][row]
         else:
-            following = (
-                (column + 1) % len(row_counts)
-                if closed
-                else column + 1
+            following = int(
+                obj.get(
+                    "surface_proxy_following_column",
+                    _following_column(column_groups, column, closed),
+                )
             )
-            if following >= len(row_counts):
+            if following < 0 or following >= len(row_counts):
                 continue
-            geometry = _segment_geometry(grid, column, row, closed)
-            location = (grid[column][row] + grid[following][row]) * 0.5
+            geometry = _segment_geometry(
+                grid, column, row, closed, column_groups
+            )
+            location = _horizontal_joint_location(grid, column, following, row)
         if (obj.location - location).length > 1.0e-8:
             obj.location = location
         if any(
@@ -998,20 +1260,24 @@ class SPX_UL_MMDItems(UIList):
 class SPX_OT_CreateMMDPhysics(Operator):
     bl_idname = "surface_proxy.create_mmd_physics"
     bl_label = "生成 MMD 刚体和 Joint"
+    bl_description = "按当前参数生成物理；当前代理已有物理时，重建其刚体和 Joint"
     bl_options = {"REGISTER", "UNDO"}
 
     def execute(self, context):
         try:
             settings = context.scene.surface_proxy_creator
+            proxy_object = _selected_proxy(context, settings)
+            rebuilt = bool(_proxy_physics_objects(proxy_object))
             rigid_count, joint_count = create_proxy_physics(
                 context,
-                _selected_proxy(context, settings),
+                proxy_object,
                 settings,
             )
         except (ProxyBuildError, RuntimeError, ValueError) as error:
             self.report({"ERROR"}, str(error))
             return {"CANCELLED"}
-        self.report({"INFO"}, f"已创建 {rigid_count} 个刚体、{joint_count} 个 Joint")
+        action = "已重建" if rebuilt else "已创建"
+        self.report({"INFO"}, f"{action} {rigid_count} 个刚体、{joint_count} 个 Joint")
         return {"FINISHED"}
 
 
@@ -1091,7 +1357,7 @@ class SPX_OT_UpdateMMDPhysics(Operator):
 class SPX_OT_SyncMMDPhysics(Operator):
     bl_idname = "surface_proxy.sync_mmd_physics"
     bl_label = "同步当前代理刚体和 Joint"
-    bl_description = "只按当前代理骨骼更新其关联刚体和 Joint 的位置、旋转与随骨长尺寸"
+    bl_description = "只按当前代理骨骼更新其关联刚体和 Joint 的位置与旋转，不修改形状、类型、尺寸或物理参数"
     bl_options = {"REGISTER", "UNDO"}
 
     def execute(self, context):
@@ -1141,7 +1407,7 @@ class SPX_OT_RefreshMMDBrowser(Operator):
                 self.report({"ERROR"}, str(error))
                 return {"CANCELLED"}
             proxy_bones = {
-                bone_name(prefix, column, row)
+                proxy_bone_name(proxy, prefix, column, row)
                 for column, count in enumerate(row_counts)
                 for row in range(count - 1)
             }
@@ -1183,7 +1449,10 @@ class SPX_OT_RefreshMMDBrowser(Operator):
                 item.kind = "RIGID"
                 item.target_name = rigid.name
                 item.label = rigid.mmd_rigid.name_j or rigid.name
-                item.detail = f"骨骼: {rigid.mmd_rigid.bone or '-'} | 组 {rigid.mmd_rigid.collision_group_number}"
+                item.detail = (
+                    f"骨骼: {rigid.mmd_rigid.bone or '-'} | "
+                    f"组 {int(rigid.mmd_rigid.collision_group_number) + 1}"
+                )
                 item.order_index = order_index
                 item.selected = (item.kind, item.target_name) in checked
         else:
@@ -1296,7 +1565,7 @@ class SPX_OT_QuickCheckMMDGroup(Operator):
     mode: EnumProperty(
         items=(
             ("PREFIX", "按名称前缀", ""),
-            ("BONE_BRANCH", "当前骨骼及子级", ""),
+            ("BONE_BRANCH", "已勾选骨骼及子级", ""),
             ("BONE_COLUMN", "同列骨骼", ""),
             ("RIGID_GROUP", "相同碰撞组", ""),
             ("RIGID_TYPE", "相同刚体类型", ""),
@@ -1321,15 +1590,29 @@ class SPX_OT_QuickCheckMMDGroup(Operator):
                 if item.label.startswith(prefix) or item.target_name.startswith(prefix)
             }
         elif self.mode == "BONE_BRANCH":
-            armature = bpy.data.objects.get(active.armature_name)
-            bone = armature.data.bones.get(active.target_name) if armature else None
-            if bone is None:
+            checked = [
+                item
+                for item in settings.browser_items
+                if item.kind == "BONE" and item.selected
+            ]
+            if not checked:
+                self.report({"ERROR"}, "请先勾选至少一根骨骼")
                 return {"CANCELLED"}
-            stack = [bone]
-            while stack:
-                current = stack.pop()
-                names.add(current.name)
-                stack.extend(current.children)
+            branch_keys = set()
+            for item in checked:
+                armature = bpy.data.objects.get(item.armature_name)
+                bone = armature.data.bones.get(item.target_name) if armature else None
+                if bone is None:
+                    continue
+                stack = [bone]
+                while stack:
+                    current = stack.pop()
+                    branch_keys.add((armature.name, current.name))
+                    stack.extend(current.children)
+            for item in settings.browser_items:
+                if (item.armature_name, item.target_name) in branch_keys:
+                    item.selected = True
+            return {"FINISHED"}
         elif self.mode == "BONE_COLUMN":
             match = re.match(r"^(.*_C\d+)_R\d+$", active.target_name)
             if match is None:
@@ -1411,7 +1694,7 @@ class SPX_MT_MMDQuickSelect(Menu):
         layout.operator(SPX_OT_QuickCheckMMDGroup.bl_idname, text="按名称前缀").mode = "PREFIX"
         layout.separator()
         if kind == "BONE":
-            layout.operator(SPX_OT_QuickCheckMMDGroup.bl_idname, text="当前骨骼及子级").mode = "BONE_BRANCH"
+            layout.operator(SPX_OT_QuickCheckMMDGroup.bl_idname, text="已勾选骨骼及子级").mode = "BONE_BRANCH"
             layout.operator(SPX_OT_QuickCheckMMDGroup.bl_idname, text="同列代理骨骼").mode = "BONE_COLUMN"
         elif kind == "RIGID":
             layout.operator(SPX_OT_QuickCheckMMDGroup.bl_idname, text="相同碰撞组").mode = "RIGID_GROUP"
@@ -1474,10 +1757,69 @@ class SPX_OT_SelectCheckedMMDItems(Operator):
         return {"FINISHED"}
 
 
+class SPX_OT_SyncSelectedMMDObjectsToBrowser(Operator):
+    bl_idname = "surface_proxy.sync_selected_mmd_objects_to_browser"
+    bl_label = "从 3D 视图同步选中项目"
+
+    def execute(self, context):
+        settings = context.scene.surface_proxy_creator
+        expected_type = {
+            "RIGID": "RIGID_BODY",
+            "JOINT": "JOINT",
+        }.get(settings.browser_kind)
+        if expected_type is None:
+            self.report({"ERROR"}, "该入口只处理刚体和 Joint")
+            return {"CANCELLED"}
+        selected_names = {
+            obj.name
+            for obj in context.selected_objects
+            if obj.mmd_type == expected_type
+        }
+        if not selected_names:
+            label = "刚体" if settings.browser_kind == "RIGID" else "Joint"
+            self.report({"ERROR"}, f"3D 视图中没有选中 {label}")
+            return {"CANCELLED"}
+        active = context.active_object
+        active_name = (
+            active.name
+            if active is not None and active.mmd_type == expected_type
+            else None
+        )
+        bpy.ops.surface_proxy.refresh_mmd_browser()
+        active_index = None
+        matched = 0
+        for index, item in enumerate(settings.browser_items):
+            item.selected = item.target_name in selected_names
+            if item.selected:
+                matched += 1
+            if item.target_name == active_name:
+                active_index = index
+        if active_index is not None:
+            settings.browser_index = active_index
+        count_label = "个刚体" if settings.browser_kind == "RIGID" else "个 Joint"
+        if matched != len(selected_names):
+            self.report(
+                {"WARNING"},
+                f"已同步 {matched}/{len(selected_names)} {count_label}；关闭“仅显示当前代理”可显示其余项目",
+            )
+        else:
+            self.report({"INFO"}, f"已同步 {matched} {count_label} 到查看器")
+        return {"FINISHED"}
+
+
+def _missing_mmd_bone_names(blender_name):
+    match = re.match(r"^(.*?)[._]([LR])$", blender_name)
+    if match is None:
+        return blender_name, blender_name
+    base_name, side = match.groups()
+    side_prefix = "左" if side == "L" else "右"
+    return f"{side_prefix}{base_name}", f"{base_name}_{side}"
+
+
 class SPX_OT_FillMissingMMDBoneNames(Operator):
     bl_idname = "surface_proxy.fill_missing_mmd_bone_names"
     bl_label = "补全空缺 MMD 名称"
-    bl_description = "用 Blender 骨骼名补全空缺的 MMD 名称和英文名称，不覆盖已有内容"
+    bl_description = "按 Blender 骨骼名及 .L/.R、_L/_R 侧向后缀补全空缺的 MMD 名称和英文名称，不覆盖已有内容"
     bl_options = {"REGISTER", "UNDO"}
 
     scope: EnumProperty(
@@ -1525,19 +1867,75 @@ class SPX_OT_FillMissingMMDBoneNames(Operator):
             pose_bone = armature.pose.bones.get(name)
             if pose_bone is None or not hasattr(pose_bone, "mmd_bone"):
                 continue
+            name_j, name_e = _missing_mmd_bone_names(pose_bone.name)
             changed = False
             if not pose_bone.mmd_bone.name_j.strip():
-                pose_bone.mmd_bone.name_j = pose_bone.name
+                pose_bone.mmd_bone.name_j = name_j
                 changed = True
                 changed_fields += 1
             if not pose_bone.mmd_bone.name_e.strip():
-                pose_bone.mmd_bone.name_e = pose_bone.name
+                pose_bone.mmd_bone.name_e = name_e
                 changed = True
                 changed_fields += 1
             changed_bones += int(changed)
         self.report(
             {"INFO"},
             f"已补全 {changed_bones} 根骨骼的 {changed_fields} 个空缺名称字段",
+        )
+        return {"FINISHED"}
+
+
+class SPX_OT_SyncJointNamesFromRigidB(Operator):
+    bl_idname = "surface_proxy.sync_joint_names_from_rigid_b"
+    bl_label = "同步刚体 B 名称到 Joint"
+    bl_description = "纵向和锚定 Joint 直接使用刚体 B 名称；横向 Joint 使用刚体 B 名称加 _H 后缀"
+    bl_options = {"REGISTER", "UNDO"}
+
+    scope: EnumProperty(
+        name="范围",
+        items=(
+            ("CHECKED", "勾选 Joint", "只处理查看器中已勾选的 Joint"),
+            ("ALL", "全部 Joint", "处理当前 MMD 模型的全部 Joint"),
+        ),
+        default="CHECKED",
+    )
+
+    def execute(self, context):
+        settings = context.scene.surface_proxy_creator
+        try:
+            root = _resolve_root(context, settings.mmd_root)
+            FnModel, _FnRigidBody, _rigid_module = _mmd_api()
+        except ProxyBuildError as error:
+            self.report({"ERROR"}, str(error))
+            return {"CANCELLED"}
+        if self.scope == "ALL":
+            joints = list(FnModel.iterate_joint_objects(root))
+        else:
+            joints = [
+                obj
+                for item in _checked_items(settings, "JOINT")
+                if (obj := bpy.data.objects.get(item.target_name)) is not None
+                and obj.mmd_type == "JOINT"
+            ]
+            if not joints:
+                self.report({"ERROR"}, "没有勾选 Joint")
+                return {"CANCELLED"}
+        changed = 0
+        skipped = 0
+        renamed = []
+        for joint in joints:
+            if _sync_joint_name_from_rigid_b(joint):
+                changed += 1
+                renamed.append(joint)
+            else:
+                skipped += 1
+        bpy.ops.surface_proxy.refresh_mmd_browser()
+        renamed_names = {joint.name for joint in renamed}
+        for item in settings.browser_items:
+            item.selected = item.target_name in renamed_names
+        self.report(
+            {"INFO"},
+            f"已同步 {changed} 个 Joint 名称；跳过 {skipped} 个缺少刚体 B 的 Joint",
         )
         return {"FINISHED"}
 
@@ -1722,6 +2120,26 @@ def _browser_kind_changed(settings, _context):
             pass
 
 
+def _get_collision_group_display(settings):
+    return int(settings.collision_group_number) + 1
+
+
+def _set_collision_group_display(settings, value):
+    settings.collision_group_number = max(0, min(15, int(value) - 1))
+
+
+def _get_block_same_collision_group(settings):
+    index = int(settings.collision_group_number)
+    return bool(settings.collision_group_mask[index])
+
+
+def _set_block_same_collision_group(settings, value):
+    index = int(settings.collision_group_number)
+    mask = list(settings.collision_group_mask)
+    mask[index] = bool(value)
+    settings.collision_group_mask = mask
+
+
 def register_settings(cls):
     rigid_types = (("0", "跟随骨骼", ""), ("1", "物理", ""), ("2", "物理 + 骨骼", ""))
     properties = {}
@@ -1769,9 +2187,30 @@ def register_settings(cls):
         items=rigid_types,
         default="1",
     )
-    properties["rigid_radius_ratio"] = FloatProperty(name="宽度 / 骨长", default=0.0, min=0.0, max=2.0)
-    properties["rigid_length_ratio"] = FloatProperty(name="高度 / 骨长", default=0.0, min=0.0, max=2.0)
-    properties["rigid_depth_ratio"] = FloatProperty(name="深度 / 骨长", default=0.0, min=0.0, max=2.0)
+    properties["rigid_radius_ratio"] = FloatProperty(
+        name="宽度 / 骨长",
+        description="0 时按相邻列最大间距自动计算，并保留横向搭接",
+        default=0.0,
+        min=0.0,
+        max=2.0,
+        precision=4,
+    )
+    properties["rigid_length_ratio"] = FloatProperty(
+        name="高度 / 骨长",
+        description="0 时自动超出骨段两端，与上下刚体搭接",
+        default=0.0,
+        min=0.0,
+        max=2.0,
+        precision=4,
+    )
+    properties["rigid_depth_ratio"] = FloatProperty(
+        name="深度 / 骨长",
+        description="0 时按局部单元宽度与高度自动计算覆盖厚度",
+        default=0.0,
+        min=0.0,
+        max=2.0,
+        precision=4,
+    )
     properties["rigid_radius_multiply"] = BoolProperty(
         name="宽度倍加",
         description="将宽度计算结果乘以 2",
@@ -1780,63 +2219,99 @@ def register_settings(cls):
         name="高度倍加",
         description="将高度计算结果乘以 2",
     )
-    properties["mass"] = FloatProperty(name="质量", default=0.0, min=0.0)
-    properties["friction"] = FloatProperty(name="摩擦", default=0.0, min=0.0, max=1.0)
-    properties["restitution"] = FloatProperty(name="弹性", default=0.0, min=0.0, max=1.0)
-    properties["linear_damping"] = FloatProperty(name="移动阻尼", default=0.0, min=0.0, max=1.0)
-    properties["angular_damping"] = FloatProperty(name="旋转阻尼", default=0.0, min=0.0, max=1.0)
+    properties["mass"] = FloatProperty(name="质量", default=0.0, min=0.0, precision=4)
+    properties["friction"] = FloatProperty(
+        name="摩擦", default=0.0, min=0.0, max=1.0, precision=4
+    )
+    properties["restitution"] = FloatProperty(
+        name="弹性", default=0.0, min=0.0, max=1.0, precision=4
+    )
+    properties["linear_damping"] = FloatProperty(
+        name="移动阻尼", default=0.0, min=0.0, max=1.0, precision=4
+    )
+    properties["angular_damping"] = FloatProperty(
+        name="旋转阻尼", default=0.0, min=0.0, max=1.0, precision=4
+    )
     properties["collision_group_number"] = IntProperty(name="碰撞组", default=0, min=0, max=15)
+    properties["collision_group_display"] = IntProperty(
+        name="碰撞组",
+        description="显示为 1–16；内部 MMD 索引仍为 0–15",
+        min=1,
+        max=16,
+        get=_get_collision_group_display,
+        set=_set_collision_group_display,
+    )
     properties["collision_group_mask"] = bpy.props.BoolVectorProperty(name="不碰撞组", size=16, subtype="LAYER")
+    properties["block_same_collision_group"] = BoolProperty(
+        name="屏蔽同组碰撞",
+        description="把当前碰撞组同时加入不碰撞组，避免同组刚体互相碰撞",
+        get=_get_block_same_collision_group,
+        set=_set_block_same_collision_group,
+    )
     properties["create_horizontal_joints"] = BoolProperty(name="生成横向 Joint", default=True)
-    properties["limit_linear_lower"] = FloatVectorProperty(name="移动下限", size=3, subtype="XYZ")
-    properties["limit_linear_upper"] = FloatVectorProperty(name="移动上限", size=3, subtype="XYZ")
+    properties["limit_linear_lower"] = FloatVectorProperty(
+        name="移动下限", size=3, subtype="XYZ", precision=4
+    )
+    properties["limit_linear_upper"] = FloatVectorProperty(
+        name="移动上限", size=3, subtype="XYZ", precision=4
+    )
     properties["limit_angular_lower"] = FloatVectorProperty(
         name="旋转下限",
         size=3,
         subtype="EULER",
         default=(0.0, 0.0, 0.0),
+        precision=4,
     )
     properties["limit_angular_upper"] = FloatVectorProperty(
         name="旋转上限",
         size=3,
         subtype="EULER",
         default=(0.0, 0.0, 0.0),
+        precision=4,
     )
-    properties["spring_linear"] = FloatVectorProperty(name="移动弹簧", size=3, subtype="XYZ", min=0.0)
+    properties["spring_linear"] = FloatVectorProperty(
+        name="移动弹簧", size=3, subtype="XYZ", min=0.0, precision=4
+    )
     properties["spring_angular"] = FloatVectorProperty(
         name="旋转弹簧",
         size=3,
         subtype="XYZ",
         min=0.0,
         default=(0.0, 0.0, 0.0),
+        precision=4,
     )
     properties["horizontal_limit_linear_lower"] = FloatVectorProperty(
         name="移动下限",
         size=3,
         subtype="XYZ",
+        precision=4,
     )
     properties["horizontal_limit_linear_upper"] = FloatVectorProperty(
         name="移动上限",
         size=3,
         subtype="XYZ",
+        precision=4,
     )
     properties["horizontal_limit_angular_lower"] = FloatVectorProperty(
         name="旋转下限",
         size=3,
         subtype="EULER",
         default=(0.0, 0.0, 0.0),
+        precision=4,
     )
     properties["horizontal_limit_angular_upper"] = FloatVectorProperty(
         name="旋转上限",
         size=3,
         subtype="EULER",
         default=(0.0, 0.0, 0.0),
+        precision=4,
     )
     properties["horizontal_spring_linear"] = FloatVectorProperty(
         name="移动弹簧",
         size=3,
         subtype="XYZ",
         min=0.0,
+        precision=4,
     )
     properties["horizontal_spring_angular"] = FloatVectorProperty(
         name="旋转弹簧",
@@ -1844,6 +2319,7 @@ def register_settings(cls):
         subtype="XYZ",
         min=0.0,
         default=(0.0, 0.0, 0.0),
+        precision=4,
     )
     scalar_interpolation = (
         ("rigid_radius_ratio", 0.0, 0.0, 2.0),
@@ -1860,6 +2336,7 @@ def register_settings(cls):
         arguments = {"name": "末端值", "default": default, "min": minimum}
         if maximum is not None:
             arguments["max"] = maximum
+        arguments["precision"] = 4
         properties[f"{name}_end"] = FloatProperty(**arguments)
     vector_interpolation = (
         ("limit_linear_lower", "XYZ", (0.0, 0.0, 0.0), None),
@@ -1891,6 +2368,7 @@ def register_settings(cls):
             "size": 3,
             "subtype": subtype,
             "default": default,
+            "precision": 4,
         }
         if minimum is not None:
             arguments["min"] = minimum
@@ -1900,6 +2378,24 @@ def register_settings(cls):
             name="线性补间",
             size=3,
         )
+    for name in ADAPTIVE_SCALAR_NAMES:
+        properties[_adaptive_scalar_property_name(name)] = StringProperty(
+            name="数值",
+            description="默认显示两位小数，按实际输入最多显示四位",
+            get=_adaptive_scalar_getter(name),
+            set=_adaptive_scalar_setter(name),
+            options={"SKIP_SAVE"},
+        )
+    for name in ADAPTIVE_VECTOR_NAMES:
+        angle = name in ANGLE_VECTOR_NAMES
+        for index in range(3):
+            properties[_adaptive_vector_property_name(name, index)] = StringProperty(
+                name="数值",
+                description="默认显示两位小数，按实际输入最多显示四位",
+                get=_adaptive_vector_getter(name, index, angle),
+                set=_adaptive_vector_setter(name, index, angle),
+                options={"SKIP_SAVE"},
+            )
     properties["browser_kind"] = EnumProperty(
         name="查看类型",
         items=(("BONE", "骨骼", ""), ("RIGID", "刚体", ""), ("JOINT", "Joint", "")),
@@ -1913,6 +2409,11 @@ def register_settings(cls):
         update=_browser_kind_changed,
     )
     properties["browser_search"] = StringProperty(name="搜索")
+    properties["mirror_include_joints"] = BoolProperty(
+        name="同时处理关联 Joint",
+        description="创建或同步勾选刚体的镜像对象时，同时处理端点可解析的关联 Joint",
+        default=True,
+    )
     properties["browser_prefix"] = StringProperty(
         name="名称前缀",
         description="按可见名称或 Blender 对象名的开头批量勾选",
@@ -1977,11 +2478,11 @@ def _draw_interpolation_header(layout):
 def _draw_scalar_interpolation(layout, settings, name, label):
     grid = _interpolation_grid(layout, 4)
     grid.label(text=label)
-    grid.prop(settings, name, text="")
+    grid.prop(settings, _adaptive_scalar_property_name(name), text="")
     _centered_checkbox(grid, settings, f"{name}_interpolate")
     end = grid.row(align=True)
     end.enabled = getattr(settings, f"{name}_interpolate")
-    end.prop(settings, f"{name}_end", text="")
+    end.prop(settings, _adaptive_scalar_property_name(f"{name}_end"), text="")
 
 
 def _draw_size_interpolation(
@@ -1997,11 +2498,11 @@ def _draw_size_interpolation(
     else:
         _centered_checkbox(grid, settings, multiply_name)
     grid.label(text=label)
-    grid.prop(settings, name, text="")
+    grid.prop(settings, _adaptive_scalar_property_name(name), text="")
     _centered_checkbox(grid, settings, f"{name}_interpolate")
     end = grid.row(align=True)
     end.enabled = getattr(settings, f"{name}_interpolate")
-    end.prop(settings, f"{name}_end", text="")
+    end.prop(settings, _adaptive_scalar_property_name(f"{name}_end"), text="")
 
 
 def _draw_limit_interpolation(layout, settings, prefix, name, label):
@@ -2016,15 +2517,27 @@ def _draw_limit_interpolation(layout, settings, prefix, name, label):
         _centered_label(grid, text)
     for index, axis in enumerate("XYZ"):
         grid.label(text=axis)
-        grid.prop(settings, lower_name, index=index, text="")
-        grid.prop(settings, upper_name, index=index, text="")
+        grid.prop(
+            settings, _adaptive_vector_property_name(lower_name, index), text=""
+        )
+        grid.prop(
+            settings, _adaptive_vector_property_name(upper_name, index), text=""
+        )
         _centered_checkbox(grid, settings, interpolation_name, index=index)
         lower_end = grid.row(align=True)
         lower_end.enabled = enabled[index]
-        lower_end.prop(settings, f"{lower_name}_end", index=index, text="")
+        lower_end.prop(
+            settings,
+            _adaptive_vector_property_name(f"{lower_name}_end", index),
+            text="",
+        )
         upper_end = grid.row(align=True)
         upper_end.enabled = enabled[index]
-        upper_end.prop(settings, f"{upper_name}_end", index=index, text="")
+        upper_end.prop(
+            settings,
+            _adaptive_vector_property_name(f"{upper_name}_end", index),
+            text="",
+        )
 
 
 def _draw_spring_interpolation(layout, settings, name, label):
@@ -2036,11 +2549,15 @@ def _draw_spring_interpolation(layout, settings, name, label):
         _centered_label(grid, text)
     for index, axis in enumerate("XYZ"):
         grid.label(text=axis)
-        grid.prop(settings, name, index=index, text="")
+        grid.prop(settings, _adaptive_vector_property_name(name, index), text="")
         _centered_checkbox(grid, settings, f"{name}_interpolate", index=index)
         end = grid.row(align=True)
         end.enabled = enabled[index]
-        end.prop(settings, f"{name}_end", index=index, text="")
+        end.prop(
+            settings,
+            _adaptive_vector_property_name(f"{name}_end", index),
+            text="",
+        )
 
 
 def _draw_joint_settings(layout, settings, prefix):
@@ -2063,6 +2580,7 @@ def _draw_proxy_creator_settings(layout, settings, context):
     dimensions.prop(settings, "columns")
     dimensions.prop(settings, "rows")
     creator.prop(settings, "prefix")
+    creator.label(text="名称以左/右开头：双侧同 Mesh 镜像模式", icon="MOD_MIRROR")
     creator.prop(settings, "radial_offset")
     creator.prop(settings, "armature")
     if settings.armature is not None:
@@ -2077,7 +2595,8 @@ def _draw_proxy_creator_settings(layout, settings, context):
     creator.prop(settings, "write_weights")
     creator.operator("surface_proxy.create_skirt_proxy", icon="MOD_CLOTH")
     if settings.columns == 1:
-        creator.label(text="单列模式：生成一条开放代理线，不生成面", icon="INFO")
+        creator.label(text="单列模式：生成可雕刻控制带，物理仍为一列", icon="INFO")
+        creator.label(text="雕刻时请保持动态拓扑关闭", icon="INFO")
     elif settings.topology == "CLOSED" and settings.columns < 3:
         creator.label(text="闭合代理面至少需要 3 列", icon="ERROR")
     if context is not None and (
@@ -2091,6 +2610,18 @@ def _draw_proxy_creator_settings(layout, settings, context):
     editor.operator("surface_proxy.sync_proxy_bones", icon="ARMATURE_DATA")
     editor.operator("surface_proxy.rebind_proxy_weights", icon="MOD_VERTEX_WEIGHT")
     editor.operator("surface_proxy.identify_proxy", icon="FILE_REFRESH")
+    if not bpy.app.background:
+        from . import sync as proxy_sync
+
+        if proxy_sync._DRAW_HANDLE is None:
+            editor.label(text="蓝线绘制服务未注册，请 Reload Scripts", icon="ERROR")
+        if not bpy.app.timers.is_registered(proxy_sync._sync_on_proxy_mode_exit):
+            editor.label(text="自动同步服务未注册，请 Reload Scripts", icon="ERROR")
+    proxy_object = settings.physics_proxy
+    if proxy_object is not None:
+        sync_error = str(proxy_object.get("surface_proxy_sync_error", ""))
+        if sync_error:
+            editor.label(text=f"自动同步失败：{sync_error}", icon="ERROR")
 
 
 def draw_physics_settings(layout, settings, context=None):
@@ -2129,7 +2660,8 @@ def draw_physics_settings(layout, settings, context=None):
         sync.label(text="刚体与 Joint 同步", icon="PHYSICS")
         sync.prop(settings, "auto_sync_physics")
         sync.operator(SPX_OT_SyncMMDPhysics.bl_idname, icon="FILE_REFRESH")
-        sync.label(text="刚体、纵 Joint 与横 Joint 参数分别在对应页签设置", icon="INFO")
+        sync.label(text="同步只更新刚体与 Joint 的位置、旋转，不修改形状、类型或尺寸", icon="INFO")
+        sync.label(text="参数在对应页签修改后，点击底部“应用参数到当前代理”", icon="INFO")
     elif settings.physics_tab == "RIGID":
         shape = page.box()
         shape.label(text="形状与类型", icon="MESH_UVSPHERE")
@@ -2174,7 +2706,8 @@ def draw_physics_settings(layout, settings, context=None):
         _draw_scalar_interpolation(dynamics, settings, "friction", "摩擦")
         collision = page.box()
         collision.label(text="碰撞", icon="MOD_PHYSICS")
-        collision.prop(settings, "collision_group_number")
+        collision.prop(settings, "collision_group_display")
+        collision.prop(settings, "block_same_collision_group")
         _draw_numbered_collision_mask(
             collision, settings, "collision_group_mask"
         )
@@ -2246,7 +2779,44 @@ def draw_browser(layout, settings):
             SPX_OT_DeleteCheckedMMDItems.bl_idname,
             icon="TRASH",
         )
+        object_label = "刚体" if settings.browser_kind == "RIGID" else "Joint"
+        layout.operator(
+            SPX_OT_SyncSelectedMMDObjectsToBrowser.bl_idname,
+            text=f"从 3D 视图同步选中{object_label}",
+            icon="UV_SYNC_SELECT",
+        )
+        draw_mirror_tools(layout, settings)
+        if settings.browser_kind == "JOINT":
+            names_box = layout.box()
+            names_box.label(text="同步刚体 B 名称到 Joint", icon="SORTALPHA")
+            names_row = names_box.row(align=True)
+            operator = names_row.operator(
+                SPX_OT_SyncJointNamesFromRigidB.bl_idname,
+                text="同步勾选",
+            )
+            operator.scope = "CHECKED"
+            operator = names_row.operator(
+                SPX_OT_SyncJointNamesFromRigidB.bl_idname,
+                text="同步全部",
+            )
+            operator.scope = "ALL"
+            names_box.label(text="纵向直接使用刚体 B 名称；横向追加 _H", icon="INFO")
     else:
+        layout.operator(
+            "surface_proxy.sync_selected_bones_to_browser",
+            icon="UV_SYNC_SELECT",
+        )
+        restore_box = layout.box()
+        restore_box.label(text="从勾选骨骼恢复代理", icon="MOD_CLOTH")
+        restore_topology = restore_box.row(align=True)
+        restore_topology.prop(settings, "topology", expand=True)
+        if settings.topology == "OPEN":
+            restore_box.prop(settings, "restore_connect_sides")
+        restore_box.operator(
+            "surface_proxy.restore_proxy_from_checked_bones",
+            icon="FILE_REFRESH",
+        )
+        restore_box.label(text="支持普通、.L/.R 与 _L/_R 父子骨链", icon="INFO")
         draw_bone_physics_creator(layout, settings)
         names_box = layout.box()
         names_box.label(text="补全空缺 MMD 骨骼名称", icon="SORTALPHA")
@@ -2338,7 +2908,7 @@ def _draw_active_mmd_inspector(layout, settings):
         row.prop(rigid, "type")
         row.prop(rigid, "shape")
         box.prop(rigid, "size")
-        box.prop(rigid, "collision_group_number")
+        box.prop(rigid, "collision_group_number", text="碰撞组（内部 0–15）")
         _draw_numbered_collision_mask(box, rigid, "collision_group_mask")
         body = obj.rigid_body
         if body is not None:
@@ -2421,7 +2991,10 @@ CLASSES = (
     SPX_OT_PrefixFromActiveMMDItem,
     SPX_MT_MMDQuickSelect,
     SPX_OT_SelectCheckedMMDItems,
+    SPX_OT_SyncSelectedMMDObjectsToBrowser,
     SPX_OT_FillMissingMMDBoneNames,
+    SPX_OT_SyncJointNamesFromRigidB,
+    *MIRROR_PHYSICS_CLASSES,
     SPX_OT_DeleteCheckedMMDItems,
     SPX_OT_CleanupCheckedBones,
 )

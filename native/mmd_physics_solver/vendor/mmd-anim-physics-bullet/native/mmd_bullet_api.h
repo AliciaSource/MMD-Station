@@ -27,7 +27,7 @@ typedef struct mmd_anim_bullet_rigidbody_desc {
     int32_t shape_type;
     float shape_size[3];
     float position[3];
-    float rotation_euler[3];
+    float rotation_xyzw[4];
     float mass;
     float linear_damping;
     float angular_damping;
@@ -41,7 +41,7 @@ typedef struct mmd_anim_bullet_6dof_spring_joint_desc {
     int32_t rigidbody_index_a;
     int32_t rigidbody_index_b;
     float position[3];
-    float rotation_euler[3];
+    float rotation_xyzw[4];
     float translation_lower_limit[3];
     float translation_upper_limit[3];
     float rotation_lower_limit[3];

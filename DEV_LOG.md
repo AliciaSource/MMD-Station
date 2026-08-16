@@ -1,5 +1,108 @@
 # Development Log
 
+## 2026-08-16 - Blender 实时预览双时钟与 MMD 追帧语义（主工作区开发）
+
+- 定位实时拖动比 MMD 更粘滞的 host 原因：旧 adapter 虽然让 DLL 固定使用 Bullet `1/60 s` 子步，却在每次 `bpy.app.timers` 回调时都硬传 `dt=1/preview_frequency`。Blender 交互、depsgraph 和界面刷新会让 timer 回调产生抖动，实际过去约 `30 ms` 时仍只推进 `16.67 ms`，因此物理时间落后于用户拖动；这不是 RGBA stiffness、阻尼或重力误差，本轮不改 DLL 求解参数。
+- 新增独立 `PreviewTimeDriver`。动画播放时以 `(frame_current + frame_subframe) / scene_fps` 的 timeline 差值调用 `stepSimulation(delta, maxSubSteps, 1/60)`，同一动作轨迹不再受 GUI timer 抖动影响；暂停状态下使用 `time.perf_counter()` 的真实单调时间差，使手动拖动按真实经过时间推进。播放/暂停切换先重定基准而不虚构时间，倒放、暂停时跳帧和时钟回退会恢复启动快照；异常长间隔继续由 MMD 同值 `maxSubSteps=10` 在 Bullet 内限制实际追帧量。
+- 多模型仍按 world 并行：一次 timer tick 只读取一次 wall clock，各 world 分别按自己的 scene/timeline 生成 dt，同交互组共享一个时间驱动与一次 solver step；`dt=0` 的 timeline 空闲 tick 不重复推进或写回。重置、RNA rebind 和异常恢复同步清空时间基准，下一步从固定 `1/60 s` 重新建立状态。
+- 新增纯 Python 时间回归，临时生成含匀速、急停、停顿和反向段的 VMD，验证两组不同 wall-clock 抖动仍生成完全相同的 timeline dt，暂停拖动则保留 `16/33/8 ms` 实际间隔，临时 VMD 退出即删除。Blender 4.4.3 完整 headless smoke 实际导入另一份临时 VMD、驱动真实 Rust solver，确认 30 FPS 的帧差依次传入 `1/60、1/30、2/30、3/30、4/30` 且 `maxSubSteps=10`，物理输出有限并对动作产生响应；临时文件已删除。
+- `MMD_TIME_DRIVER_UNIT_OK`、`MMD_SKIRT_PROXY_CREATOR_SMOKE_OK`、`BONE_PHYSICS_CREATOR_SMOKE_OK` 与 Rust `cargo test` 7 项全部通过。生产 DLL 未修改，SHA256 保持 `BB2645BD5B2F767A0FDCA4CE27825AA1147C01AC3E5C3D65C44ABCD9B28881D5`；验证均为 headless，未操作 Blender GUI，不递增版本、不打包 zip。完整导入动作与 PmxNLib 的逐帧 oracle 仍是独立验收边界，不能仅凭本轮 host 时间测试宣称所有 VMD 已逐帧 bit-identical。
+
+## 2026-08-16 - MMD Y-up 原生求解基底与 PmxNLib Bullet 2.75 路径对齐（工作树开发）
+
+- 对 `PmxNLib.dll` 的 native world、刚体与 `btGeneric6DofSpringConstraint` 构造路径做函数级反汇编，并用 `PmxPhysicsClass.PmxPhysics` 直接构造 body/joint buffer 作为无 GUI oracle。确认其使用 `btSoftRigidDynamicsWorld`、`btSoftBodyRigidBodyCollisionConfiguration`、`btDbvtBroadphase`、`btSequentialImpulseConstraintSolver`、默认 10 次 solver iterations、`stepSimulation(frameSeconds, 10, 1/60)` 和 `addConstraint(..., false)`。
+- RGBA 主误差来自坐标基底而非重力或 stiffness：Blender 输入是 Z-up，PmxNLib/Bullet 原生数据是 Y-up，旧 DLL 却直接在 Blender 的反射基底中求解。线性量需要交换 Y/Z；旋转限制作为轴向量还必须翻转符号并交换 angular lower/upper。Rust DLL 现统一在 MMD Y-up 空间求解 body、bone、joint、gravity、线性限制/弹簧和角限制/弹簧，输出再映回 Blender；没有 RGBA、胸部、臀部或骨名特判。
+- C ABI 到 Bullet 改为 quaternion 直传，删除 `Quaternion -> Euler -> Quaternion` 的有损往返。Joint 同步 PmxNLib 语义：线性 spring 仅非零轴启用，角 spring 三轴始终启用，始终执行 `setEquilibriumPoint()`，配置完成后再加入 world。Capsule 改回原生 Y 轴；合法 PMX 刚体参数不再额外 clamp，也不覆盖 Bullet 默认 sleeping thresholds。
+- backend 改用 PmxNLib 相同的 soft-rigid world/configuration。vendored Bullet 2.75 的 `BulletSoftBody` 只为 MSVC C++17 构建兼容而把 `ZeroInitialize` 静态零值显式初始化为 `T()`，未改求解公式。PmxNLib 的 ground plane 本轮没有强塞进现有无 ground 开关的预览；实测它会把穿过 Y=0 的既有/测试刚体大幅顶开，应另设可验证选项，不能混入 RGBA 对齐。
+- Alicia `Body_Ver4.23.pmx`、重力 `-9.8`、60 Hz、60 帧 headless：历史 PmxNLib oracle 的 RGBA body 5 为 `0.015328934 m / 3.120682°`，本轮 DLL 为 `0.015328781 m / 3.120192°`，残差约 `0.000153 mm / 0.000490°`；上一轮残差约为 `0.893677 mm / 0.904636°`。0.1 导入尺度得到 `0.019161066 m / 3.120192°`，与 0.08 严格保持 1.25 倍位移关系；body 27/31/62 仍为微米级位置对齐。当前标记为“近 bit 级”，不把剩余 float/编译路径差异宣称成逐 bit 相同。
+- `cargo test` 7 项通过；Blender 4.4.3 完整 `--background --factory-startup` smoke 输出 `MMD_SKIRT_PROXY_CREATOR_SMOKE_OK`。全部验证均为 headless，未操作桌面 GUI。DLL SHA256 为 `BB2645BD5B2F767A0FDCA4CE27825AA1147C01AC3E5C3D65C44ABCD9B28881D5`；不递增版本、不打包 zip。
+
+## 2026-08-16 - MMD/PMX Editor 全局求解语义、尺度实例与多模型并行审计（源码桥接开发）
+
+- 验证范围从 RGBA 胸部扩展到整套 Rust/C++/Blender adapter：以 `D:\MMD\模型\Alicia\Body\Body_Ver4.23_26.6.20\Body_Ver4.23.pmx` 同时抽样 RGBA 胸部、普通腰/腹刚体与 2 型“物理 + 骨骼”刚体；全部通过 PMX Editor `PmxNLib.dll` native oracle、MMD 9.32/PmxNLib 静态反汇编和 Blender `--background` 执行，不操作桌面 GUI。此前日文读取错误框来自测试 loader，不是模型损坏，oracle 已改为直接构造 native payload。
+- 修正时间语义：MMD/PmxNLib 使用 `stepSimulation(frameSeconds, 10, 1/60)`，其中 `10` 是 `maxSubSteps` 追帧容量，不是每帧拆成 10 个短步骤。Rust 固定 Bullet 步长为 `1/60 s`，面板字段改名“最大追帧步数”并默认 `10`；正常 60 FPS 下 `2` 与 `10` 轨迹相同，不再出现旧实现把 `2` 解释成 120 Hz 后导致 RGBA 翘起/失去回弹的问题。
+- 重力与几何尺度解耦：面板保持 MMD 用户参数 `-9.8`，DLL 内固定按 MMD 语义换算为 Bullet `-98.0`，不再用 `-7.848 × 12.5` 伪装对齐。ABI 升至 `3`，`mmd_solver_create` 新增每实例 `world_scale`；`0.08` 模型使用 `12.5`，`0.1` 模型使用 `10.0`，多个 solver 不共享全局倍率。Alicia 在两种导入尺度下的 60 帧 MMD 空间轨迹一致，Blender 位移严格按 `0.08:0.1` 比例输出。
+- 求解尺度按各 MMD Root 独立保存。面板只显示 `0.08/0.1` 两档：首次登记时从 `empty_display_size` 识别标准导入尺度并直接选中对应数值，无法识别或 Blender 内直接创建的 MMD Root 默认 `0.08`；用户可随时强制改档。强制把实际 `0.1` 模型按 `0.08` 求解会在 MMD/Bullet 空间形成 `1.25x` 尺寸，能够与其它 `0.08` world 交互，但明确属于自定义物理，不再作为原尺寸 bit 级对齐样本。刚体尺寸和 Joint 线性限位读取对象实际 world scale，因此整体缩放在 Apply 前后得到相同物理描述；非均匀或零缩放明确拒绝。
+- 整个模型预览改为任意数量 MMD Root 复选集合，不再由单一模型选择器限制。每个模型首次出现时获得持久、单调递增编号并默认选择自己的编号；列表按编号而非名称排序，后导入模型稳定出现在底部。交互编号下拉列出所有现有模型编号，选择同一编号且求解尺度相同的模型合并到一个 world，保留跨模型 collision group/mask 交互，不同求解尺度仍隔离。“重新排序编号”可在停止预览时显式压缩删除模型留下的空号：模型编号按当前顺序重排为连续值，独立模型随自己的新编号迁移，已组队模型则继续指向原组长的新编号，不拆散现有组队关系。修复列表绘制时尺度探测写入 Blender ID 导致第二行开始抛错、后续模型及频率/步数/重力/按钮全部消失的问题：面板 draw 现为只读，且单模型行异常不会中断其余 UI。
+- 修复编号服务导致源码 Junction 插件无法注册的问题：Blender 经 Add-ons 启用插件时 `bpy.data` 处于 `_RestrictData`，此前 `register_model_id_service()` 在 `register()` 内立即遍历 `bpy.data.scenes`，触发 `AttributeError`，表现为插件未加载而非 Junction 丢失。首次场景编号扫描现改为注册完成后的 deferred timer，load/depsgraph handlers 保持不变；卸载时同步注销尚未执行的 timer。真实 Blender 4.4 addons Junction 路径执行 `addon_enable`、模块路径断言和用户偏好保存均通过，模块最终解析到主工作区源码而非 `mmd-bit-align` worktree。
+- 多模型活动列表继续保留每行右侧的循环箭头 Reset 和关闭按钮；主操作栏增加唯一的“重置全部”，按 world 各重建一次 solver 并恢复全部启动快照，共享同一 world 的交互模型不会被重复重置。活动列表标题行不重复放全局 Reset，并移除其中第二个“停止全部”；主操作栏固定按“启动已勾选模型 → 停止全部 → 重置全部”排列。headless 回归验证三个独立 world 的 solver 均被替换、活动 session 保持运行，并在停止与活动两种绘制状态下断言两个全局 operator 各只出现一次且顺序正确。
+- 针对 Alicia 复杂 RGBA 约束网络复核了上一轮 Root 跟随改法：从当前 Blender 刚体/Joint 状态重建 solver 会引入不一致的约束初态，实际拖动 Root 时可能立即炸开，因此撤回 Root 变换侦测与运行中自动重建，不改 DLL、ABI 或求解参数，恢复此前“预览运行时可直接拖动 MMD Root”的路径。保留 Reset/异常恢复的 Root 相对快照：恢复刚体与 Joint 时应用“当前 Root × 启动 Root 逆矩阵”，因此模型移动后执行 Reset 会在当前位置恢复初始物理姿态，而非跳回旧世界坐标。最终只锁定正在预览模型的“交互编号”下拉框；停止该模型后方可换组并重新启动，避免运行中的 UI 编号与既有 Bullet world 脱节。求解尺度继续保持原先可编辑行为。
+- 多 world 的 Blender RNA 读取和结果写回仍在主线程；纯 DLL `step` 由长期复用的 `ThreadPoolExecutor` 按 world 并行，Bullet 2.75 单个 world 内仍保持原生顺序。Alicia 120 帧纯求解 headless 基准：1 world 因线程调度为顺序的 `0.82x`，2 world 为 `1.81x`，4 world 为 `3.23x`；顺序/并行输出逐字节一致。生产 timer 只在多 world 时进入 worker pool，同一交互组只提交一次 step。
+- 按 MMD 通用路径统一 Bullet 语义，而非加入 RGBA/胸部/臀部特判：Bullet 2.75、10 次 solver iterations、`m_additionalDamping=false`、`addConstraint(..., false)`、仅正刚度轴启用 spring、存在 spring 时设置 equilibrium、`setSynchronizeAllMotionStates(true)`、直接读取 rigid body world transform，并在 Windows 构建定义 `WIN32` 进入 Bullet 2.75 SSE 路径。0/1/2 型骨骼绑定、碰撞 mask、capsule Z 轴和 Joint 输入顺序均纳入审计。
+- bit 级状态仍未达成：同 Alicia PMX、MMD 参数 `-9.8`（oracle 内部 `-98.0`）、60 Hz、60 帧，PMX Editor RGBA body 5 位移 `0.015328934 m`、旋转 `3.120682°`；当前 DLL 为 `0.016222611 m`、`4.025318°`，残差约 `0.893677 mm / 0.904636°`。普通 body 27/31/62 仍保持微米级位置对齐；iterations 5/8/9/11/12/20 的扫描均不能同时命中 RGBA 位移和旋转，故没有用全局迭代数或重力补偿过拟合。剩余工作继续定位 PmxNLib/MMD 的 Bullet 2.75 fork 或约束构造数值路径，本轮不宣称 perfect/bit-exact。
+- Rust 单元测试现为 6 项，新增 `0.08/0.1` 独立实例 MMD 空间一致性；Blender 4.4.3 smoke 覆盖三个模型、持久编号、`#1/#3/#4 -> #1/#2/#3` 空号压缩、独立与已组队两种关系迁移、完整列表与控制区绘制、三个并行 world、同编号同尺度合并、同编号异尺度隔离、强制改档后合并、Apply Scale 前后描述一致、逐项/全部停止及异常恢复。另以 Alicia `body4.pmx` + `Body_Ver4.23.pmx` 实际双导入执行独立 headless UI 探针，确认两个模型分别显示为 `#1/#2`、均识别为 `0.08`、各自默认独立，频率/追帧步数/重力/启动按钮均存在；混合尺度探针进一步确认实际按 `0.08/0.1` 导入时分别识别为 `0.08/0.1`，同编号仍隔离，手动把后者切到 `0.08` 后显示为自定义 `0.08 ×12.5`。完整 headless smoke 通过；DLL 未改动，SHA256 仍为 `7A7DC27B6387A9CB47FA55DB007937F943014FDFD73AC007103B69FA696F778E`。继续使用源码 Junction，不递增版本、不打包 zip，真实 GUI 视觉验收按用户要求未执行。
+
+## 2026-08-16 - 稳定中长裙实测参数与自适应四位数值栏（源码桥接开发）
+
+- 将用户在实际高抬腿碰撞中确认稳定的三页参数固化进内置“稳定中长裙”：盒体深度 `0.15 -> 0.50`、质量 `2.00 -> 0.40`、双阻尼 `0.995 -> 0.99`、碰撞组显示 `6` 且屏蔽同组；纵 Joint 只补间 X 旋转 `±8° -> ±18°`；横 Joint 移动下限保持全零，仅允许 X 上限由 `0.02 -> 0.03`，用单向伸长释放抬腿拉扯而不允许静态收缩塌落。横向 X 移动弹簧为 `120 -> 40`，X 旋转限制为 `±10° -> ±18°`，X 旋转弹簧为 `0.8 -> 0.25`，其余数值按三张面板截图保存。
+- 刚体、纵 Joint、横 Joint 的全部浮点编辑栏改为自适应文本数值层：至少显示两位小数，按实际需要最多显示四位并去掉无意义末尾零，例如 `2.00`、`0.99`、`0.995`、`0.1235`。角度栏继续以度数和 `°` 展示；输入会写回原 Float/FloatVector RNA，预设、参数应用和物理计算仍只读取原数值，不保存显示代理字段。
+- Blender 4.4.3 headless smoke 更新为逐项断言三页内置参数、单向横向移动限制、碰撞组 mask、全部底层 RNA 四位最大精度，以及自适应格式化与写回；继续使用源码 Junction，本轮不递增版本、不打包 zip。
+
+## 2026-08-16 - 碰撞组显示编号与同组屏蔽修正（源码桥接开发）
+
+- 定位到近期刚体覆盖率提高后物理明显抖动、卡刚体的直接原因：代理的 165 个刚体内部碰撞组均为索引 `5`，但已保存的不碰撞掩码勾在索引 `4`。旧面板把碰撞组原始索引显示为 `0–15`，同时把不碰撞组按钮显示为 `1–16`；用户按界面看到的“碰撞组 5”勾选按钮“5”时，实际写入的是相邻内部组 `4`，同组自碰撞并未关闭。
+- 生成设定中的碰撞组改为统一显示 `1–16`，写入时仍转换回 MMD 内部 `0–15`，不改变文件格式或 runtime ABI。新增“屏蔽同组碰撞”派生开关，始终读写当前内部碰撞组对应的正确 mask 位；活动刚体检查器继续展示原始 RNA，但标签明确为“内部 0–15”，避免混用两套编号。
+- 使用同一个 `07.blend`、同一个生产 DLL 和同一组 165 个代理刚体执行 180 tick A/B：原保存 mask 的末段平均位移为 `0.00277614`、平均加速度为 `0.00302425`；只补上真实同组 mask 后分别降为 `8.93e-7` 与 `1.26e-6`。生产 DLL SHA256 仍为 `7FBF0B5560646700ED6DF879406A85A6560A0DAE6503354CEE7F13985165FFDF`，与 Git `HEAD` 跟踪对象完全一致，本轮未修改求解器。完整 Blender 4.4.3 headless smoke 覆盖显示编号换算、同组 mask 派生开关和刚体页实际绘制；继续使用源码 Junction，不递增版本、不打包 zip。
+
+## 2026-08-16 - 勾选刚体与 Joint 镜像创建/同步（源码桥接开发）
+
+- MMD 查看器刚体页和 Joint 页新增只面向勾选源项的“创建镜像”与“同步镜像”。支持 `.L/.R`、`_L/_R`、`左/右`三类既有侧向标识；没有侧向标识的刚体或 Joint 使用 `_M` 后缀创建复制镜像，并可由原名与 `_M` 在后续双向识别为同一镜像组。无侧向骨名的镜像刚体继续绑定原骨骼，明确侧向骨名则必须解析到对应镜像骨骼。
+- 镜像变换统一以 MMD Armature 局部 X=0 为对称面执行矩阵共轭，不直接复制/取反 Euler。Joint 移动限制按极向量换算，X 下上限变号并交换；旋转限制按轴向量换算，Y/Z 下上限变号并交换；X 旋转保持，弹簧强度保持。刚体形状、尺寸、类型、碰撞及动力学参数保持源值，骨骼绑定改到镜像骨骼。
+- “同时处理关联 Joint”放在刚体页，默认启用。关联范围以 Joint 的刚体 B 为准，仅处理 B 属于勾选源刚体的 Joint；镜像 B 指向勾选刚体镜像体，A 优先使用已存在的左右或 `_M` 镜像刚体，无侧向标识且没有镜像体时共用原 A。不会创建未勾选的另一端刚体，也不会额外生成跨左右组的中间横 Joint；已有横 Joint 只按原 A/B 拓扑镜像。
+- 修复同一对镜像骨骼已有其它刚体时误报“镜像已存在”的问题。旧识别只按镜像骨骼绑定挑选候选，例如已有`左足/右足`时，手工复制并命名的`左足2`会把普通`右足`误认为目标；现在目标必须同时匹配镜像骨骼与换算后的主要 MMD 名称，因而会正确新建`右足2`。回归在镜像骨骼上预先注入名称不匹配的干扰刚体，确认不会占用目标。
+- 独立 Blender 4.4.3 骨骼物理 smoke 覆盖左右刚体和关联 Joint 创建、矩阵位置反射、Joint 线性/角度上下限换算、同步更新、无侧向刚体 `_M` 创建与回识别、锚定 A 在无 `_M` 时共用及存在 `_M` 时改接、Joint 页独立创建/同步。完整 headless smoke 同时验证两页按钮注册与绘制。继续使用源码 Junction，本轮不递增版本、不打包 zip。
+
+## 2026-08-16 - 自动刚体搭接覆盖率（源码桥接开发）
+
+- 修正自动盒体尺寸故意留缝造成的碰撞空洞。旧公式的横向全宽只是左右间距平均值的 `96%`，纵向总高只是骨段长的 `96%`，因此在规则网格上也必然有约 `4%` 缝隙，不等宽、弯曲或快速高抬腿时更明显。
+- 自动横向基准改取到左右相邻列的较大距离，盒体半宽为其 `55%`，使相邻单元形成约 `10%` 搭接；纵向总高改为骨段长的 `110%`，上下刚体跨过共享 Joint 边界；自动厚度由局部较小跨度的 `16%` 提高到 `20%`。刚体中心、旋转、骨骼绑定与 Joint 位置不变，以尺寸搭接而非中心错位实现“交错”，避免破坏物理链拓扑。
+- 调整只影响宽度/高度/深度比例为 `0` 的自动计算；非 `0` 手工值及其补间不变。回归新增不等列距的最大跨度、横向半宽、纵向半高和厚度公式断言。继续使用源码 Junction，本轮不递增版本、不打包 zip。
+
+## 2026-08-16 - 当前代理物理完整重建（源码桥接开发）
+
+- 保持按钮名称“生成 MMD 刚体和 Joint”不变，并扩展为创建/重建共用入口：当前代理尚无物理时正常创建；已有物理时按面板当前参数重新生成完整刚体和 Joint 图，从而补齐旧工程缺失的第一圈横 Joint 等不存在对象。悬停描述明确说明重建语义，完成报告区分“已创建”与“已重建”。
+- 重建采用先创建新对象、成功后再删除当前代理旧对象的替换顺序；若新建过程失败，只清理本轮新对象并保留原物理。删除范围严格来自当前代理稳定关联 ID，Joint 先于刚体删除，不触及其它代理物理。
+- 完整 Blender 4.4.3 headless smoke 新增重复点击生成按钮的回归：验证对象没有叠加、旧对象标记被替换、第一层横 Joint 存在，且另一代理的刚体保持原对象与原参数。`MMD_SKIRT_PROXY_CREATOR_SMOKE_OK` 通过；继续使用源码 Junction，本轮不递增版本、不打包 zip。
+
+## 2026-08-15 - 开放代理表面拟合、窄控制带与双侧镜像（源码桥接开发）
+
+- 补齐第一圈刚体之间缺失的横 Joint。根因是横 Joint 生成循环从 `row=1` 开始，主动跳过了第 `0` 层；现在覆盖 `0..末层` 的全部刚体段，横 Joint 的参数补间也改按刚体层深计算，使新增第一圈取得起始参数、最末圈取得末端参数，不产生负补间系数。闭合、开放、左右分组及“连接左右”继续沿用原列配对边界。
+- 缩短新建 Joint 名称并统一刚体 B 语义：纵 Joint 与顶层锚定 Joint 的 MMD 日文/英文名称直接取刚体 B 对应字段，横 Joint 在刚体 B 名称后追加 `_H` 以避免和纵向/锚定 Joint 重名；不再把代理前缀、`JOINT_HORIZONTAL`、列号和层号重复拼入名称。Joint 查看页新增“同步刚体 B 名称到 Joint”，分别提供“同步勾选”和“同步全部”，可批量修正已有长名称；缺少刚体 B 的 Joint 明确跳过。
+- 刚体和 Joint 查看页补齐与骨骼页对应的“从 3D 视图同步选中刚体/Joint”。两者读取当前 Object selection，刷新查看器后严格以视图选中集覆盖列表勾选，并同步蓝色活动行；当前代理过滤隐藏了部分选中对象时报告匹配数量。回归覆盖第一圈数量、全层横 Joint 位置和补间、三类 Joint 新建命名、勾选/全部批量改名，以及刚体/Joint 双向选择同步。完整 headless smoke 通过。继续使用源码 Junction，本轮不递增版本、不打包 zip。
+- 修正横 Joint 与纵 Joint 落在同一骨骼节点高度的问题。纵 Joint 继续位于上下刚体交界节点；横 Joint 改为左右相邻两段刚体中心的平均位置，因此自然落在该段半层高度并与纵 Joint 交错。新建物理、普通位置/旋转同步和“应用参数到当前代理”统一使用该位置定义；已有同层横 Joint 点击“应用参数到当前代理”即可自动纠正，同时按该功能原有职责重算刚体尺寸及全部物理参数。回归分别覆盖初次生成、旧位置注入后的参数应用纠正，以及代理变形后的普通同步，完整 headless smoke 通过。继续使用源码 Junction，本轮不递增版本、不打包 zip。
+- 根据实际前后对比纠正物理同步职责：编辑代理后的手工同步和 `EDIT/SCULPT -> OBJECT` 自动同步不再调用 `_rigid_size()`，也不再写入 `mmd_rigid.size`。同步严格只更新刚体位置/旋转及 Joint 位置/旋转；刚体形状、物理类型、尺寸、质量、阻尼、碰撞和全部 Joint 参数保持原值。形状、类型和尺寸重算只保留在用户明确点击“应用参数到当前代理”的路径。
+- 回归把原“代理变形后刚体尺寸应改变”断言反转为尺寸、shape、type 必须逐项不变，并同时断言附近刚体和纵 Joint 的位置、旋转确实随代理变化；任意骨名头发接管回归也分别验证手工同步和模式退出自动同步前后尺寸、shape、type 不变，而明确应用面板参数后仍允许重算并在后续同步中保持。面板提示与 README 同步修正，不再把自动尺寸描述为普通同步行为。
+- 修复从现有骨骼恢复/新建代理后只同步骨骼、刚体与 Joint 报 `0/0` 的关联缺口。根因是反建代理只保存了真实骨名，没有给模型中早已存在的 MMD 物理对象写入代理 ID、列、层和角色；自动同步虽正常触发，但物理作用域查询不到任何对象。恢复时现在按真实骨名接管已有绑定刚体，并根据 Joint 两端识别同列相邻层的纵 Joint、相邻列同层的横 Joint及顶骨父刚体锚定 Joint；已存在的反建代理也会在首次手工或自动同步时惰性补齐关联，无需重建物理。
+- 接管只处理当前 MMD 模型、当前代理精确骨名范围内且未属于其它代理的物理对象，不抢占其它代理；横 Joint 同时保存实际 following column。恢复完成报告会直接显示已关联刚体和 Joint 数量。基本页明确区分：同步只更新刚体与 Joint 的位置、旋转，不覆盖形状、类型、尺寸、动力学或 Joint 参数；刚体/纵 Joint/横 Joint 页修改后通过底部“应用参数到当前代理”写回接管对象。
+- 回归先删除任意骨名头发代理全部物理关联元数据，验证手工同步可自动重新接管并更新 `8` 个刚体、`7` 个 Joint；再次删除关联后模拟 `SCULPT -> OBJECT` 模式边沿，验证自动同步同样补齐关联并移动刚体。随后修改面板质量、纵 Joint 旋转弹簧和横 Joint 旋转弹簧并执行“应用参数”，断言全部接管对象更新；再次同步变换后这些参数保持不变。完整 headless smoke 通过。继续使用源码 Junction，本轮不递增版本、不打包 zip。
+- 重新设计“从勾选骨骼恢复或新建代理”的识别边界：保留旧式 `名称_Cxx_Rxx` 编号解析，同时允许任意统一前缀骨名。任意名称不再猜测列号，而是从 Armature 的真实父子关系提取不分叉纵链，以每根 Rest Bone 的 head/tail 重建控制列，并按根骨空间位置排序；`.L/.R` 与 `_L/_R` 都只作为侧向元数据。分叉选择会明确拒绝，避免把共享骨段重复映射到多列。
+- 打开恢复区新增“连接左右”开关，默认关闭以保持原有左右裙摆边界。关闭时左右骨链在同一个代理 Mesh 内分别成面且中间不生成面或横 Joint；开启时所有左右列按空间顺序组成一个连续面，支持头发等必须跨中间连接的多列结构。闭合恢复不受该开关影响，仍按每个逻辑组分别闭环。
+- 恢复代理新增逐段真实骨名元数据，骨骼同步、权重重算、刚体及 Joint 创建统一优先读取该映射，不再要求后续骨名符合 `_Cxx_Rxx`。headless 回归以 `后发A1.L/A2.L`、`后发B1_L/B2_L` 及对应右侧骨链覆盖左右分离、连接中缝、同 Mesh 原地恢复、`.L/.R` 与 `_L/_R` 混合识别、精确骨名同步和跨中间横 Joint；完整 smoke 与独立骨骼物理 smoke 均通过。继续使用源码 Junction，本轮不递增版本、不打包 zip。
+- “补全勾选”“补全全部”及单项“补全当前空缺名称”统一加入侧向名称转换：Blender 骨骼名尾部 `.L/.R` 或 `_L/_R` 都视为镜像标识；MMD 日文名称写为`左/右 + 基础名`，英文名称写为`基础名_L/_R`，普通名称仍原样写入两个字段。只补空字段、不覆盖已有内容的边界不变。headless 回归覆盖 CHECKED 处理 `.R`、ALL 处理 `_L`、未勾选骨骼在 CHECKED 中保持空白，以及已有日文名称不被覆盖。
+- MMD 查看器骨骼页的“快速选组”新增“已勾选骨骼及子级”：以当前所有已勾选骨骼为根，按各自 Armature 的真实父子层级递归勾选全部子孙骨骼；支持同时勾选多个不同分支，保留原有勾选，不再依赖蓝色活动行。无勾选时明确提示先勾选骨骼。headless 回归使用两个不同深度的骨链根，并把活动行故意指向第三根无关骨骼，断言最终勾选集合严格等于两个根及其全部子级。
+- 根因确认后撤回前两轮全部推测性补丁，只保留 deferred registration 修复：蓝线恢复为仅当代理 Mesh 本身是 active object 且处于 Edit/Sculpt Mode 时绘制，恢复 topology signature 检查、2 px 半透明颜色和正常深度行为；不再从面板当前代理回退绘制，不在 Object Mode 显示。自动同步恢复直接调用 `sync_proxy_bones()`，删除 `VIEW_3D` context override、持久成功状态文案和相关测试；draw handler 注册恢复原有“仅缺失时添加”语义。
+- 深度检查真实 Blender 4.4 用户配置启动链后，确认前两轮没有命中共同根因：`register_services()` 在 Blender add-on 受限注册阶段同步调用 `_load_proxy_identity()`，此时 `bpy.data` 是 `_RestrictData`，访问 `bpy.data.objects` 抛出 `AttributeError`。异常发生在 mode timer 与 `SpaceView3D` draw handler 注册之前；Panel/Class 已在此前完成注册，所以 UI 正常出现，但蓝线与自动同步两个后台服务均从未启动。现已移除注册阶段的数据扫描，改为 0.1 秒 deferred initialization；遇到受限数据会继续延迟，数据可用后才恢复代理身份。`load_post` 继续负责文件载入后的恢复。
+- 使用真实 Blender 4.4 用户 profile 验证桥接：运行时模块路径明确来自 `C:\Users\A\AppData\Roaming\Blender Foundation\Blender\4.4\scripts\addons\mmd_skirt_proxy_creator` Junction，插件为 enabled，模式 timer 与 deferred initialization timer 均成功注册，启动输出不再包含 `_RestrictData` traceback。面板新增仅在异常时显示的服务自检：若 draw handler 或自动同步 timer 未注册，会明确显示“蓝线绘制服务未注册”或“自动同步服务未注册”，不再依赖用户从无效果反推注册失败。headless 回归新增受限 `bpy.data` 重试断言。
+- 按真实 Sculpt 反馈撤销前两版 depsgraph/坐标签名 watchdog 方案，改为最直接的模式边沿触发：只记录每个代理上一次模式；一旦观察到 `EDIT/SCULPT -> OBJECT`，无条件立即调用与手工按钮相同的 `sync_proxy_bones()`，若启用物理同步再紧接着同步刚体与 Joint。不存在坐标比较、dirty 判定或等待 Blender 上报雕刻更新，因此每次退出代理编辑/雕刻都会主动提交一次。自动同步异常仍直接显示在代理编辑区。headless 回归真实进入 Sculpt Mode、移动中心控制点，断言 Sculpt 期间骨骼不动、退出 Object Mode 后单次模式检测即更新对应骨骼。
+- 调整 MMD 查看器骨骼页操作顺序：将“从 3D 视图同步选中骨骼”从下方物理创建模块顶部移到“将勾选项选入 Blender”正下方，使“列表勾选 → 3D 选骨”与“3D 选骨 → 列表勾选”两个互逆入口紧邻显示；Operator 行为不变。
+- 修复开放代理尤其是“圆周方向 = 1”时整条代理远离目标选区的问题。根因是开放模式复用了闭合裙面的极坐标圆柱拟合，并以单侧开放布片自身的包围中心冒充圆周轴心；单列随后取推算角跨度中点，得到的列位置并不在选中表面。
+- 闭合模式保持原圆柱拟合不变；开放模式改为在本地 XY 平面计算选区主轴，沿主轴分列，并按横向位置与高度从邻近选中顶点加权采样实际 XY。单列使用选区主轴中位位置，因此骨链会贴合选区几何中线并可随表面弯曲，不再生成远处的推算半径直线。
+- 根据连续真实界面反馈撤销变化不明显的“局部拉普拉斯平滑 + 仅修最后一点”方案。开放代理的每列原始 XY 轨迹现在整体拟合为顶部精确锚定的三次曲线；最后一个原始采样权重降为 `0.05`、倒数第二个降为 `0.5`，避免底部分叉或不对称尖角凭高杠杆继续拉偏整条末端。该处理同时作用于单列和多列开放代理，闭合代理不变。
+- 拟合结果若可能超出选区 XY 范围，会以顶部锚点为中心统一缩放整条曲线，而不是逐点裁切造成新折角；最终末点再沿全局拟合轨迹的末端切线延伸到原高度，越界时沿同一方向等比缩短。顶部位置、连续曲线形状、末端方向和选区范围四个约束同时保留。
+- 修复单列代理 Sculpt Mode 无法变形：根因是旧单列 Mesh 只有边、没有 polygon，而 Blender 雕刻只作用于面。单列现在保持中心控制点为前 `N` 个顶点，并在其周围生成 `±X/±Y` 四条极窄侧轨及四组纵向 quad，形成从任意视角都可命中的十字控制带；骨骼同步仍只读取中心 `surface_proxy_vertex_map`，所以物理拓扑仍是一列。根据实际使用反馈，控制带全宽由中位骨段长度的 `18%` 收窄为 `9%`，写入 `surface_proxy_sculpt_width`。
+- 新增由名称触发的打开代理镜像模式：名称以`左`或`右`开头时，去掉该方向字作为实际基础名，并在 Mesh 局部 X=0 的另一侧识别对应布料区域。两侧控制带作为同一个代理 Mesh 内的两个不相连逻辑组一次创建，既不会在左右之间补面或生成横 Joint；完全对称网格会自动启用 Mesh X Mirror 编辑，非对称网格保持关闭以免错误配对。闭合代理继续保持原行为。
+- 镜像骨链采用三套明确命名：Blender 骨骼为基础骨名加 `.L/.R`，MMD 日文名为`左/右`加基础骨名，MMD 英文名为基础骨名加 `_L/_R`。精确镜像网格直接反射已拟合控制链以保证左右位置严格一致；非精确镜像网格对另一侧实际顶点独立执行同一套拟合。两侧权重始终分别从各自原网格顶点计算，绝不把一侧权重直接复制到另一侧；重新算权重、骨骼同步、刚体和 Joint 更新也按左右逻辑组隔离。
+- MMD 查看器骨骼页新增“从勾选骨骼恢复或新建代理”：通过快速前缀勾选同一 Armature 中名称符合 `前缀_Cxx_Rxx` 或 `前缀_Cxx_Rxx.L/.R` 的完整骨链后，可直接由 Rest Bone 的 head/tail 重建控制网格。`前缀_Surface` 已存在时原地替换 Mesh 数据并保留对象身份及物理关联 ID，不存在时新建；结果立即写回完整代理元数据，可继续同步骨骼、重算权重及生成物理。
+- 左右后缀与打开/闭合拓扑改为完全独立。查看器恢复区直接提供“闭合/打开”选择；无左右后缀的裙骨可恢复为闭合面，带 `.L/.R` 的宽大桶袖等也可恢复成同一 Mesh 内两个分别闭合的逻辑组。两侧之间不补面、不建横 Joint；几何严格镜像时自动启用 Mesh X Mirror，否则保留同 Mesh 双侧编辑但关闭错误的自动镜像配对。
+- 代理身份恢复不再要求 Mesh 顶点数必须恰好等于骨链控制点数，改为允许附加控制面顶点，并继续按骨端点最近匹配唯一中心点；拓扑签名仍覆盖全部控制带顶点与边，Dynamic Topology 改拓扑仍会被拒绝。面板同步改为提示单列可雕刻且必须关闭 Dynamic Topology。
+- Blender 4.4.3 headless smoke 使用整体偏离原点且逐高度带交替褶皱的弯曲开放布片，分别覆盖四列开放面与 `12` 层单列开放控制带；逐点断言中心线留在选区 XY 范围内、最大离散曲率低于 `0.08`、末端方向点积大于 `0.9999`，并断言单列生成 `5N` 个顶点、`4(N-1)` 个面、控制带宽度低于中位骨段长度的 `10%`、可以进入 Sculpt Mode，中心点移动后仍只同步 `N-1` 根骨骼。镜像回归分别覆盖完全对称与非对称双侧布片，断言同 Mesh 双逻辑组、三套左右名称、精确反射/独立拟合分支、左右权重隔离，以及两条单列之间不创建横 Joint。骨骼反建回归覆盖现有普通闭合裙代理原地恢复，以及仅有 `.L/.R` 骨链时新建两个独立闭合桶袖代理组；断言对象身份保持、闭合面数量、X Mirror、左右面隔离和横 Joint 只在各自闭环内连接。另注入偏移 `0.65/-0.45` 的极端末点，断言全局拟合结果与该异常采样至少分离 `0.25`。完整回归通过 `MMD_SKIRT_PROXY_CREATOR_SMOKE_OK ... rigids=48 joints=84`，独立骨骼/物理回归继续通过 `BONE_PHYSICS_CREATOR_SMOKE_OK rigids=4 joints=3 ordered=3`。继续使用真实 Blender 4.4 源码 Junction；本轮不递增版本、不打包 zip、不修改 Rust DLL。
+
+## 2026-08-15 - 三模块统一横向 Tab 工作区（源码桥接开发）
+
+- 将 N 面板中原本各自折叠的“裙面代理创建器”“MMD 骨骼 / 刚体 / Joint 查看器”“MMD 物理预览”合并为单一顶层 `MMD 代理工具` Panel，顶部使用与 Velo Tools 一致的 `row.prop(..., expand=True)` 横向 Tab 导航。
+- 新增 Scene 级 `workspace_tab`，提供“代理创建 / MMD 查看器 / 物理预览”三个页面并保存当前选择。切换时只调用对应模块原有的 `draw_physics_settings`、`draw_browser` 或 `draw_preview`，模块逻辑、Operator、Rust runtime 和内部“基本 / 刚体 / 纵 Joint / 横 Joint”二级页签均不改动。
+- 删除另外两个独立 Panel 的注册，避免 N 面板同时保留重复折叠标题。完整 Blender 4.4.3 headless smoke 新增三页面独占绘制断言，并继续通过 `MMD_SKIRT_PROXY_CREATOR_SMOKE_OK ... rigids=48 joints=84`。本轮不修改 Rust DLL、不递增版本、不打包 zip。
+
 ## 2026-08-15 - 私有 GitHub 仓库与本地 Git 基线
 
 - 将独立项目根目录初始化为 Git 仓库，默认分支固定为 `main`；本地提交身份使用当前 GitHub 账号 `visaokc` 及其 GitHub noreply 地址，避免写入私人邮箱。

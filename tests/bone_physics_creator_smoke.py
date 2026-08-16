@@ -2,6 +2,7 @@ import pathlib
 import sys
 
 import bpy
+from mathutils import Vector
 
 
 PROJECT_ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -12,9 +13,15 @@ bpy.ops.preferences.addon_enable(module="bl_ext.blender_org.mmd_tools")
 import mmd_skirt_proxy_creator
 from bl_ext.blender_org.mmd_tools.core.model import Model
 from mmd_skirt_proxy_creator.mmd_physics import _mmd_api
+from mmd_skirt_proxy_creator.mirror_physics import mirrored_name
 
 
 mmd_skirt_proxy_creator.register()
+assert mirrored_name("Skirt.L") == "Skirt.R"
+assert mirrored_name("Skirt_R") == "Skirt_L"
+assert mirrored_name("左袖") == "右袖"
+assert mirrored_name("Body") == "Body_M"
+assert mirrored_name("Body_M") == "Body"
 model = Model.create("BonePhysicsCreatorSmoke", add_root_bone=True)
 root = model.rootObject()
 armature = model.armature()
@@ -23,6 +30,10 @@ CHAIN_A = "Creator_A"
 CHAIN_B = "Creator_B"
 CHAIN_C = "Creator_C_1234567890"
 SIBLING = "Creator_Sibling"
+MIRROR_A_L = "MirA.L"
+MIRROR_B_L = "MirB.L"
+MIRROR_A_R = "MirA.R"
+MIRROR_B_R = "MirB.R"
 
 bpy.context.view_layer.objects.active = armature
 armature.select_set(True)
@@ -210,6 +221,156 @@ assert sorted(joints, key=lambda item: item.name) == [
 assert [item.order_index for item in settings.browser_items] == list(
     range(len(settings.browser_items))
 )
+
+bpy.context.view_layer.objects.active = armature
+bpy.ops.object.mode_set(mode="EDIT")
+for x, first, second in (
+    (2.0, MIRROR_A_L, MIRROR_B_L),
+    (-2.0, MIRROR_A_R, MIRROR_B_R),
+):
+    first_bone = armature.data.edit_bones.new(first)
+    first_bone.head = (x, 0.0, 1.0)
+    first_bone.tail = (x, 0.0, 2.0)
+    first_bone.parent = armature.data.edit_bones[root_bone.name]
+    second_bone = armature.data.edit_bones.new(second)
+    second_bone.head = (x, 0.0, 2.0)
+    second_bone.tail = (x, 0.0, 3.0)
+    second_bone.parent = first_bone
+bpy.ops.object.mode_set(mode="POSE")
+select_pose(MIRROR_A_L, MIRROR_B_L)
+assert bpy.ops.surface_proxy.create_physics_from_selected_bones(mode="COMBINED") == {"FINISHED"}
+rigids = list(FnModel.iterate_rigid_body_objects(root))
+joints = list(FnModel.iterate_joint_objects(root))
+left_rigids = {
+    rigid.mmd_rigid.bone: rigid
+    for rigid in rigids
+    if rigid.mmd_rigid.bone in {MIRROR_A_L, MIRROR_B_L}
+}
+assert set(left_rigids) == {MIRROR_A_L, MIRROR_B_L}
+left_joint = next(
+    joint
+    for joint in joints
+    if {
+        joint.rigid_body_constraint.object1,
+        joint.rigid_body_constraint.object2,
+    }
+    == set(left_rigids.values())
+)
+left_rigids[MIRROR_A_L].rigid_body.mass = 3.25
+left_rigids[MIRROR_A_L].location.x += 0.35
+distractor = left_rigids[MIRROR_A_L].copy()
+left_rigids[MIRROR_A_L].users_collection[0].objects.link(distractor)
+distractor.name = "ExistingRightRigid"
+distractor.mmd_rigid.bone = MIRROR_A_R
+distractor.mmd_rigid.name_j = "OtherRight"
+distractor.mmd_rigid.name_e = "OtherRight"
+left_joint.rigid_body_constraint.limit_lin_x_lower = -0.1
+left_joint.rigid_body_constraint.limit_lin_x_upper = 0.4
+left_joint.rigid_body_constraint.limit_ang_y_lower = -0.3
+left_joint.rigid_body_constraint.limit_ang_y_upper = 0.6
+refresh("RIGID")
+check_only(*(rigid.name for rigid in left_rigids.values()))
+settings.mirror_include_joints = True
+assert bpy.ops.surface_proxy.create_mirrored_mmd_items() == {"FINISHED"}
+rigids = list(FnModel.iterate_rigid_body_objects(root))
+joints = list(FnModel.iterate_joint_objects(root))
+right_rigids = {
+    rigid.mmd_rigid.bone: rigid
+    for rigid in rigids
+    if rigid.mmd_rigid.bone in {MIRROR_A_R, MIRROR_B_R}
+    and rigid.mmd_rigid.name_j
+    == mirrored_name(left_rigids[rigid.mmd_rigid.bone.replace(".R", ".L")].mmd_rigid.name_j)
+}
+assert set(right_rigids) == {MIRROR_A_R, MIRROR_B_R}
+assert distractor not in right_rigids.values()
+right_joint = next(
+    joint
+    for joint in joints
+    if {
+        joint.rigid_body_constraint.object1,
+        joint.rigid_body_constraint.object2,
+    }
+    == set(right_rigids.values())
+)
+assert abs(right_rigids[MIRROR_A_R].rigid_body.mass - 3.25) < 1.0e-6
+assert abs(
+    right_rigids[MIRROR_A_R].matrix_world.translation.x
+    + left_rigids[MIRROR_A_L].matrix_world.translation.x
+) < 1.0e-6
+assert abs(right_joint.rigid_body_constraint.limit_lin_x_lower + 0.4) < 1.0e-6
+assert abs(right_joint.rigid_body_constraint.limit_lin_x_upper - 0.1) < 1.0e-6
+assert abs(right_joint.rigid_body_constraint.limit_ang_y_lower + 0.6) < 1.0e-6
+assert abs(right_joint.rigid_body_constraint.limit_ang_y_upper - 0.3) < 1.0e-6
+left_rigids[MIRROR_A_L].rigid_body.mass = 4.5
+left_joint.mmd_joint.spring_linear = Vector((1.0, 2.0, 3.0))
+refresh("RIGID")
+check_only(*(rigid.name for rigid in left_rigids.values()))
+assert bpy.ops.surface_proxy.sync_mirrored_mmd_items() == {"FINISHED"}
+assert abs(right_rigids[MIRROR_A_R].rigid_body.mass - 4.5) < 1.0e-6
+assert tuple(right_joint.mmd_joint.spring_linear) == (1.0, 2.0, 3.0)
+
+copy_source = left_rigids[MIRROR_A_L]
+copy_source.mmd_rigid.bone = root_bone.name
+copy_source.mmd_rigid.name_j = "BodyCore"
+copy_source.mmd_rigid.name_e = "BodyCore"
+left_joint.rigid_body_constraint.object1 = copy_source
+left_joint.rigid_body_constraint.object2 = left_rigids[MIRROR_B_L]
+bpy.data.objects.remove(right_joint, do_unlink=True)
+refresh("RIGID")
+check_only(left_rigids[MIRROR_B_L].name)
+settings.mirror_include_joints = True
+assert bpy.ops.surface_proxy.create_mirrored_mmd_items() == {"FINISHED"}
+shared_anchor_joint = next(
+    joint
+    for joint in FnModel.iterate_joint_objects(root)
+    if joint.rigid_body_constraint.object1 == copy_source
+    and joint.rigid_body_constraint.object2 == right_rigids[MIRROR_B_R]
+)
+bpy.data.objects.remove(shared_anchor_joint, do_unlink=True)
+refresh("RIGID")
+check_only(copy_source.name)
+settings.mirror_include_joints = False
+assert bpy.ops.surface_proxy.create_mirrored_mmd_items() == {"FINISHED"}
+copy_target = next(
+    rigid
+    for rigid in FnModel.iterate_rigid_body_objects(root)
+    if rigid != copy_source
+    and rigid.mmd_rigid.bone == root_bone.name
+    and rigid.mmd_rigid.name_j == "BodyCore_M"
+)
+refresh("RIGID")
+check_only(left_rigids[MIRROR_B_L].name)
+settings.mirror_include_joints = True
+assert bpy.ops.surface_proxy.create_mirrored_mmd_items() == {"FINISHED"}
+mirrored_anchor_joint = next(
+    joint
+    for joint in FnModel.iterate_joint_objects(root)
+    if joint.rigid_body_constraint.object1 == copy_target
+    and joint.rigid_body_constraint.object2 == right_rigids[MIRROR_B_R]
+)
+assert mirrored_anchor_joint is not None
+bpy.data.objects.remove(mirrored_anchor_joint, do_unlink=True)
+refresh("JOINT")
+check_only(left_joint.name)
+assert bpy.ops.surface_proxy.create_mirrored_mmd_items() == {"FINISHED"}
+mirrored_anchor_joint = next(
+    joint
+    for joint in FnModel.iterate_joint_objects(root)
+    if joint.rigid_body_constraint.object1 == copy_target
+    and joint.rigid_body_constraint.object2 == right_rigids[MIRROR_B_R]
+)
+left_joint.rigid_body_constraint.limit_ang_z_lower = -0.25
+left_joint.rigid_body_constraint.limit_ang_z_upper = 0.75
+refresh("JOINT")
+check_only(left_joint.name)
+assert bpy.ops.surface_proxy.sync_mirrored_mmd_items() == {"FINISHED"}
+assert abs(mirrored_anchor_joint.rigid_body_constraint.limit_ang_z_lower + 0.75) < 1.0e-6
+assert abs(mirrored_anchor_joint.rigid_body_constraint.limit_ang_z_upper - 0.25) < 1.0e-6
+copy_source.rigid_body.mass = 6.75
+refresh("RIGID")
+check_only(copy_source.name)
+assert bpy.ops.surface_proxy.sync_mirrored_mmd_items() == {"FINISHED"}
+assert abs(copy_target.rigid_body.mass - 6.75) < 1.0e-6
 
 print(
     "BONE_PHYSICS_CREATOR_SMOKE_OK "

@@ -138,8 +138,6 @@ def register_settings(cls):
 
 
 def draw(layout, settings):
-    row = layout.row(align=True)
-    row.operator(SPX_OT_SyncSelectedBonesToBrowser.bl_idname, icon="UV_SYNC_SELECT")
     box = layout.box()
     box.label(text="从选中骨骼创建 MMD 物理", icon="PHYSICS")
     row = box.row(align=True)

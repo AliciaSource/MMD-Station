@@ -32,9 +32,10 @@ fn main() {
         .file("native/mmd_bullet_api.cpp")
         .flag_if_supported("-std=c++17")
         .flag_if_supported("/std:c++17")
+        .define("WIN32", None)
         .define("BT_NO_PROFILE", None);
 
-    for dir in ["LinearMath", "BulletCollision", "BulletDynamics"] {
+    for dir in ["LinearMath", "BulletCollision", "BulletDynamics", "BulletSoftBody"] {
         add_cpp_files(&mut build, &bullet_src.join(dir));
     }
 
