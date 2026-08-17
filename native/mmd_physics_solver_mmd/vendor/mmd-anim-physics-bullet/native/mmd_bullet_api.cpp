@@ -144,27 +144,11 @@ static btCollisionShape *make_shape(const mmd_anim_bullet_rigidbody_desc &desc) 
 }
 
 static void calculate_local_inertia(
-    const mmd_anim_bullet_rigidbody_desc &desc,
+    const mmd_anim_bullet_rigidbody_desc &,
     btCollisionShape &shape,
     btScalar mass,
     btVector3 &inertia) {
-    if (desc.shape_type != MMD_ANIM_BULLET_SHAPE_BOX) {
-        shape.calculateLocalInertia(mass, inertia);
-        return;
-    }
-
-    const btBoxShape &box = static_cast<const btBoxShape &>(shape);
-    const btVector3 half_extents = box.getHalfExtentsWithMargin();
-    volatile const btScalar dimension_scale = btScalar(2.0f);
-    volatile const btScalar mass_scale = btScalar(0.0833333358168602f);
-    const btScalar lx = half_extents.x() * dimension_scale;
-    const btScalar ly = half_extents.y() * dimension_scale;
-    const btScalar lz = half_extents.z() * dimension_scale;
-    const btScalar scaled_mass = mass * mass_scale;
-    inertia.setValue(
-        scaled_mass * (ly * ly + lz * lz),
-        scaled_mass * (lx * lx + lz * lz),
-        scaled_mass * (lx * lx + ly * ly));
+    shape.calculateLocalInertia(mass, inertia);
 }
 
 static int32_t rigidbody_index_for_collision_object(
