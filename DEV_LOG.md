@@ -1,5 +1,50 @@
 # Development Log
 
+## 2026-08-17 - Blender 预览与 PMX Editor 根平移物理 bit 级对齐
+
+- 本轮验收边界按实际工作流收窄为：不播放 IK/Morph、不改变骨骼旋转，只对模型根骨做平移；比较对象是 Blender 当前物理场景按 `mmd_tools` 实际导出的 PMX，在 PMX Editor 使用的 `PmxNLib.dll` 中运行后的物理刚体状态。MMD 本体以及任意 VMD/IK 最终骨骼顺序不在本轮结论内。
+- Rust/Blender adapter 改为直接生成 PMX native 单位与坐标系的 Body/Joint 描述符，按 `mmd_tools` exporter 的 `mathutils.Vector` float32 运算顺序复现刚体尺寸和 Joint 位移限制。Rossi、达妮娅、Laevatain 三个实际模型的 adapter payload 与真正执行 `mmd_tools.export_pmx(scale=12.5)` 后重新读取出的物理 payload 逐 byte 一致，分别覆盖 `339/471`、`406/561`、`115/79` 个 Body/Joint。
+- PMX Euler 转 quaternion 不再经过 Blender quaternion 近似路径；ABI 升到 `4`，native helper 复现 PMX Editor `SlimDX.Quaternion.RotationYawPitchRoll(Y, X, Z)` 的 float half-angle、`msvcr100` double `sin/cos` 和运算分组。三模型累计 `2487` 个 Body/Joint rotation 与 SlimDX 输出逐 bit 一致，并新增固定 bit 回归。
+- 根骨平移时，0 型刚体使用 PMX Editor `SetData1` 对应的 position-only 路径：只更新 `btRigidBody` world transform 与 `btDefaultMotionState`，不额外修改 interpolation transform、activation 或 AABB。修复前首个差异出现在 frame 1；修复后同一 120-frame 平移曲线中，Rossi `2,603,520/2,603,520`、达妮娅 `3,118,080/3,118,080`、Laevatain `883,200/883,200` 个刚体 transform bytes 全部一致，首个差异均为 `None`。
+- 同一 bone 由多个动态刚体回写时，driver 选择从“最大 mass”改为 PMX Editor BodyList 顺序的 last writer wins；Blender 输出位置仍在 adapter 边界乘回 import scale。新增静态刚体平移跨 step 保持测试，并更新完整 smoke 的 PMX-unit 断言。
+- VS2013 RTM LTCG native build 的 `11/11` Rust tests 通过，DLL SHA256 为 `EDF5A6DCC445741FEA4C68A7CEE8D7C8B2D3C49E7B44C0F04D3E75A07E7D7537`；Blender 4.4.3 完整 smoke 输出 `MMD_SKIRT_PROXY_CREATOR_SMOKE_OK top_range=0.235911131 rigids=48 joints=96`。首次 smoke 命中既有开放代理随机阈值波动，立即复跑通过；synthetic recovery traceback 是测试主动注入。继续使用真实 Blender 4.4 源码 Junction，不递增版本、不打包 zip。
+
+## 2026-08-17 - 物理对象三层命名与 PMX 顺序编号统一
+
+- 修正骨骼物理创建把 Blender bone name（如 `背蝴蝶结_0_1.L`）同时写入刚体/Joint 日文名和英文名的问题。创建时现在读取骨骼 MMD 元数据并统一侧向规则：MMD 日文名使用 `左/右` 前缀，英文名使用 `_L/_R` 后缀；只有 Blender 骨骼名保留 `.L/.R`，Rigid/Joint 的 Blender object name 使用 MMD 日文名。
+- 新增集中命名模块 `mmd_skirt_proxy_creator/mmd_naming.py`，供骨骼创建、代理物理创建、镜像创建/同步、Joint 名称同步与诊断安全补名共同使用，避免不同入口再次各写一套左右命名规则。已有非空 MMD 字段不会由诊断修复无条件覆盖。
+- 插件创建骨骼物理、代理物理或镜像物理后，立即调用官方 `mmd_tools.operators.misc.MoveObject.normalize_indices()` 对对应模型的 Rigid/Joint 实际顺序编号。Blender 名由此直接成为 `000_左...` / `000_J.左...`；后续使用“PMX 实际顺序”移动项目会继续自动重编号，而不是把编号当作静态字符串。同步刚体 B 名称或镜像参数时保留现有三位顺序前缀，不再把编号擦成无前缀的 `J.xxx`。
+- `tests/bone_physics_creator_smoke.py` 新增 MMD 日/英文名、Rigid/Joint Blender object name、创建即编号、重排后编号和镜像命名回归；`tests/headless_smoke.py` 新增代理刚体/Joint 全量编号、Joint 同名时保留编号及精确镜像代理左右命名回归。Blender 4.4.3 独立 smoke 输出 `BONE_PHYSICS_CREATOR_SMOKE_OK rigids=9 joints=5 ordered=3`，完整 smoke 输出 `MMD_SKIRT_PROXY_CREATOR_SMOKE_OK top_range=0.235911131 rigids=48 joints=96`。
+- 对 `D:\MMD\模型\Alicia\鳴潮-達尼婭\Test\07.blend` 做不保存验证：删除左右 `背蝴蝶结_0_1.L/.R` 的原 Joint 后同时运行“基础 Joint”，新对象为 `502_J.右背蝴蝶结_0_1` / `503_J.左背蝴蝶结_0_1`，MMD 日文名分别使用右/左前缀，英文名分别为 `Skirt_0_1_R` / `Skirt_0_1_L`，标记 `MMD_07_NAMING_AND_ORDER_OK`。另把既有 `165_J.` 项临时改成旧式错误名称后执行同步，恢复为 `165_J.左背蝴蝶结_1_1 | 左背蝴蝶结_1_1 | Skirt_1_1_L`，标记 `MMD_07_EXISTING_JOINT_NAME_SYNC_OK`，证明可修旧 Joint 且不丢编号。临时脚本已删除；继续使用源码 Junction，不递增版本、不打包 zip。
+
+## 2026-08-17 - 全插件物理坐标系审计与回归加固
+
+- 沿全部实际写入位置/旋转的路径审计骨骼物理创建、代理物理创建与更新、3D 同步、左右镜像及 Rust 物理预览。除上一条已修复的“基础 Joint 从 Blender bone roll 重建坐标系”外，没有发现第二处同类坐标系错误；其余路径分别使用明确的 armature/model-local 几何、完整 world matrix 镜像或 world-space solver 变换，不能统一替换成刚体 B rotation。
+- 加固 `tests/bone_physics_creator_smoke.py`：骨骼生成刚体的局部 Z 必须沿骨骼方向且基底 determinant 为正；镜像刚体和 Joint 在带平移与旋转的非单位 Root 下，完整 4x4 world matrix 必须等于以 Armature 局部 X 平面反射的结果。验证覆盖创建与同步，而不再只比较 world X 位置。
+- 加固 `tests/headless_smoke.py`：代理刚体必须保持右手基底且局部 Z 沿代理骨骼；锚点/纵向 Joint 必须与其刚体 B 同坐标基，横向 Joint 必须与其来源列刚体 A 同坐标基。横向 Joint 的规则是既有约束语义，不能因为基础 Joint 的 bug 而改成刚体 B。
+- Blender 4.4.3 独立骨骼 smoke 输出 `BONE_PHYSICS_CREATOR_SMOKE_OK rigids=9 joints=5 ordered=3`；完整 smoke 复跑输出 `MMD_SKIRT_PROXY_CREATOR_SMOKE_OK top_range=0.235911131 rigids=48 joints=96`。首次完整 smoke 在既有开放曲线位移阈值断言处出现一次波动，立即复跑通过，坐标系专项断言两次均已先通过；已有 synthetic recovery traceback 是测试刻意注入。继续使用源码 Junction，不递增版本、不打包 zip。
+
+## 2026-08-17 - 基础 Joint 左右坐标系改用刚体 B 方向
+
+- 复现“同时选择带 `.L/.R` 标识的左右骨骼后创建基础 Joint，左右坐标系与 PE 结果相反/错位”的问题。根因不是后缀配对或 Blender 显示：`bone_physics_creator.builder._create_joint()` 过去用 child bone 的 Blender roll/x-axis 重新构造 Joint rotation；导入 PMX 后的 Blender bone roll 并不保存 PE Joint 的坐标基，因此即使 Joint 位置与刚体 A/B 正确，局部轴仍可能接近翻转。
+- 以 `D:\MMD\模型\Alicia\鳴潮-達尼婭\Test\07.blend` 的 PE 原始左右蝴蝶结 Joint 做只读对照。旧 bone-derived rotation 与左右原 Joint 的 quaternion 角差均为 `177.246619°`；原 Joint 与各自刚体 B 的 rotation 角差均为 `0°`。这同时排除了“仅显示形状看起来不一样”和“左右后缀串位”。
+- 基础 Joint 和“刚体 + 连接 Joint”现在以实际选中的刚体 B 的 MMD/model-local rotation 作为 Joint 坐标系，位置仍取 child bone head。对于现有 PE 刚体，这会保留其真正的左右镜像方向；对于本工具刚创建的刚体，Joint 与刚体 B 保持同一坐标基，不额外重复镜像。
+- `tests/bone_physics_creator_smoke.py` 先加入任意非默认刚体 B rotation 回归并确认旧实现失败，修复后要求新 Joint quaternion 与刚体 B 严格一致。随后在 `07.blend` 中只读删除原左右 `背蝴蝶结_1_1.L/.R` Joint、同时重新运行“基础 Joint”，新建两侧的 rotation 与 PE 原 Joint 均在 `0.0001°` 内、位置误差小于 `1e-7`，标记 `MMD_07_BASE_JOINT_AXES_OK`；工程未保存，临时脚本已删除。
+- Blender 4.4.3 完整 smoke 输出 `MMD_SKIRT_PROXY_CREATOR_SMOKE_OK top_range=0.235911131 rigids=48 joints=96`，独立骨骼物理 smoke 输出 `BONE_PHYSICS_CREATOR_SMOKE_OK rigids=9 joints=5 ordered=3`。继续使用源码 Junction，不递增版本、不打包 zip；本修复不自动改写本轮修复前已经创建的 Joint，需要 Reload Scripts 后删除并重新创建这些 Joint。
+
+## 2026-08-17 - 未锚定动态链跳转 Joint 与逐条安全修复
+
+- 修正未锚定动态链诊断的跳转目标：连通分量内存在 Joint 时，不再跳到链首刚体，而是优先跳到稳定排序后的链首相邻 Joint，使用户可以直接编辑活动项中的刚体 A/B、限制和弹簧参数；只有整个自由分量连一个有效 Joint 都没有时，才退回刚体，因为此时不存在可跳转的 Joint。诊断搜索索引同步加入分量内全部 Joint 的 Blender/MMD 名称。
+- 诊断列表每行在跳转按钮旁新增“尝试安全修复”按钮。修复采用 fail-closed：当前能够确定等价结果的“MMD 骨骼名称为空”会自动填入 Blender 骨骼名并立即刷新诊断；缺失 Joint 端点、重复 Bone ID、无锚动态链等无法从现有模型唯一推断原始目标的问题不会猜测、不会按距离乱连，而是报错要求跳转后手动处理。修复操作支持 Undo。
+- 未锚链的处理指引现在明确要求检查跳转到的链首附近 Joint 的刚体 A/B；若原锚定 Joint 已被删除，应以该 Joint 为参照创建或恢复连接，而不是把整条链改为 0 型。测试新增两刚体自由链，验证诊断目标为 Joint、跳转后该 Joint 成为活动项、安全骨名修复后诊断行消失，以及不安全修复拒绝修改。
+- Blender 4.4.3 完整 smoke 输出 `MMD_SKIRT_PROXY_CREATOR_SMOKE_OK top_range=0.235911131 rigids=48 joints=96`，独立骨骼物理 smoke 输出 `BONE_PHYSICS_CREATOR_SMOKE_OK rigids=9 joints=5 ordered=3`。以 `D:\MMD\模型\Alicia\鳴潮-達尼婭\Test\07.blend` 只读验证：搜索 `191_左背蝴蝶结_4_1` 的警告现在跳到实际 Joint `534_J.左背蝴蝶结_1_1`；尝试自动修复会明确拒绝且刚体 A/B 保持不变。工程未保存，临时脚本已删除；继续使用源码 Junction，不递增版本、不打包 zip。
+
+## 2026-08-17 - MMD 查看器名称前缀显示过滤
+
+- 在“仅显示当前代理”右侧新增“按前缀过滤”复选框。启用后，骨骼、刚体和 Joint 列表只显示其可见 MMD 名称或 Blender 内部名称以当前“名称前缀”开头的项目；可与“仅显示当前代理”和搜索框叠加，关闭后立即恢复完整列表。
+- 该功能直接复用现有 `browser_prefix` 输入框和 UIList 的显示过滤，不重建模型列表、不重扫诊断、不触发 depsgraph/timer，因此输入前缀和反复切换的成本仅为当前已缓存列表的一次轻量字符串判断，并保留勾选状态与活动项。前缀为空时视为不过滤，避免误把列表清空。
+- 从诊断项跳转时会同时关闭“仅显示当前代理”和“按前缀过滤”并清空搜索，确保问题对象不会因为过滤条件而无法显示。扩展 `tests/headless_smoke.py`，验证默认状态、前缀筛选、与搜索条件求交集以及诊断跳转清除过滤；Blender 4.4.3 完整 smoke 输出 `MMD_SKIRT_PROXY_CREATOR_SMOKE_OK top_range=0.235911131 rigids=48 joints=96`，独立骨骼物理 smoke 输出 `BONE_PHYSICS_CREATOR_SMOKE_OK rigids=9 joints=5 ordered=3`。继续使用源码 Junction，不递增版本、不打包 zip。
+
 ## 2026-08-17 - MMD 查看器架构级自动刷新与性能边界
 
 - 新增统一的 `depsgraph_update_post` 自动刷新服务，不再要求每个旧操作或未来新增功能逐一记得调用诊断刷新。当前 MMD 模型的 Object、Armature data 或所属 Collection 发生结构/属性变化后，会把查看器标记为 dirty；位于 MMD 查看器时自动刷新，位于代理创建/物理预览页时只记录 dirty，返回查看器后再刷新。

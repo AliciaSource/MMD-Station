@@ -195,6 +195,19 @@ impl Transform {
     }
 }
 
+pub fn quaternion_rotation_yaw_pitch_roll(yaw: f32, pitch: f32, roll: f32) -> [f32; 4] {
+    let mut output = [0.0; 4];
+    unsafe {
+        ffi::mmd_anim_bullet_quaternion_rotation_yaw_pitch_roll(
+            yaw,
+            pitch,
+            roll,
+            output.as_mut_ptr(),
+        );
+    }
+    output
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ContactPoint {
     pub rigidbody_a: RigidBodyHandle,
@@ -324,6 +337,20 @@ impl BulletWorld {
         })
     }
 
+    pub fn set_rigidbody_position(
+        &mut self,
+        handle: RigidBodyHandle,
+        position: [f32; 3],
+    ) -> Result<(), BulletError> {
+        check(unsafe {
+            ffi::mmd_anim_bullet_world_set_rigidbody_position(
+                self.raw.as_ptr(),
+                handle.0,
+                position.as_ptr(),
+            )
+        })
+    }
+
     pub fn contact_points(&self) -> Result<Vec<ContactPoint>, BulletError> {
         let mut count = 0;
         check(unsafe {
@@ -445,6 +472,12 @@ mod ffi {
 
     unsafe extern "C" {
         pub fn mmd_anim_bullet_get_last_error() -> *const c_char;
+        pub fn mmd_anim_bullet_quaternion_rotation_yaw_pitch_roll(
+            yaw: f32,
+            pitch: f32,
+            roll: f32,
+            out_rotation_xyzw: *mut f32,
+        );
         pub fn mmd_anim_bullet_world_create(out_world: *mut *mut World) -> i32;
         pub fn mmd_anim_bullet_world_destroy(world: *mut World);
         pub fn mmd_anim_bullet_world_reset(world: *mut World) -> i32;
@@ -476,6 +509,11 @@ mod ffi {
             index: i32,
             position: *const f32,
             rotation_xyzw: *const f32,
+        ) -> i32;
+        pub fn mmd_anim_bullet_world_set_rigidbody_position(
+            world: *mut World,
+            index: i32,
+            position: *const f32,
         ) -> i32;
         pub fn mmd_anim_bullet_world_add_6dof_spring_joint(
             world: *mut World,

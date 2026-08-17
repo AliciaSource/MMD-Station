@@ -8,7 +8,15 @@ import bpy
 from bpy.app.handlers import persistent
 from mathutils import Matrix, Quaternion, Vector
 
-from .ffi import BodyDesc, JointDesc, Solver, Vec3, matrix_to_transform, transform_to_components
+from .ffi import (
+    BodyDesc,
+    JointDesc,
+    Solver,
+    Transform,
+    Vec3,
+    pmx_euler_to_blender_quaternion,
+    transform_to_components,
+)
 from .time_driver import PreviewTimeDriver
 
 
@@ -20,7 +28,7 @@ _STEP_EXECUTOR = None
 
 
 def _uniform_world_scale(obj, tolerance=1.0e-4):
-    scale = tuple(abs(float(value)) for value in obj.matrix_world.to_scale())
+    scale = tuple(abs(float(value)) for value in obj.matrix_world.decompose()[2])
     largest = max(scale)
     if largest <= 1.0e-8 or max(scale) - min(scale) > largest * tolerance:
         raise RuntimeError(f"{obj.name} 使用了非均匀或零缩放，无法保持 MMD 刚体语义")
@@ -206,7 +214,22 @@ def _resolve_hierarchical_bone_targets(armature, animation_pose, physics_targets
     return resolved
 
 
-def _body_desc(obj, armature):
+def _pmx_native_matrix_transform(matrix, import_scale):
+    position, rotation, _object_scale = matrix.decompose()
+    euler = rotation.to_euler("YXZ")
+    pmx_euler = (-float(euler.x), -float(euler.z), -float(euler.y))
+    export_scale = 1.0 / import_scale
+    return Transform(
+        Vec3.from_value(tuple(float(value) * export_scale for value in position)),
+        pmx_euler_to_blender_quaternion(pmx_euler),
+    )
+
+
+def _pmx_native_object_transform(obj, import_scale):
+    return _pmx_native_matrix_transform(obj.matrix_world, import_scale)
+
+
+def _body_desc(obj, armature, import_scale=1.0):
     rigid = obj.mmd_rigid
     body = obj.rigid_body
     blocked = tuple(rigid.collision_group_mask)
@@ -214,13 +237,16 @@ def _body_desc(obj, armature):
     pose_bone = armature.pose.bones.get(rigid.bone) if rigid.bone else None
     bone_world = armature.matrix_world @ pose_bone.matrix if pose_bone else obj.matrix_world
     object_scale = _uniform_world_scale(obj)
+    export_scale = 1.0 / import_scale
+    shape_size = Vector(rigid.size) * object_scale
+    shape_size *= export_scale
     return BodyDesc(
         int(rigid.type),
         SHAPES.get(rigid.shape, 0),
-        matrix_to_transform(obj.matrix_world),
-        matrix_to_transform(bone_world),
+        _pmx_native_object_transform(obj, import_scale),
+        _pmx_native_matrix_transform(bone_world, import_scale),
         int(pose_bone is not None),
-        Vec3.from_value(tuple(float(value) * object_scale for value in rigid.size)),
+        Vec3.from_value(shape_size),
         max(float(body.mass), 0.0),
         float(body.linear_damping),
         float(body.angular_damping),
@@ -240,7 +266,7 @@ def _constraint_vector(constraint, pattern):
 
 
 def _scaled_vec3(value, scale):
-    return Vec3(value.x * scale, value.y * scale, value.z * scale)
+    return Vec3.from_value(Vector((value.x, value.y, value.z)) * scale)
 
 
 def _matrix_changed(first, second, epsilon=1.0e-5):
@@ -268,20 +294,21 @@ def _scene_is_playing(scene):
     return bool(screen is not None and screen.is_animation_playing)
 
 
-def _joint_desc(obj, body_indices):
+def _joint_desc(obj, body_indices, import_scale=1.0):
     constraint = obj.rigid_body_constraint
     if constraint.object1 not in body_indices or constraint.object2 not in body_indices:
         return None
     joint = obj.mmd_joint
     object_scale = _uniform_world_scale(obj)
+    export_scale = 1.0 / import_scale
     linear_lower = _constraint_vector(constraint, "limit_lin_{axis}_lower")
     linear_upper = _constraint_vector(constraint, "limit_lin_{axis}_upper")
-    linear_lower = _scaled_vec3(linear_lower, object_scale)
-    linear_upper = _scaled_vec3(linear_upper, object_scale)
+    linear_lower = _scaled_vec3(linear_lower, object_scale * export_scale)
+    linear_upper = _scaled_vec3(linear_upper, object_scale * export_scale)
     return JointDesc(
         body_indices[constraint.object1],
         body_indices[constraint.object2],
-        matrix_to_transform(obj.matrix_world),
+        _pmx_native_object_transform(obj, import_scale),
         linear_lower,
         linear_upper,
         _constraint_vector(constraint, "limit_ang_{axis}_lower"),
@@ -368,12 +395,15 @@ class PreviewSession:
             joint_descs = []
             self.joints = []
             for joint in joint_objects:
-                desc = _joint_desc(joint, body_indices)
+                desc = _joint_desc(joint, body_indices, self.import_scale)
                 if desc is not None and desc.body_a != desc.body_b:
                     joint_descs.append(desc)
                     self.joints.append(joint)
             self.joint_names = [joint.name for joint in self.joints]
-            self.body_descs = [_body_desc(obj, self.armature) for obj in self.rigids]
+            self.body_descs = [
+                _body_desc(obj, self.armature, self.import_scale)
+                for obj in self.rigids
+            ]
             self.joint_descs = joint_descs
         except Exception:
             for name, matrix_basis in self.saved_pose_basis.items():
@@ -395,12 +425,7 @@ class PreviewSession:
             self.bone_offsets[index] = bone_world.inverted_safe() @ rigid.matrix_world
             if int(rigid.mmd_rigid.type) != 0:
                 self.saved_basis[bone_name] = self.saved_pose_basis[bone_name].copy()
-                current = self.bone_drivers.get(bone_name)
-                if (
-                    current is None
-                    or rigid.rigid_body.mass > self.rigids[current].rigid_body.mass
-                ):
-                    self.bone_drivers[bone_name] = index
+                self.bone_drivers[bone_name] = index
         self.last_output_basis = {
             pose_bone.name: pose_bone.matrix_basis.copy()
             for pose_bone in self.armature.pose.bones
@@ -447,11 +472,15 @@ class PreviewSession:
 
     def rebuild_descriptors(self):
         body_indices = {obj: index for index, obj in enumerate(self.rigids)}
-        self.body_descs = [_body_desc(obj, self.armature) for obj in self.rigids]
+        self.body_descs = [
+            _body_desc(obj, self.armature, self.import_scale)
+            for obj in self.rigids
+        ]
         self.joint_descs = [
             desc
             for desc in (
-                _joint_desc(joint, body_indices) for joint in self.joints
+                _joint_desc(joint, body_indices, self.import_scale)
+                for joint in self.joints
             )
             if desc is not None and desc.body_a != desc.body_b
         ]
@@ -528,7 +557,10 @@ class PreviewSession:
             if pose_bone is None or index not in self.bone_offsets:
                 continue
             bone_world = self.armature.matrix_world @ pose_bone.matrix
-            self.solver.set_bone_target(self.body_offset + index, bone_world)
+            self.solver.set_bone_target(
+                self.body_offset + index,
+                _pmx_native_matrix_transform(bone_world, self.import_scale),
+            )
 
     def step_solver(self):
         return self.world.step()
@@ -552,7 +584,7 @@ class PreviewSession:
             rigid = self.rigids[index]
             position, rotation = transform_to_components(transform)
             rigid_world = Matrix.LocRotScale(
-                Vector(position),
+                Vector(position) * self.import_scale,
                 Quaternion(rotation),
                 Vector((1.0, 1.0, 1.0)),
             )
@@ -570,7 +602,7 @@ class PreviewSession:
                 continue
             bone_position, bone_rotation = transform_to_components(bone_transforms[index])
             bone_world = Matrix.LocRotScale(
-                Vector(bone_position),
+                Vector(bone_position) * self.import_scale,
                 Quaternion(bone_rotation),
                 Vector((1.0, 1.0, 1.0)),
             )
@@ -591,7 +623,10 @@ class PreviewSession:
         for joint, state in zip(self.joints, joint_states):
             position_a, rotation_a = transform_to_components(state.frame_a)
             position_b, _rotation_b = transform_to_components(state.frame_b)
-            position = (Vector(position_a) + Vector(position_b)) * 0.5
+            position = (
+                (Vector(position_a) + Vector(position_b))
+                * (0.5 * self.import_scale)
+            )
             scale = joint.matrix_world.to_scale()
             joint.matrix_world = Matrix.LocRotScale(
                 position,
@@ -657,7 +692,7 @@ class PreviewWorld:
     def __init__(self, key, import_scale):
         self.key = key
         self.import_scale = import_scale
-        self.world_scale = 1.0 / import_scale
+        self.world_scale = 1.0
         self.sessions = []
         self.solver = None
         self.generation = 0

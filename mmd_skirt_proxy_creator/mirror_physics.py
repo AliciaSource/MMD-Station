@@ -4,6 +4,12 @@ import bpy
 from bpy.types import Operator
 from mathutils import Euler, Matrix, Vector
 
+from .mmd_naming import (
+    normalize_mmd_indices,
+    normalized_mmd_names,
+    set_ordered_object_name,
+)
+
 
 class MirrorPhysicsError(RuntimeError):
     pass
@@ -86,7 +92,7 @@ def _rigid_names(source, armature, bone_name):
         base_e = source.mmd_rigid.name_e or base_j
         name_j = mirrored_name(base_j)
         name_e = mirrored_name(base_e)
-    return name_j, name_e
+    return normalized_mmd_names(name_j, name_e, bone_name)
 
 
 def _mirror_bone(source, armature):
@@ -153,6 +159,7 @@ def _copy_rigid(source, target, armature, bone_name):
     name_j, name_e = _rigid_names(source, armature, bone_name)
     target.mmd_rigid.name_j = name_j
     target.mmd_rigid.name_e = name_e
+    set_ordered_object_name(target, name_j)
     target.mmd_rigid.bone = bone_name
     target.mmd_rigid.type = source.mmd_rigid.type
     target.mmd_rigid.shape = source.mmd_rigid.shape
@@ -211,15 +218,22 @@ def _create_mirror_rigid(
 
 
 def _joint_names(source, rigid_b):
-    name_j = mirrored_name(source.mmd_joint.name_j)
-    name_e = mirrored_name(source.mmd_joint.name_e)
     horizontal_j = str(source.mmd_joint.name_j).endswith("_H")
     horizontal_e = str(source.mmd_joint.name_e).endswith("_H")
+    source_j = str(source.mmd_joint.name_j)
+    source_e = str(source.mmd_joint.name_e)
+    name_j = mirrored_name(source_j[:-2] if horizontal_j else source_j)
+    name_e = mirrored_name(source_e[:-2] if horizontal_e else source_e)
     fallback_j = rigid_b.mmd_rigid.name_j or rigid_b.name
     fallback_e = rigid_b.mmd_rigid.name_e or rigid_b.name
+    name_j, name_e = normalized_mmd_names(
+        name_j or fallback_j,
+        name_e or fallback_e,
+        rigid_b.mmd_rigid.bone,
+    )
     return (
-        name_j or f"{fallback_j}{'_H' if horizontal_j else ''}",
-        name_e or f"{fallback_e}{'_H' if horizontal_e else ''}",
+        f"{name_j}_H" if horizontal_j else name_j,
+        f"{name_e}_H" if horizontal_e else name_e,
     )
 
 
@@ -299,6 +313,7 @@ def _copy_joint(source, target, armature, rigid_a, rigid_b):
     name_j, name_e = _joint_names(source, rigid_b)
     target.mmd_joint.name_j = name_j
     target.mmd_joint.name_e = name_e
+    set_ordered_object_name(target, name_j, joint=True)
     target_constraint.object1 = rigid_a
     target_constraint.object2 = rigid_b
     for axis, lower, upper in zip("xyz", linear_lower, linear_upper):
@@ -424,7 +439,7 @@ def _run(context, create):
     rigids = list(FnModel.iterate_rigid_body_objects(root))
     joints = list(FnModel.iterate_joint_objects(root))
     created_rigids = created_joints = synced_rigids = synced_joints = existing = skipped = 0
-    target_names = set()
+    target_objects = set()
     source_to_target = {}
 
     def rigid_counterpart(source):
@@ -459,7 +474,7 @@ def _run(context, create):
                 _copy_rigid(source, target, armature, bone_name)
                 synced_rigids += 1
             source_to_target[source] = target
-            target_names.add(target.name)
+            target_objects.add(target)
 
         if settings.mirror_include_joints:
             selected_set = set(sources)
@@ -565,9 +580,12 @@ def _run(context, create):
             else:
                 _copy_joint(source, target, armature, target_a, target_b)
                 synced_joints += 1
-            target_names.add(target.name)
+            target_objects.add(target)
 
     context.view_layer.update()
+    if create and (created_rigids or created_joints):
+        normalize_mmd_indices(root, FnModel)
+    target_names = {target.name for target in target_objects}
     _refresh_targets(settings, target_names)
     return {
         "created_rigids": created_rigids,
