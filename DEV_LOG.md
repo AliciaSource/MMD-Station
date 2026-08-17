@@ -1,5 +1,13 @@
 # Development Log
 
+## 2026-08-17 - MMD 9.32 独立 DLL 与双目标预览选择器
+
+- 保留 `native/mmd_physics_solver/` 与 `mmd_physics_solver.dll` 作为既有 PMX Editor/PmxNLib 对齐实现，新增完全独立的 `native/mmd_physics_solver_mmd/` 与 `mmd_physics_solver_mmd.dll`。Blender 物理预览面板新增 `MMD 本体 / PMX Editor` 选择器，默认 `MMD 本体`；运行期间禁止切换，world cache 同时纳入对齐目标，避免两个 ABI 相同但语义不同的 DLL 共享 solver。
+- 静态核对 MMD 9.32 x64 与 PmxNLib 2.5：MMD 使用 VC9 SP1、`btDefaultCollisionConfiguration`、`btDiscreteDynamicsWorld`；PmxNLib 使用 VS2013 RTM LTCG、`btSoftBodyRigidBodyCollisionConfiguration`、`btSoftRigidDynamicsWorld`。MMD 分支另恢复标准 Joint 线性弹簧 Z→Z 映射，不沿用 PmxNLib 的 Z/Y 特殊路径。
+- MMD C++ bridge 改为 VC9 SP1 `/fp:fast` 构建，静态链接 VC9 `libcmt.lib` 的数学实现；最终 DLL 不依赖 `MSVCR90.dll`。ABI 保持 `4`，MMD 固定 quaternion bit 回归与全部 `11/11` Rust tests 通过。最终重建的 MMD DLL SHA256 为 `8272EAF366BDC827A443DC6C917D30EAB53996BC661EF72DD58E4EEB1C5944F6`；既有 PMX DLL SHA256 保持 `EDF5A6DCC445741FEA4C68A7CEE8D7C8B2D3C49E7B44C0F04D3E75A07E7D7537`。
+- 全部实际 MMD 验证均通过隐藏窗口的隔离副本和 MMDBridge 脚本 headless 运行，没有打开可见 MMD GUI。以 60 FPS、仅 `全ての親` 从 X=0 平移到 X=5、IK/Morph 不动，采集 Rossi `339/471`、达妮娅 blue `406/561`、Laevatain Body `115/79` 三模型的 MMD 本体三帧骨骼矩阵；同模型 Blender headless 同时跑 MMD/PMX 两 DLL。MMD DLL 的三帧平均位置残差分别为 `0.697 / 0.730 / 0.845` PMX unit，PMX DLL为 `1.357 / 1.294 / 1.072`，MMD 分支三者均更接近 MMD 本体，但矩阵仍未逐 bit 一致，不能把本轮标成 MMD bit-exact。剩余差异集中在 MMD 的帧前物理初始化/0 型刚体更新时序和 MMDBridge 渲染采样顺序，不再混同为 PMX Editor solver 差异。
+- `tests/headless_smoke.py` 增加默认目标为 MMD、两个 DLL 文件名与 ABI 4 的回归。源码 Junction 保持不变，不递增插件版本、不打包 zip。
+
 ## 2026-08-17 - Blender 预览与 PMX Editor 根平移物理 bit 级对齐
 
 - 本轮验收边界按实际工作流收窄为：不播放 IK/Morph、不改变骨骼旋转，只对模型根骨做平移；比较对象是 Blender 当前物理场景按 `mmd_tools` 实际导出的 PMX，在 PMX Editor 使用的 `PmxNLib.dll` 中运行后的物理刚体状态。MMD 本体以及任意 VMD/IK 最终骨骼顺序不在本轮结论内。

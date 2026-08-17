@@ -4,6 +4,11 @@ import platform
 
 
 ABI_VERSION = 4
+DEFAULT_SOLVER_TARGET = "MMD"
+SOLVER_FILENAMES = {
+    "MMD": "mmd_physics_solver_mmd.dll",
+    "PMX": "mmd_physics_solver.dll",
+}
 
 
 class Vec3(ctypes.Structure):
@@ -79,18 +84,22 @@ def transform_to_components(value):
     )
 
 
-def library_path():
+def library_path(target=DEFAULT_SOLVER_TARGET):
     if platform.system() != "Windows" or platform.machine().lower() not in {
         "amd64",
         "x86_64",
     }:
         raise RuntimeError("当前物理预览 DLL 只构建了 Windows x64 版本")
-    return pathlib.Path(__file__).resolve().parent / "bin" / "win_amd64" / "mmd_physics_solver.dll"
+    try:
+        filename = SOLVER_FILENAMES[target]
+    except KeyError as error:
+        raise ValueError(f"未知物理对齐目标：{target}") from error
+    return pathlib.Path(__file__).resolve().parent / "bin" / "win_amd64" / filename
 
 
 class SolverLibrary:
-    def __init__(self, path=None):
-        path = pathlib.Path(path) if path else library_path()
+    def __init__(self, path=None, target=DEFAULT_SOLVER_TARGET):
+        path = pathlib.Path(path) if path else library_path(target)
         if not path.is_file():
             raise RuntimeError(f"找不到 Rust 物理求解器：{path}")
         self.path = path
@@ -151,19 +160,21 @@ class SolverLibrary:
         dll.mmd_solver_get_joint_states.restype = ctypes.c_uint32
 
 
-_DEFAULT_LIBRARY = None
+_DEFAULT_LIBRARIES = {}
 
 
-def default_library():
-    global _DEFAULT_LIBRARY
-    if _DEFAULT_LIBRARY is None:
-        _DEFAULT_LIBRARY = SolverLibrary()
-    return _DEFAULT_LIBRARY
+def default_library(target=DEFAULT_SOLVER_TARGET):
+    library = _DEFAULT_LIBRARIES.get(target)
+    if library is None:
+        library = SolverLibrary(target=target)
+        _DEFAULT_LIBRARIES[target] = library
+    return library
 
 
-def pmx_euler_to_blender_quaternion(value):
+def pmx_euler_to_blender_quaternion(value, library=None):
+    library = library or default_library()
     output = Quat()
-    result = default_library().dll.mmd_solver_pmx_euler_to_blender_quaternion(
+    result = library.dll.mmd_solver_pmx_euler_to_blender_quaternion(
         Vec3.from_value(value),
         ctypes.byref(output),
     )

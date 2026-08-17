@@ -7,6 +7,7 @@ __pycache__/
 
 # Rust build output
 native/mmd_physics_solver/target/
+native/mmd_physics_solver_mmd/target/
 
 # Local releases, backups, and generated packages
 _archive/

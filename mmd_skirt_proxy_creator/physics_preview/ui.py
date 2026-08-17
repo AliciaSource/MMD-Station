@@ -211,6 +211,15 @@ def register_settings(cls):
         ),
         default="CURRENT_PROXY",
     )
+    annotations["preview_solver_target"] = EnumProperty(
+        name="物理对齐目标",
+        description="选择预览 DLL 的目标实现；切换前需停止全部物理预览",
+        items=(
+            ("MMD", "MMD 本体", "使用按 MikuMikuDance 9.32 x64 初始化路径构建的 DLL"),
+            ("PMX", "PMX Editor", "使用已与 PmxNLib 2.5 对齐的 DLL"),
+        ),
+        default="MMD",
+    )
     annotations["preview_substeps"] = IntProperty(
         name="最大追帧步数",
         description="对应 MMD/Bullet 的 maxSubSteps；物理固定为 60 Hz，正常 60 FPS 下该值不会改变弹簧响应",
@@ -236,6 +245,9 @@ def register_settings(cls):
 def draw_preview(layout, settings):
     box = layout.box()
     box.label(text="Rust MMD 物理预览", icon="PHYSICS")
+    target_row = box.row()
+    target_row.enabled = not is_running()
+    target_row.prop(settings, "preview_solver_target", expand=True)
     box.prop(settings, "preview_scope", expand=True)
     if settings.preview_scope == "CURRENT_PROXY":
         box.prop(settings, "mmd_root")
@@ -279,8 +291,9 @@ def draw_preview(layout, settings):
             except Exception:
                 error_row = box.row(align=True)
                 error_row.label(text=f"{root.name} 的预览设置无效", icon="ERROR")
-    path = library_path()
-    status = "DLL 已就绪" if path.is_file() else "DLL 缺失"
+    target = settings.preview_solver_target
+    path = library_path(target)
+    status = f"{target} DLL 已就绪" if path.is_file() else f"{target} DLL 缺失"
     box.label(text=status, icon="CHECKMARK" if path.is_file() else "ERROR")
     row = box.row(align=True)
     row.prop(settings, "preview_frequency")
@@ -349,12 +362,12 @@ def draw_preview(layout, settings):
         active_box = box.box()
         header = active_box.row(align=True)
         header.label(text="正在预览的模型", icon="OUTLINER_OB_ARMATURE")
-        for root_name, import_scale, world_scale, interaction_group in sessions:
+        for root_name, import_scale, world_scale, interaction_group, solver_target in sessions:
             session_row = active_box.row(align=True)
             session_row.label(
                 text=(
                     f"{root_name}  导入 {import_scale:g} / DLL ×{world_scale:g}"
-                    + f" / 交互编号 #{interaction_group}"
+                    + f" / {solver_target} / 交互编号 #{interaction_group}"
                 )
             )
             reset_operator = session_row.operator(
