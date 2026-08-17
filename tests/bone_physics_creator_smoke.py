@@ -1,8 +1,9 @@
 import pathlib
+import re
 import sys
 
 import bpy
-from mathutils import Vector
+from mathutils import Euler, Matrix, Vector
 
 
 PROJECT_ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -13,10 +14,20 @@ bpy.ops.preferences.addon_enable(module="bl_ext.blender_org.mmd_tools")
 import mmd_skirt_proxy_creator
 from bl_ext.blender_org.mmd_tools.core.model import Model
 from mmd_skirt_proxy_creator.mmd_physics import _mmd_api
-from mmd_skirt_proxy_creator.mirror_physics import mirrored_name
+from mmd_skirt_proxy_creator.mirror_physics import mirrored_name, mirrored_world_matrix
 
 
 mmd_skirt_proxy_creator.register()
+
+
+def assert_matrix_close(actual, expected, tolerance=1.0e-6):
+    assert max(
+        abs(actual[row][column] - expected[row][column])
+        for row in range(4)
+        for column in range(4)
+    ) < tolerance
+
+
 assert mirrored_name("Skirt.L") == "Skirt.R"
 assert mirrored_name("Skirt_R") == "Skirt_L"
 assert mirrored_name("左袖") == "右袖"
@@ -51,6 +62,10 @@ sibling.tail = (1.0, 0.0, 2.0)
 sibling.parent = armature.data.edit_bones[root_bone.name]
 bpy.ops.object.mode_set(mode="POSE")
 
+for name in (CHAIN_A, CHAIN_B, CHAIN_C, SIBLING):
+    armature.pose.bones[name].mmd_bone.name_j = f"物理{name}"
+    armature.pose.bones[name].mmd_bone.name_e = f"Physics_{name}"
+
 settings = bpy.context.scene.surface_proxy_creator
 settings.mmd_root = root
 settings.browser_current_proxy_only = False
@@ -79,9 +94,38 @@ assert bpy.ops.surface_proxy.create_physics_from_selected_bones(mode="FOLLOW") =
 settings.bone_creator_physics_type = "2"
 select_pose(CHAIN_B)
 assert bpy.ops.surface_proxy.create_physics_from_selected_bones(mode="PHYSICS") == {"FINISHED"}
+FnModel, _FnRigidBody, _rigid_module = _mmd_api()
+chain_b_rigid = next(
+    rigid
+    for rigid in FnModel.iterate_rigid_body_objects(root)
+    if rigid.mmd_rigid.bone == CHAIN_B
+)
+assert chain_b_rigid.mmd_rigid.name_j == f"物理{CHAIN_B}"
+assert chain_b_rigid.mmd_rigid.name_e == f"Physics_{CHAIN_B}"[:16]
+assert re.match(r"^\d{3}_物理Creator_B$", chain_b_rigid.name)
+chain_b_bone = armature.data.bones[CHAIN_B]
+chain_b_direction = (chain_b_bone.tail_local - chain_b_bone.head_local).normalized()
+chain_b_basis = chain_b_rigid.rotation_euler.to_matrix()
+assert (chain_b_basis @ Vector((0.0, 0.0, 1.0))).dot(chain_b_direction) > 0.999999
+assert chain_b_basis.determinant() > 0.999999
+chain_b_rigid.rotation_euler = Euler((0.41, -0.72, 1.13), "YXZ")
 
 select_pose(CHAIN_A, CHAIN_B)
 assert bpy.ops.surface_proxy.create_physics_from_selected_bones(mode="JOINT") == {"FINISHED"}
+chain_ab_joint = next(
+    joint
+    for joint in FnModel.iterate_joint_objects(root)
+    if joint.rigid_body_constraint.object2 == chain_b_rigid
+)
+assert chain_ab_joint.mmd_joint.name_j == f"物理{CHAIN_B}"
+assert chain_ab_joint.mmd_joint.name_e == f"Physics_{CHAIN_B}"[:16]
+assert re.match(r"^\d{3}_J\.物理Creator_B$", chain_ab_joint.name)
+assert (
+    chain_ab_joint.rotation_euler.to_quaternion().rotation_difference(
+        chain_b_rigid.rotation_euler.to_quaternion()
+    ).angle
+    < 1.0e-6
+)
 
 settings.bone_creator_physics_type = "1"
 settings.browser_search = "stale filter"
@@ -93,7 +137,6 @@ assert settings.browser_search == ""
 assert not settings.browser_current_proxy_only
 assert any(item.selected for item in settings.browser_items if item.kind == "JOINT")
 
-FnModel, _FnRigidBody, _rigid_module = _mmd_api()
 rigids = list(FnModel.iterate_rigid_body_objects(root))
 joints = list(FnModel.iterate_joint_objects(root))
 types_by_bone = {}
@@ -107,7 +150,7 @@ assert all(len(rigid.mmd_rigid.name_j) <= 16 for rigid in rigids)
 assert all(len(joint.mmd_joint.name_j) <= 16 for joint in joints)
 assert any(
     rigid.mmd_rigid.bone == CHAIN_C
-    and rigid.mmd_rigid.name_j == CHAIN_C[:16]
+    and rigid.mmd_rigid.name_j == f"物理{CHAIN_C}"[:16]
     for rigid in rigids
 )
 assert len(joints) == 3
@@ -123,7 +166,7 @@ joint_bones = {
 assert frozenset((CHAIN_A, CHAIN_B)) in joint_bones
 assert frozenset((CHAIN_B, CHAIN_C)) in joint_bones
 assert any(
-    joint.mmd_joint.name_j == CHAIN_C[:16]
+    joint.mmd_joint.name_j == f"物理{CHAIN_C}"[:16]
     and frozenset(
         (
             joint.rigid_body_constraint.object1.mmd_rigid.bone,
@@ -237,6 +280,14 @@ for x, first, second in (
     second_bone.tail = (x, 0.0, 3.0)
     second_bone.parent = first_bone
 bpy.ops.object.mode_set(mode="POSE")
+for name_j, name_e, name in (
+    ("左镜像A", "MirrorA_L", MIRROR_A_L),
+    ("左镜像B", "MirrorB_L", MIRROR_B_L),
+    ("右镜像A", "MirrorA_R", MIRROR_A_R),
+    ("右镜像B", "MirrorB_R", MIRROR_B_R),
+):
+    armature.pose.bones[name].mmd_bone.name_j = name_j
+    armature.pose.bones[name].mmd_bone.name_e = name_e
 select_pose(MIRROR_A_L, MIRROR_B_L)
 assert bpy.ops.surface_proxy.create_physics_from_selected_bones(mode="COMBINED") == {"FINISHED"}
 rigids = list(FnModel.iterate_rigid_body_objects(root))
@@ -247,6 +298,9 @@ left_rigids = {
     if rigid.mmd_rigid.bone in {MIRROR_A_L, MIRROR_B_L}
 }
 assert set(left_rigids) == {MIRROR_A_L, MIRROR_B_L}
+assert left_rigids[MIRROR_A_L].mmd_rigid.name_j == "左镜像A"
+assert left_rigids[MIRROR_A_L].mmd_rigid.name_e == "MirrorA_L"
+assert re.match(r"^\d{3}_左镜像A$", left_rigids[MIRROR_A_L].name)
 left_joint = next(
     joint
     for joint in joints
@@ -256,6 +310,9 @@ left_joint = next(
     }
     == set(left_rigids.values())
 )
+assert left_joint.mmd_joint.name_j == "左镜像B"
+assert left_joint.mmd_joint.name_e == "MirrorB_L"
+assert re.match(r"^\d{3}_J\.左镜像B$", left_joint.name)
 left_rigids[MIRROR_A_L].rigid_body.mass = 3.25
 left_rigids[MIRROR_A_L].location.x += 0.35
 distractor = left_rigids[MIRROR_A_L].copy()
@@ -308,6 +365,28 @@ check_only(*(rigid.name for rigid in left_rigids.values()))
 assert bpy.ops.surface_proxy.sync_mirrored_mmd_items() == {"FINISHED"}
 assert abs(right_rigids[MIRROR_A_R].rigid_body.mass - 4.5) < 1.0e-6
 assert tuple(right_joint.mmd_joint.spring_linear) == (1.0, 2.0, 3.0)
+
+root.matrix_world = Matrix.Translation((1.7, -0.9, 2.3)) @ Euler(
+    (0.31, -0.22, 0.47), "XYZ"
+).to_matrix().to_4x4()
+bpy.context.view_layer.update()
+left_rigids[MIRROR_A_L].rotation_euler = Euler((0.27, -0.63, 1.04), "YXZ")
+left_joint.rotation_euler = Euler((-0.52, 0.38, -0.91), "YXZ")
+refresh("RIGID")
+check_only(*(rigid.name for rigid in left_rigids.values()))
+assert bpy.ops.surface_proxy.sync_mirrored_mmd_items() == {"FINISHED"}
+for left_name, right_name in (
+    (MIRROR_A_L, MIRROR_A_R),
+    (MIRROR_B_L, MIRROR_B_R),
+):
+    assert_matrix_close(
+        right_rigids[right_name].matrix_world,
+        mirrored_world_matrix(left_rigids[left_name], armature),
+    )
+assert_matrix_close(
+    right_joint.matrix_world,
+    mirrored_world_matrix(left_joint, armature),
+)
 
 copy_source = left_rigids[MIRROR_A_L]
 copy_source.mmd_rigid.bone = root_bone.name

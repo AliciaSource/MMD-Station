@@ -4,6 +4,7 @@ from dataclasses import dataclass
 import bpy
 from mathutils import Euler, Matrix, Vector
 
+from ..mmd_naming import bone_mmd_names, normalize_mmd_indices
 from .selection import restore_bone_selection, selected_bones_from_view
 
 
@@ -122,12 +123,16 @@ def _create_rigid(
     bone,
     dynamics_type,
     rigid_group,
+    armature,
     FnRigidBody,
     rigid_module,
 ):
     head, tail, length, rotation = _bone_geometry(bone)
     rigid = FnRigidBody.new_rigid_body_objects(context, rigid_group, 1)[0]
-    name = _pmx_name(bone.name)
+    pose_bone = armature.pose.bones[bone.name]
+    name, name_e = (
+        _pmx_name(value) for value in bone_mmd_names(pose_bone, bone.name)
+    )
     return FnRigidBody.setup_rigid_body_object(
         obj=rigid,
         shape_type=rigid_module.shapeType(settings.bone_creator_shape),
@@ -136,7 +141,7 @@ def _create_rigid(
         size=_rigid_size(settings, length),
         dynamics_type=dynamics_type,
         name=name,
-        name_e=name,
+        name_e=name_e,
         collision_group_number=settings.bone_creator_collision_group,
         collision_group_mask=list(settings.bone_creator_collision_mask),
         mass=settings.bone_creator_mass,
@@ -155,24 +160,27 @@ def _create_joint(
     rigid_a,
     rigid_b,
     joint_group,
+    armature,
     root,
     FnModel,
     FnRigidBody,
 ):
-    _head, _tail, _length, rotation = _bone_geometry(child_bone)
     joint = FnRigidBody.new_joint_objects(
         context,
         joint_group,
         1,
         FnModel.get_empty_display_size(root),
     )[0]
-    name = _pmx_name(child_bone.name)
+    pose_bone = armature.pose.bones[child_bone.name]
+    name, name_e = (
+        _pmx_name(value) for value in bone_mmd_names(pose_bone, child_bone.name)
+    )
     return FnRigidBody.setup_joint_object(
         obj=joint,
         name=name,
-        name_e=name,
+        name_e=name_e,
         location=child_bone.head_local,
-        rotation=rotation,
+        rotation=rigid_b.rotation_euler.copy(),
         rigid_a=rigid_a,
         rigid_b=rigid_b,
         maximum_location=Vector(settings.bone_creator_limit_linear_upper),
@@ -200,8 +208,8 @@ def create_from_selected(context, settings, mode):
     reused_rigids = 0
     created_joints = 0
     skipped_joints = 0
-    created_rigid_names = []
-    created_joint_names = []
+    created_rigid_objects = []
+    created_joint_objects = []
     try:
         selected_bones = [armature.data.bones[name] for name in selected_names]
         rigid_group = FnModel.ensure_rigid_group_object(context, root)
@@ -228,11 +236,12 @@ def create_from_selected(context, settings, mode):
                     bone,
                     dynamics_type,
                     rigid_group,
+                    armature,
                     FnRigidBody,
                     rigid_module,
                 )
                 created_objects.append(rigid)
-                created_rigid_names.append(rigid.name)
+                created_rigid_objects.append(rigid)
                 by_bone.setdefault(bone.name, []).append(rigid)
                 created_rigids += 1
 
@@ -261,12 +270,13 @@ def create_from_selected(context, settings, mode):
                     rigid_a,
                     rigid_b,
                     joint_group,
+                    armature,
                     root,
                     FnModel,
                     FnRigidBody,
                 )
                 created_objects.append(joint)
-                created_joint_names.append(joint.name)
+                created_joint_objects.append(joint)
                 existing_pairs.add(pair)
                 created_joints += 1
     except Exception:
@@ -282,12 +292,19 @@ def create_from_selected(context, settings, mode):
             selected_names,
             active_name,
         )
+    kinds = []
+    if created_rigid_objects:
+        kinds.append("RIGID")
+    if created_joint_objects:
+        kinds.append("JOINT")
+    if kinds:
+        normalize_mmd_indices(root, FnModel, kinds)
     return BuildResult(
         selected=len(selected_names),
         created_rigids=created_rigids,
         reused_rigids=reused_rigids,
         created_joints=created_joints,
         skipped_joints=skipped_joints,
-        created_rigid_names=tuple(created_rigid_names),
-        created_joint_names=tuple(created_joint_names),
+        created_rigid_names=tuple(obj.name for obj in created_rigid_objects),
+        created_joint_names=tuple(obj.name for obj in created_joint_objects),
     )

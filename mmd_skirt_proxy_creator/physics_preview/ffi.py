@@ -3,7 +3,7 @@ import pathlib
 import platform
 
 
-ABI_VERSION = 3
+ABI_VERSION = 4
 
 
 class Vec3(ctypes.Structure):
@@ -104,6 +104,11 @@ class SolverLibrary:
         dll = self.dll
         dll.mmd_solver_abi_version.argtypes = []
         dll.mmd_solver_abi_version.restype = ctypes.c_uint32
+        dll.mmd_solver_pmx_euler_to_blender_quaternion.argtypes = (
+            Vec3,
+            ctypes.POINTER(Quat),
+        )
+        dll.mmd_solver_pmx_euler_to_blender_quaternion.restype = ctypes.c_int32
         dll.mmd_solver_create.argtypes = (
             ctypes.POINTER(BodyDesc),
             ctypes.c_uint32,
@@ -146,9 +151,30 @@ class SolverLibrary:
         dll.mmd_solver_get_joint_states.restype = ctypes.c_uint32
 
 
+_DEFAULT_LIBRARY = None
+
+
+def default_library():
+    global _DEFAULT_LIBRARY
+    if _DEFAULT_LIBRARY is None:
+        _DEFAULT_LIBRARY = SolverLibrary()
+    return _DEFAULT_LIBRARY
+
+
+def pmx_euler_to_blender_quaternion(value):
+    output = Quat()
+    result = default_library().dll.mmd_solver_pmx_euler_to_blender_quaternion(
+        Vec3.from_value(value),
+        ctypes.byref(output),
+    )
+    if result != 0:
+        raise RuntimeError("PMX Euler 转换失败")
+    return output
+
+
 class Solver:
     def __init__(self, bodies, joints, world_scale, library=None):
-        self.library = library or SolverLibrary()
+        self.library = library or default_library()
         self.body_count = len(bodies)
         self.joint_count = len(joints)
         body_array = (BodyDesc * len(bodies))(*bodies)

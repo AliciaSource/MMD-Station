@@ -9,6 +9,7 @@
 #include <string>
 #include <utility>
 #include <vector>
+#include <windows.h>
 
 #if defined(_MSC_VER) && _MSC_VER < 1900
 static std::string g_last_error;
@@ -55,6 +56,15 @@ struct mmd_anim_bullet_world {
 static mmd_anim_bullet_status fail(mmd_anim_bullet_status status, const char *message) {
     g_last_error = message;
     return status;
+}
+
+typedef double(__cdecl *PmxEditorTrigFunction)(double);
+
+static PmxEditorTrigFunction pmx_editor_trig(const char *name) {
+    static HMODULE runtime = LoadLibraryW(L"msvcr100.dll");
+    return runtime
+        ? reinterpret_cast<PmxEditorTrigFunction>(GetProcAddress(runtime, name))
+        : nullptr;
 }
 
 static btTransform make_transform(const float position[3], const float rotation_xyzw[4]) {
@@ -167,6 +177,57 @@ uint32_t mmd_anim_bullet_get_version(void) {
 
 const char *mmd_anim_bullet_get_last_error(void) {
     return g_last_error.c_str();
+}
+
+void mmd_anim_bullet_quaternion_rotation_yaw_pitch_roll(
+    float yaw,
+    float pitch,
+    float roll,
+    float out_rotation_xyzw[4]) {
+    const float half_yaw = yaw * 0.5f;
+    const float half_pitch = pitch * 0.5f;
+    const float half_roll = roll * 0.5f;
+    const PmxEditorTrigFunction sin_function = pmx_editor_trig("sin");
+    const PmxEditorTrigFunction cos_function = pmx_editor_trig("cos");
+    const float sin_yaw = static_cast<float>(
+        sin_function ? sin_function(static_cast<double>(half_yaw))
+                     : std::sin(static_cast<double>(half_yaw)));
+    const float cos_yaw = static_cast<float>(
+        cos_function ? cos_function(static_cast<double>(half_yaw))
+                     : std::cos(static_cast<double>(half_yaw)));
+    const float sin_pitch = static_cast<float>(
+        sin_function ? sin_function(static_cast<double>(half_pitch))
+                     : std::sin(static_cast<double>(half_pitch)));
+    const float cos_pitch = static_cast<float>(
+        cos_function ? cos_function(static_cast<double>(half_pitch))
+                     : std::cos(static_cast<double>(half_pitch)));
+    const float sin_roll = static_cast<float>(
+        sin_function ? sin_function(static_cast<double>(half_roll))
+                     : std::sin(static_cast<double>(half_roll)));
+    const float cos_roll = static_cast<float>(
+        cos_function ? cos_function(static_cast<double>(half_roll))
+                     : std::cos(static_cast<double>(half_roll)));
+
+    const double yaw_pitch_sin =
+        static_cast<double>(sin_yaw) * static_cast<double>(cos_pitch);
+    const double yaw_pitch_cos =
+        static_cast<double>(cos_yaw) * static_cast<double>(sin_pitch);
+    const double cos_yaw_cos_pitch =
+        static_cast<double>(cos_yaw) * static_cast<double>(cos_pitch);
+    const double sin_pitch_sin_yaw =
+        static_cast<double>(sin_pitch) * static_cast<double>(sin_yaw);
+    out_rotation_xyzw[0] = static_cast<float>(
+        static_cast<double>(sin_roll) * yaw_pitch_sin +
+        static_cast<double>(cos_roll) * yaw_pitch_cos);
+    out_rotation_xyzw[1] = static_cast<float>(
+        yaw_pitch_sin * static_cast<double>(cos_roll) -
+        yaw_pitch_cos * static_cast<double>(sin_roll));
+    out_rotation_xyzw[2] = static_cast<float>(
+        static_cast<double>(sin_roll) * cos_yaw_cos_pitch -
+        static_cast<double>(cos_roll) * sin_pitch_sin_yaw);
+    out_rotation_xyzw[3] = static_cast<float>(
+        static_cast<double>(sin_roll) * sin_pitch_sin_yaw +
+        static_cast<double>(cos_roll) * cos_yaw_cos_pitch);
 }
 
 mmd_anim_bullet_status mmd_anim_bullet_world_create(mmd_anim_bullet_world **out_world) {
@@ -435,12 +496,27 @@ mmd_anim_bullet_status mmd_anim_bullet_world_set_rigidbody_transform(
 
     auto &entry = world->rigidbodies[static_cast<size_t>(index)];
     entry.body->setWorldTransform(transform);
-    entry.body->setInterpolationWorldTransform(transform);
-    entry.body->activate(true);
+    g_last_error.clear();
+    return MMD_ANIM_BULLET_OK;
+}
+
+mmd_anim_bullet_status mmd_anim_bullet_world_set_rigidbody_position(
+    mmd_anim_bullet_world *world,
+    int32_t index,
+    const float position[3]) {
+    if (!world || !position) {
+        return fail(MMD_ANIM_BULLET_NULL_POINTER, "world or position buffer is null");
+    }
+    if (index < 0 || static_cast<size_t>(index) >= world->rigidbodies.size()) {
+        return fail(MMD_ANIM_BULLET_INVALID_ARGUMENT, "rigidbody index out of range");
+    }
+    auto &entry = world->rigidbodies[static_cast<size_t>(index)];
+    btTransform transform = entry.body->getWorldTransform();
+    transform.setOrigin(btVector3(position[0], position[1], position[2]));
+    entry.body->setWorldTransform(transform);
     if (entry.motion_state) {
         entry.motion_state->setWorldTransform(transform);
     }
-    world->dynamics_world->updateSingleAabb(entry.body.get());
     g_last_error.clear();
     return MMD_ANIM_BULLET_OK;
 }

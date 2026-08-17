@@ -1,13 +1,13 @@
 use mmd_anim_physics_bullet::{
     BulletWorld, RigidBodyDesc as BulletBodyDesc, RigidBodyHandle, RigidBodyShape,
-    SixDofSpringJointDesc, Transform as BulletTransform,
+    SixDofSpringJointDesc, Transform as BulletTransform, quaternion_rotation_yaw_pitch_roll,
 };
 use std::ffi::c_void;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::ptr;
 use std::slice;
 
-const ABI_VERSION: u32 = 3;
+const ABI_VERSION: u32 = 4;
 #[cfg(test)]
 const DEFAULT_WORLD_SCALE: f32 = 12.5;
 const MMD_GRAVITY_SCALE: f32 = 10.0;
@@ -226,6 +226,8 @@ struct BodyBinding {
     mode: u32,
     has_bone: bool,
     body_from_bone: Transform,
+    initial_body: Transform,
+    initial_animation_bone: Transform,
     animation_bone: Transform,
 }
 
@@ -301,6 +303,8 @@ impl Solver {
                 mode: desc.mode,
                 has_bone: desc.has_bone != 0,
                 body_from_bone: bone_transform.inverse().compose(transform),
+                initial_body: transform,
+                initial_animation_bone: bone_transform,
                 animation_bone: bone_transform,
             });
         }
@@ -383,21 +387,45 @@ impl Solver {
             .bodies
             .get(index)
             .ok_or_else(|| format!("rigid body {} is out of range", index))?;
-        let body_target = target.compose(binding.body_from_bone);
-        self.world
-            .set_rigidbody_transform(
-                handle,
-                BulletTransform {
-                    position: body_target.position.scaled_array(self.world_scale),
-                    rotation_xyzw: [
-                        body_target.rotation.x,
-                        body_target.rotation.y,
-                        body_target.rotation.z,
-                        body_target.rotation.w,
-                    ],
-                },
-            )
-            .map_err(|error| error.to_string())
+        let translation_only = target.rotation.array()
+            == binding.initial_animation_bone.rotation.array();
+        let body_target = if translation_only {
+            Transform {
+                position: target.position.add(
+                    binding
+                        .initial_animation_bone
+                        .position
+                        .neg()
+                        .add(binding.initial_body.position),
+                ),
+                rotation: binding.initial_body.rotation,
+            }
+        } else {
+            target.compose(binding.body_from_bone)
+        };
+        if translation_only {
+            self.world
+                .set_rigidbody_position(
+                    handle,
+                    body_target.position.scaled_array(self.world_scale),
+                )
+                .map_err(|error| error.to_string())
+        } else {
+            self.world
+                .set_rigidbody_transform(
+                    handle,
+                    BulletTransform {
+                        position: body_target.position.scaled_array(self.world_scale),
+                        rotation_xyzw: [
+                            body_target.rotation.x,
+                            body_target.rotation.y,
+                            body_target.rotation.z,
+                            body_target.rotation.w,
+                        ],
+                    },
+                )
+                .map_err(|error| error.to_string())
+        }
     }
 
     fn step(&mut self, dt: f32, substeps: u32) -> Result<(), String> {
@@ -494,6 +522,27 @@ fn ffi_guard<T: Copy>(fallback: T, callback: impl FnOnce() -> T) -> T {
 #[unsafe(no_mangle)]
 pub extern "C" fn mmd_solver_abi_version() -> u32 {
     ABI_VERSION
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn mmd_solver_pmx_euler_to_blender_quaternion(
+    euler: Vec3,
+    output: *mut Quat,
+) -> i32 {
+    if output.is_null() {
+        return -1;
+    }
+    let value = quaternion_rotation_yaw_pitch_roll(euler.y, euler.x, euler.z);
+    unsafe {
+        *output = Quat {
+            x: value[0],
+            y: value[1],
+            z: value[2],
+            w: value[3],
+        }
+        .mmd_basis();
+    }
+    0
 }
 
 #[unsafe(no_mangle)]
@@ -770,6 +819,44 @@ mod tests {
         solver_two.transforms(&mut output_two).unwrap();
         solver_ten.transforms(&mut output_ten).unwrap();
         assert!((output_two[0].position.z - output_ten[0].position.z).abs() < 1.0e-6);
+    }
+
+    #[test]
+    fn pmx_quaternion_matches_slimdx_float_bits() {
+        let value = quaternion_rotation_yaw_pitch_roll(-0.2, 0.1, 0.3);
+        assert_eq!(value[0].to_bits(), 0x3d0c5f89);
+        assert_eq!(value[1].to_bits(), 0xbdd92149);
+        assert_eq!(value[2].to_bits(), 0x3e1d1f32);
+        assert_eq!(value[3].to_bits(), 0x3f7b5aed);
+    }
+
+    #[test]
+    fn translated_static_body_survives_the_next_step() {
+        let body = BodyDesc {
+            mode: 0,
+            shape: 0,
+            has_bone: 1,
+            size: Vec3 {
+                x: 0.2,
+                y: 0.2,
+                z: 0.2,
+            },
+            ..BodyDesc::default()
+        };
+        let mut solver = Solver::new_with_world_scale(&[body], &[], 1.0).unwrap();
+        let target = Transform {
+            position: Vec3 {
+                x: 0.5,
+                y: 0.25,
+                z: -0.125,
+            },
+            rotation: Quat::default(),
+        };
+        solver.set_bone_target(0, target).unwrap();
+        solver.step(1.0 / 60.0, 10).unwrap();
+        let mut output = [Transform::default()];
+        solver.transforms(&mut output).unwrap();
+        assert_eq!(output[0].position.array(), target.position.array());
     }
 
     #[test]

@@ -65,6 +65,11 @@ extern "C" {
 
 MMD_ANIM_BULLET_API uint32_t mmd_anim_bullet_get_version(void);
 MMD_ANIM_BULLET_API const char *mmd_anim_bullet_get_last_error(void);
+MMD_ANIM_BULLET_API void mmd_anim_bullet_quaternion_rotation_yaw_pitch_roll(
+    float yaw,
+    float pitch,
+    float roll,
+    float out_rotation_xyzw[4]);
 
 MMD_ANIM_BULLET_API mmd_anim_bullet_status
 mmd_anim_bullet_world_create(mmd_anim_bullet_world **out_world);
@@ -102,6 +107,11 @@ mmd_anim_bullet_world_set_rigidbody_transform(
     int32_t index,
     const float position[3],
     const float rotation_xyzw[4]);
+MMD_ANIM_BULLET_API mmd_anim_bullet_status
+mmd_anim_bullet_world_set_rigidbody_position(
+    mmd_anim_bullet_world *world,
+    int32_t index,
+    const float position[3]);
 MMD_ANIM_BULLET_API mmd_anim_bullet_status
 mmd_anim_bullet_world_add_6dof_spring_joint(
     mmd_anim_bullet_world *world,
