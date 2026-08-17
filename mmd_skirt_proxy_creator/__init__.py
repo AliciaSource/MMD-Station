@@ -42,8 +42,10 @@ from .mmd_physics import (
     associate_existing_proxy_physics,
     draw_browser,
     draw_physics_settings,
+    register_browser_auto_refresh,
     register_browser_context_menu,
     register_settings,
+    unregister_browser_auto_refresh,
     unregister_browser_context_menu,
 )
 from .physics_preview import CLASSES as PHYSICS_PREVIEW_CLASSES
@@ -1076,9 +1078,10 @@ class SPX_PT_SurfaceProxyCreator(Panel):
 
 CLASSES = (
     MMD_PHYSICS_CLASSES[0],
+    MMD_PHYSICS_CLASSES[1],
     SPX_Settings,
     *SYNC_CLASSES,
-    *MMD_PHYSICS_CLASSES[1:],
+    *MMD_PHYSICS_CLASSES[2:],
     *BONE_PHYSICS_CREATOR_CLASSES,
     *MMD_ORDERING_CLASSES,
     *PHYSICS_PREVIEW_CLASSES,
@@ -1096,12 +1099,14 @@ def register():
         bpy.utils.register_class(cls)
     bpy.types.Scene.surface_proxy_creator = PointerProperty(type=SPX_Settings)
     register_sync_services()
+    register_browser_auto_refresh()
     register_browser_context_menu()
 
 
 def unregister():
     unregister_preview_runtime()
     unregister_browser_context_menu()
+    unregister_browser_auto_refresh()
     unregister_sync_services()
     del bpy.types.Scene.surface_proxy_creator
     for cls in reversed(CLASSES):

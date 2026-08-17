@@ -7,15 +7,36 @@
 #include <cmath>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
+#if defined(_MSC_VER) && _MSC_VER < 1900
+static std::string g_last_error;
+#else
 thread_local std::string g_last_error;
+#endif
 
 struct RigidBodyEntry {
     std::unique_ptr<btCollisionShape> shape;
     std::unique_ptr<btDefaultMotionState> motion_state;
     std::unique_ptr<btRigidBody> body;
     btTransform initial_transform;
+
+#if defined(_MSC_VER) && _MSC_VER < 1900
+    RigidBodyEntry() = default;
+    RigidBodyEntry(RigidBodyEntry &&other)
+        : shape(std::move(other.shape)),
+          motion_state(std::move(other.motion_state)),
+          body(std::move(other.body)),
+          initial_transform(other.initial_transform) {}
+    RigidBodyEntry &operator=(RigidBodyEntry &&other) {
+        shape = std::move(other.shape);
+        motion_state = std::move(other.motion_state);
+        body = std::move(other.body);
+        initial_transform = other.initial_transform;
+        return *this;
+    }
+#endif
 };
 
 struct mmd_anim_bullet_world {
@@ -24,6 +45,9 @@ struct mmd_anim_bullet_world {
     std::unique_ptr<btDbvtBroadphase> broadphase;
     std::unique_ptr<btSequentialImpulseConstraintSolver> solver;
     std::unique_ptr<btSoftRigidDynamicsWorld> dynamics_world;
+    std::unique_ptr<btCollisionShape> ground_shape;
+    std::unique_ptr<btDefaultMotionState> ground_motion_state;
+    std::unique_ptr<btRigidBody> ground_body;
     std::vector<RigidBodyEntry> rigidbodies;
     std::vector<std::unique_ptr<btTypedConstraint>> constraints;
 };
@@ -58,11 +82,12 @@ static void set_angular_limit(btGeneric6DofSpringConstraint &constraint, const f
 static void configure_linear_spring_axis(
     btGeneric6DofSpringConstraint &constraint,
     int axis,
+    int stiffness_axis,
     float stiffness) {
     constraint.enableSpring(axis, false);
     if (stiffness != 0.0f) {
         constraint.enableSpring(axis, true);
-        constraint.setStiffness(axis, stiffness);
+        constraint.setStiffness(stiffness_axis, stiffness);
     }
 }
 
@@ -88,6 +113,30 @@ static btCollisionShape *make_shape(const mmd_anim_bullet_rigidbody_desc &desc) 
     default:
         return nullptr;
     }
+}
+
+static void calculate_local_inertia(
+    const mmd_anim_bullet_rigidbody_desc &desc,
+    btCollisionShape &shape,
+    btScalar mass,
+    btVector3 &inertia) {
+    if (desc.shape_type != MMD_ANIM_BULLET_SHAPE_BOX) {
+        shape.calculateLocalInertia(mass, inertia);
+        return;
+    }
+
+    const auto &box = static_cast<const btBoxShape &>(shape);
+    const btVector3 half_extents = box.getHalfExtentsWithMargin();
+    volatile const btScalar dimension_scale = btScalar(2.0f);
+    volatile const btScalar mass_scale = btScalar(0.0833333358168602f);
+    const btScalar lx = half_extents.x() * dimension_scale;
+    const btScalar ly = half_extents.y() * dimension_scale;
+    const btScalar lz = half_extents.z() * dimension_scale;
+    const btScalar scaled_mass = mass * mass_scale;
+    inertia.setValue(
+        scaled_mass * (ly * ly + lz * lz),
+        scaled_mass * (lx * lx + lz * lz),
+        scaled_mass * (lx * lx + ly * ly));
 }
 
 static int32_t rigidbody_index_for_collision_object(
@@ -140,6 +189,23 @@ mmd_anim_bullet_status mmd_anim_bullet_world_create(mmd_anim_bullet_world **out_
         world->dynamics_world->getSolverInfo().m_numIterations = 10;
         world->dynamics_world->getSolverInfo().m_solverMode |= SOLVER_USE_WARMSTARTING;
         world->dynamics_world->setGravity(btVector3(0.0f, 0.0f, -98.0f));
+
+        world->ground_shape = std::make_unique<btStaticPlaneShape>(
+            btVector3(0.0f, 1.0f, 0.0f),
+            0.0f);
+        btTransform ground_transform;
+        ground_transform.setIdentity();
+        world->ground_motion_state = std::make_unique<btDefaultMotionState>(ground_transform);
+        btRigidBody::btRigidBodyConstructionInfo ground_info(
+            0.0f,
+            world->ground_motion_state.get(),
+            world->ground_shape.get(),
+            btVector3(0.0f, 0.0f, 0.0f));
+        world->ground_body = std::make_unique<btRigidBody>(ground_info);
+        world->dynamics_world->addRigidBody(
+            world->ground_body.get(),
+            static_cast<short>(0x8000),
+            static_cast<short>(-1));
         *out_world = world.release();
         g_last_error.clear();
         return MMD_ANIM_BULLET_OK;
@@ -158,6 +224,9 @@ void mmd_anim_bullet_world_destroy(mmd_anim_bullet_world *world) {
         }
         for (auto it = world->rigidbodies.rbegin(); it != world->rigidbodies.rend(); ++it) {
             world->dynamics_world->removeRigidBody(it->body.get());
+        }
+        if (world->ground_body) {
+            world->dynamics_world->removeRigidBody(world->ground_body.get());
         }
     }
     delete world;
@@ -276,7 +345,7 @@ mmd_anim_bullet_status mmd_anim_bullet_world_add_rigidbody(
         btVector3 inertia(0.0f, 0.0f, 0.0f);
         const btScalar mass = desc->mass;
         if (mass > 0.0f) {
-            shape->calculateLocalInertia(mass, inertia);
+            calculate_local_inertia(*desc, *shape, mass, inertia);
         }
 
         auto motion_state = std::make_unique<btDefaultMotionState>(initial_transform);
@@ -400,10 +469,15 @@ mmd_anim_bullet_status mmd_anim_bullet_world_add_6dof_spring_joint(
         set_vec3_limit(*constraint, desc->translation_lower_limit, desc->translation_upper_limit);
         set_angular_limit(*constraint, desc->rotation_lower_limit, desc->rotation_upper_limit);
         for (int axis = 0; axis < 3; ++axis) {
+            // PmxNLib 2.5 writes Z translation stiffness to motor 1 after enabling motor 2.
+            const int stiffness_axis = axis == 2 ? 1 : axis;
             configure_linear_spring_axis(
                 *constraint,
                 axis,
+                stiffness_axis,
                 desc->spring_translation_factor[axis]);
+        }
+        for (int axis = 0; axis < 3; ++axis) {
             configure_angular_spring_axis(
                 *constraint,
                 axis + 3,
