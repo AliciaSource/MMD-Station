@@ -2,9 +2,11 @@ import importlib
 import math
 import os
 import re
+import time
 import uuid
 
 import bpy
+from bpy.app.handlers import persistent
 from bl_operators.presets import AddPresetBase
 from bpy.props import (
     BoolProperty,
@@ -25,6 +27,10 @@ from .mirror_physics import CLASSES as MIRROR_PHYSICS_CLASSES, draw_mirror_tools
 
 
 PHYSICS_SCHEMA = 1
+_BROWSER_AUTO_REFRESH_DELAY = 0.25
+_BROWSER_AUTO_REFRESH_DEADLINE = 0.0
+_BROWSER_AUTO_REFRESH_DIRTY = False
+_BROWSER_AUTO_REFRESH_IN_PROGRESS = False
 
 PHYSICS_SETTING_NAMES = (
     "rigid_shape",
@@ -295,6 +301,7 @@ def _load_proxy_physics_settings(settings, proxy_object):
 def _physics_proxy_changed(settings, _context):
     _load_proxy_physics_settings(settings, settings.physics_proxy)
     settings.browser_items.clear()
+    settings.browser_diagnostics.clear()
 
 
 def _resolve_root(context, requested_root=None, proxy_object=None):
@@ -1217,6 +1224,17 @@ class SPX_MMD_BrowserItem(PropertyGroup):
     order_index: IntProperty(default=-1)
 
 
+class SPX_MMD_DiagnosticItem(PropertyGroup):
+    severity: StringProperty()
+    target_kind: StringProperty()
+    target_name: StringProperty()
+    armature_name: StringProperty()
+    label: StringProperty()
+    message: StringProperty()
+    solution: StringProperty()
+    search_text: StringProperty()
+
+
 class SPX_UL_MMDItems(UIList):
     def draw_item(
         self,
@@ -1255,6 +1273,433 @@ class SPX_UL_MMDItems(UIList):
             for item in items
         ]
         return flags, []
+
+
+class SPX_UL_MMDDiagnostics(UIList):
+    def draw_item(
+        self,
+        _context,
+        layout,
+        _data,
+        item,
+        _icon,
+        _active_data,
+        _active_propname,
+        _index,
+    ):
+        icon = "ERROR" if item.severity == "ERROR" else "INFO"
+        row = layout.row(align=True)
+        row.label(text=item.label, icon=icon)
+        row.label(text=item.message)
+        if item.target_name:
+            operator = row.operator(
+                "surface_proxy.jump_to_mmd_diagnostic",
+                text="",
+                icon="RESTRICT_SELECT_OFF",
+            )
+            operator.target_kind = item.target_kind
+            operator.target_name = item.target_name
+            operator.armature_name = item.armature_name
+
+    def filter_items(self, _context, data, property_name):
+        items = getattr(data, property_name)
+        search = data.browser_search.casefold().strip()
+        if not search:
+            return [], []
+        flags = [
+            self.bitflag_filter_item
+            if search
+            in f"{item.label} {item.message} {item.solution} {item.search_text}".casefold()
+            else 0
+            for item in items
+        ]
+        return flags, []
+
+
+def _add_mmd_diagnostic(
+    settings,
+    severity,
+    target_kind,
+    target_name,
+    label,
+    message,
+    solution,
+    armature_name="",
+    search_text="",
+):
+    item = settings.browser_diagnostics.add()
+    item.severity = severity
+    item.target_kind = target_kind
+    item.target_name = target_name
+    item.armature_name = armature_name
+    item.label = label
+    item.message = message
+    item.solution = solution
+    item.search_text = search_text
+
+
+def _mmd_rigid_components(rigids, joints):
+    rigid_set = set(rigids)
+    neighbors = {rigid: set() for rigid in rigids}
+    for joint in joints:
+        constraint = joint.rigid_body_constraint
+        if constraint is None:
+            continue
+        first = constraint.object1
+        second = constraint.object2
+        if first not in rigid_set or second not in rigid_set or first is second:
+            continue
+        neighbors[first].add(second)
+        neighbors[second].add(first)
+
+    components = []
+    remaining = set(rigids)
+    while remaining:
+        start = min(remaining, key=lambda rigid: rigid.name)
+        remaining.remove(start)
+        component = {start}
+        pending = [start]
+        while pending:
+            current = pending.pop()
+            for neighbor in neighbors[current]:
+                if neighbor in remaining:
+                    remaining.remove(neighbor)
+                    component.add(neighbor)
+                    pending.append(neighbor)
+        components.append(component)
+    return components, neighbors
+
+
+def _scan_mmd_diagnostics(settings, root, FnModel):
+    settings.browser_diagnostics.clear()
+    armature = FnModel.find_armature_object(root)
+    armature_name = armature.name if armature is not None else ""
+    if armature is None:
+        _add_mmd_diagnostic(
+            settings,
+            "ERROR",
+            "BONE",
+            "",
+            "骨骼",
+            "MMD 模型缺少 Armature",
+            "模型结构不完整；请重新导入 PMX，或把 Armature 正确归入这个 MMD Root。",
+        )
+        return
+
+    bones = [
+        bone
+        for bone in armature.pose.bones
+        if not getattr(bone, "is_mmd_shadow_bone", False)
+    ]
+    bone_names = {bone.name for bone in bones}
+    bone_ids = {}
+    for bone in bones:
+        mmd_bone = bone.mmd_bone
+        if not mmd_bone.name_j.strip():
+            _add_mmd_diagnostic(
+                settings,
+                "WARNING",
+                "BONE",
+                bone.name,
+                f"骨骼：{bone.name}",
+                "MMD 名称为空",
+                "跳转后填写名称；留空时导出器会改用 Blender 骨骼名。",
+                armature_name,
+            )
+        bone_id = int(mmd_bone.bone_id)
+        if bone_id >= 0:
+            bone_ids.setdefault(bone_id, []).append(bone.name)
+        if (
+            (mmd_bone.has_additional_rotation or mmd_bone.has_additional_location)
+            and not mmd_bone.additional_transform_bone
+        ):
+            _add_mmd_diagnostic(
+                settings,
+                "ERROR",
+                "BONE",
+                bone.name,
+                f"骨骼：{bone.name}",
+                "追加变换缺少目标骨骼",
+                "跳转后指定追加变换的目标骨骼，或关闭“旋转 + / 移动 +”。",
+                armature_name,
+            )
+    for bone_id, names in bone_ids.items():
+        if len(names) < 2:
+            continue
+        joined_names = "、".join(names)
+        for name in names:
+            _add_mmd_diagnostic(
+                settings,
+                "ERROR",
+                "BONE",
+                name,
+                f"骨骼：{name}",
+                f"Bone ID {bone_id} 重复：{joined_names}",
+                "跳转后为重复骨骼分配不同 Bone ID；不要删除仍被 Morph 或追加变换引用的骨骼。",
+                armature_name,
+            )
+
+    rigids = list(FnModel.iterate_rigid_body_objects(root))
+    rigid_set = set(rigids)
+    for rigid in rigids:
+        label = rigid.mmd_rigid.name_j or rigid.name
+        if rigid.rigid_body is None:
+            _add_mmd_diagnostic(
+                settings,
+                "ERROR",
+                "RIGID",
+                rigid.name,
+                f"刚体：{label}",
+                "缺少 Blender Rigid Body 数据",
+                "该对象不再是完整刚体；通常应从原 PMX 重新导入或重新创建该刚体。",
+            )
+        bone_name = rigid.mmd_rigid.bone
+        if bone_name and bone_name not in bone_names:
+            _add_mmd_diagnostic(
+                settings,
+                "ERROR",
+                "RIGID",
+                rigid.name,
+                f"刚体：{label}",
+                f"绑定骨骼不存在：{bone_name}",
+                "跳转后把“骨骼”改为当前模型中实际存在的骨骼。",
+            )
+
+    joints = list(FnModel.iterate_joint_objects(root))
+    for joint in joints:
+        label = joint.mmd_joint.name_j or joint.name
+        constraint = joint.rigid_body_constraint
+        if constraint is None:
+            _add_mmd_diagnostic(
+                settings,
+                "ERROR",
+                "JOINT",
+                joint.name,
+                f"Joint：{label}",
+                "缺少 Rigid Body Constraint",
+                "该对象不再是完整 Joint；通常应重新创建该 Joint。",
+            )
+            continue
+        first = constraint.object1
+        second = constraint.object2
+        if first is None:
+            _add_mmd_diagnostic(
+                settings,
+                "ERROR",
+                "JOINT",
+                joint.name,
+                f"Joint：{label}",
+                "缺少连接的刚体 A",
+                "跳转后在活动项属性的“刚体 A”中选择正确刚体。",
+            )
+        if second is None:
+            _add_mmd_diagnostic(
+                settings,
+                "ERROR",
+                "JOINT",
+                joint.name,
+                f"Joint：{label}",
+                "缺少连接的刚体 B",
+                "跳转后在活动项属性的“刚体 B”中选择正确刚体。",
+            )
+        for endpoint, endpoint_label in ((first, "A"), (second, "B")):
+            if endpoint is not None and endpoint not in rigid_set:
+                _add_mmd_diagnostic(
+                    settings,
+                    "ERROR",
+                    "JOINT",
+                    joint.name,
+                    f"Joint：{label}",
+                    f"刚体 {endpoint_label} 不属于当前 MMD 模型：{endpoint.name}",
+                    f"跳转后把“刚体 {endpoint_label}”换成当前 MMD 模型内的刚体。",
+                )
+        if first is not None and first is second:
+            _add_mmd_diagnostic(
+                settings,
+                "ERROR",
+                "JOINT",
+                joint.name,
+                f"Joint：{label}",
+                "刚体 A 与刚体 B 指向同一对象",
+                "跳转后把其中一个端点改成实际要连接的另一个刚体。",
+            )
+
+    components, neighbors = _mmd_rigid_components(rigids, joints)
+    for component in components:
+        dynamic = [
+            rigid for rigid in component if int(rigid.mmd_rigid.type) != 0
+        ]
+        if not dynamic or any(
+            int(rigid.mmd_rigid.type) == 0 for rigid in component
+        ):
+            continue
+        endpoints = [
+            rigid
+            for rigid in dynamic
+            if len(neighbors[rigid].intersection(component)) <= 1
+        ]
+        head = min(endpoints or dynamic, key=lambda rigid: rigid.name)
+        label = head.mmd_rigid.name_j or head.name
+        related = sorted(component, key=lambda rigid: rigid.name)
+        search_text = " ".join(
+            " ".join(
+                value
+                for value in (
+                    rigid.name,
+                    rigid.mmd_rigid.name_j,
+                    rigid.mmd_rigid.name_e,
+                    rigid.mmd_rigid.bone,
+                )
+                if value
+            )
+            for rigid in related
+        )
+        _add_mmd_diagnostic(
+            settings,
+            "WARNING",
+            "RIGID",
+            head.name,
+            f"动态链：{label}",
+            f"{len(dynamic)} 个动态刚体无法通过 Joint 到达 0 型锚点",
+            "若这不是故意的自由物体，请检查链首是否丢失了连接到 0 型刚体或其它已锚定物理链的 Joint；不要把整条链全部改成 0 型。",
+            search_text=search_text,
+        )
+
+
+def _tag_browser_redraw():
+    window_manager = getattr(bpy.context, "window_manager", None)
+    if window_manager is None:
+        return
+    for window in window_manager.windows:
+        screen = window.screen
+        if screen is None:
+            continue
+        for area in screen.areas:
+            if area.type == "VIEW_3D":
+                area.tag_redraw()
+
+
+def _refresh_mmd_browser_from_changes():
+    global _BROWSER_AUTO_REFRESH_DIRTY, _BROWSER_AUTO_REFRESH_IN_PROGRESS
+    if _BROWSER_AUTO_REFRESH_IN_PROGRESS:
+        return False
+    scene = getattr(bpy.context, "scene", None)
+    settings = getattr(scene, "surface_proxy_creator", None) if scene else None
+    if (
+        settings is None
+        or settings.mmd_root is None
+        or getattr(settings, "preview_running", False)
+    ):
+        return False
+    _BROWSER_AUTO_REFRESH_IN_PROGRESS = True
+    try:
+        root = _resolve_root(bpy.context, settings.mmd_root)
+        FnModel, _FnRigidBody, _rigid_module = _mmd_api()
+        _scan_mmd_diagnostics(settings, root, FnModel)
+        settings.browser_diagnostic_index = min(
+            settings.browser_diagnostic_index,
+            max(len(settings.browser_diagnostics) - 1, 0),
+        )
+        if settings.browser_kind != "DIAGNOSTIC":
+            result = bpy.ops.surface_proxy.refresh_mmd_browser()
+            if result != {"FINISHED"}:
+                return False
+        _BROWSER_AUTO_REFRESH_DIRTY = False
+        _tag_browser_redraw()
+        return True
+    except (ProxyBuildError, RuntimeError, ReferenceError, ValueError):
+        return False
+    finally:
+        _BROWSER_AUTO_REFRESH_IN_PROGRESS = False
+
+
+def _run_mmd_browser_auto_refresh():
+    now = time.monotonic()
+    if now < _BROWSER_AUTO_REFRESH_DEADLINE:
+        return max(_BROWSER_AUTO_REFRESH_DEADLINE - now, 0.01)
+    _refresh_mmd_browser_from_changes()
+    return None
+
+
+def _schedule_mmd_browser_auto_refresh():
+    global _BROWSER_AUTO_REFRESH_DEADLINE
+    _BROWSER_AUTO_REFRESH_DEADLINE = time.monotonic() + _BROWSER_AUTO_REFRESH_DELAY
+    if not bpy.app.timers.is_registered(_run_mmd_browser_auto_refresh):
+        bpy.app.timers.register(
+            _run_mmd_browser_auto_refresh,
+            first_interval=_BROWSER_AUTO_REFRESH_DELAY,
+        )
+
+
+def _object_belongs_to_mmd_root(obj, root):
+    current = obj
+    visited = set()
+    while current is not None and current not in visited:
+        if current is root:
+            return True
+        visited.add(current)
+        current = current.parent
+    return False
+
+
+def _depsgraph_update_affects_mmd_root(update, root):
+    data = update.id
+    if isinstance(data, bpy.types.Object):
+        return _object_belongs_to_mmd_root(data, root)
+    if isinstance(data, bpy.types.Armature):
+        model_objects = (root, *root.children_recursive)
+        return any(
+            obj.data is data
+            for obj in model_objects
+            if obj.type == "ARMATURE"
+        )
+    if isinstance(data, bpy.types.Collection):
+        try:
+            return any(
+                _object_belongs_to_mmd_root(obj, root)
+                for obj in data.all_objects
+            )
+        except ReferenceError:
+            return False
+    return False
+
+
+@persistent
+def _mmd_browser_depsgraph_update(scene, depsgraph):
+    global _BROWSER_AUTO_REFRESH_DIRTY
+    if _BROWSER_AUTO_REFRESH_IN_PROGRESS or scene is not getattr(
+        bpy.context, "scene", None
+    ):
+        return
+    settings = getattr(scene, "surface_proxy_creator", None)
+    if (
+        settings is None
+        or settings.mmd_root is None
+        or getattr(settings, "preview_running", False)
+    ):
+        return
+    if not any(
+        _depsgraph_update_affects_mmd_root(update, settings.mmd_root)
+        for update in depsgraph.updates
+    ):
+        return
+    _BROWSER_AUTO_REFRESH_DIRTY = True
+    if getattr(settings, "workspace_tab", "") == "BROWSER":
+        _schedule_mmd_browser_auto_refresh()
+
+
+def register_browser_auto_refresh():
+    handlers = bpy.app.handlers.depsgraph_update_post
+    if _mmd_browser_depsgraph_update not in handlers:
+        handlers.append(_mmd_browser_depsgraph_update)
+
+
+def unregister_browser_auto_refresh():
+    handlers = bpy.app.handlers.depsgraph_update_post
+    if _mmd_browser_depsgraph_update in handlers:
+        handlers.remove(_mmd_browser_depsgraph_update)
+    if bpy.app.timers.is_registered(_run_mmd_browser_auto_refresh):
+        bpy.app.timers.unregister(_run_mmd_browser_auto_refresh)
 
 
 class SPX_OT_CreateMMDPhysics(Operator):
@@ -1381,6 +1826,7 @@ class SPX_OT_RefreshMMDBrowser(Operator):
     bl_label = "刷新模型列表"
 
     def execute(self, context):
+        global _BROWSER_AUTO_REFRESH_DIRTY
         settings = context.scene.surface_proxy_creator
         try:
             root = _resolve_root(context, settings.mmd_root)
@@ -1395,6 +1841,14 @@ class SPX_OT_RefreshMMDBrowser(Operator):
         }
         settings.mmd_root = root
         settings.browser_items.clear()
+        if settings.browser_kind == "DIAGNOSTIC":
+            _scan_mmd_diagnostics(settings, root, FnModel)
+            settings.browser_diagnostic_index = min(
+                settings.browser_diagnostic_index,
+                max(len(settings.browser_diagnostics) - 1, 0),
+            )
+            _BROWSER_AUTO_REFRESH_DIRTY = False
+            return {"FINISHED"}
         armature = FnModel.find_armature_object(root)
         proxy = settings.physics_proxy if settings.browser_current_proxy_only else None
         proxy_objects = set(_proxy_physics_objects(proxy)) if proxy is not None else None
@@ -1477,6 +1931,7 @@ class SPX_OT_RefreshMMDBrowser(Operator):
             settings.browser_index,
             max(len(settings.browser_items) - 1, 0),
         )
+        _BROWSER_AUTO_REFRESH_DIRTY = False
         return {"FINISHED"}
 
 
@@ -1521,6 +1976,35 @@ class SPX_OT_SelectMMDItem(Operator):
             obj.select_set(True)
             context.view_layer.objects.active = obj
         return {"FINISHED"}
+
+
+class SPX_OT_JumpToMMDDiagnostic(Operator):
+    bl_idname = "surface_proxy.jump_to_mmd_diagnostic"
+    bl_label = "跳转到问题项"
+
+    target_kind: StringProperty()
+    target_name: StringProperty()
+    armature_name: StringProperty()
+
+    def execute(self, context):
+        settings = context.scene.surface_proxy_creator
+        settings.browser_current_proxy_only = False
+        settings.browser_search = ""
+        settings.browser_kind = self.target_kind
+        if bpy.ops.surface_proxy.refresh_mmd_browser() != {"FINISHED"}:
+            return {"CANCELLED"}
+        for index, item in enumerate(settings.browser_items):
+            if item.kind == self.target_kind and item.target_name == self.target_name:
+                settings.browser_index = index
+                break
+        else:
+            self.report({"ERROR"}, "问题项已不存在；请重新运行诊断")
+            return {"CANCELLED"}
+        return bpy.ops.surface_proxy.select_mmd_item(
+            kind=self.target_kind,
+            target_name=self.target_name,
+            armature_name=self.armature_name,
+        )
 
 
 def _checked_items(settings, kind=None):
@@ -2113,6 +2597,7 @@ class SPX_OT_CleanupCheckedBones(Operator):
 
 def _browser_kind_changed(settings, _context):
     settings.browser_items.clear()
+    settings.browser_diagnostics.clear()
     if settings.mmd_root is not None:
         try:
             bpy.ops.surface_proxy.refresh_mmd_browser()
@@ -2398,7 +2883,12 @@ def register_settings(cls):
             )
     properties["browser_kind"] = EnumProperty(
         name="查看类型",
-        items=(("BONE", "骨骼", ""), ("RIGID", "刚体", ""), ("JOINT", "Joint", "")),
+        items=(
+            ("BONE", "骨骼", ""),
+            ("RIGID", "刚体", ""),
+            ("JOINT", "Joint", ""),
+            ("DIAGNOSTIC", "诊断", ""),
+        ),
         default="BONE",
         update=_browser_kind_changed,
     )
@@ -2420,6 +2910,10 @@ def register_settings(cls):
     )
     properties["browser_items"] = CollectionProperty(type=SPX_MMD_BrowserItem)
     properties["browser_index"] = IntProperty(default=0, min=0)
+    properties["browser_diagnostics"] = CollectionProperty(
+        type=SPX_MMD_DiagnosticItem
+    )
+    properties["browser_diagnostic_index"] = IntProperty(default=0, min=0)
     properties["cleanup_root_bone"] = StringProperty(
         name="权重归并骨骼",
         description="清理勾选骨骼前，将这些骨骼的全部顶点组权重归并到此骨骼",
@@ -2724,13 +3218,53 @@ def draw_physics_settings(layout, settings, context=None):
 
 
 def draw_browser(layout, settings):
+    if (
+        _BROWSER_AUTO_REFRESH_DIRTY
+        and not _BROWSER_AUTO_REFRESH_IN_PROGRESS
+        and not getattr(settings, "preview_running", False)
+        and not bpy.app.timers.is_registered(_run_mmd_browser_auto_refresh)
+    ):
+        _schedule_mmd_browser_auto_refresh()
     layout.prop(settings, "mmd_root")
-    layout.prop(settings, "physics_proxy", text="代理范围")
-    layout.prop(settings, "browser_current_proxy_only")
+    if settings.browser_kind != "DIAGNOSTIC":
+        layout.prop(settings, "physics_proxy", text="代理范围")
+        layout.prop(settings, "browser_current_proxy_only")
     row = layout.row(align=True)
     row.prop(settings, "browser_kind", expand=True)
     row.operator("surface_proxy.refresh_mmd_browser", text="", icon="FILE_REFRESH")
     layout.prop(settings, "browser_search", icon="VIEWZOOM")
+    if settings.browser_kind == "DIAGNOSTIC":
+        layout.label(text="这里只报告可确认的模型结构问题，不评判物理参数。", icon="INFO")
+        layout.template_list(
+            "SPX_UL_MMDDiagnostics",
+            "",
+            settings,
+            "browser_diagnostics",
+            settings,
+            "browser_diagnostic_index",
+            rows=10,
+        )
+        error_count = sum(
+            item.severity == "ERROR" for item in settings.browser_diagnostics
+        )
+        warning_count = len(settings.browser_diagnostics) - error_count
+        if settings.browser_diagnostics:
+            layout.label(
+                text=f"发现 {error_count} 个错误、{warning_count} 个警告",
+                icon="ERROR" if error_count else "INFO",
+            )
+            layout.label(text="点击每行右侧按钮可跳转到对应 Tab 和活动项", icon="INFO")
+            index = min(
+                settings.browser_diagnostic_index,
+                len(settings.browser_diagnostics) - 1,
+            )
+            active_issue = settings.browser_diagnostics[index]
+            help_box = layout.box()
+            help_box.label(text=f"当前问题：{active_issue.message}", icon="QUESTION")
+            help_box.label(text=f"处理方法：{active_issue.solution}", icon="TOOL_SETTINGS")
+        else:
+            layout.label(text="未发现异常", icon="CHECKMARK")
+        return
     row = layout.row(align=True)
     row.prop(settings, "browser_prefix")
     row.operator(
@@ -2873,14 +3407,85 @@ def _draw_active_mmd_inspector(layout, settings):
             return
         box.label(text=f"骨骼：{pose_bone.name}")
         if hasattr(pose_bone, "mmd_bone"):
-            box.prop(pose_bone.mmd_bone, "name_j")
-            box.prop(pose_bone.mmd_bone, "name_e")
+            mmd_bone = pose_bone.mmd_bone
+            row = box.row(align=True)
+            row.label(text="信息")
+            if not mmd_bone.is_id_unique():
+                row.label(text="Bone ID 重复", icon="ERROR")
+            row.prop(mmd_bone, "bone_id", text="ID")
+            box.prop(mmd_bone, "name_j")
+            box.prop(mmd_bone, "name_e")
             operator = box.operator(
                 SPX_OT_FillMissingMMDBoneNames.bl_idname,
                 text="补全当前空缺名称",
                 icon="SORTALPHA",
             )
             operator.scope = "ACTIVE"
+            row = box.row(align=True)
+            row.prop(mmd_bone, "transform_order")
+            row.prop(mmd_bone, "transform_after_dynamics")
+            row = box.row(align=True)
+            row.prop(mmd_bone, "is_controllable")
+            row.prop(mmd_bone, "is_tip")
+            if any(constraint.type == "IK" for constraint in pose_bone.constraints):
+                box.prop(mmd_bone, "ik_rotation_constraint")
+
+            axes = box.column(align=True)
+            axes.prop(mmd_bone, "enabled_fixed_axis")
+            row = axes.row()
+            row.active = mmd_bone.enabled_fixed_axis
+            row.prop(mmd_bone, "fixed_axis", text="")
+            axes.prop(mmd_bone, "enabled_local_axes")
+            row = axes.row(align=True)
+            row.active = mmd_bone.enabled_local_axes
+            row.prop(mmd_bone, "local_axis_x")
+            row.prop(mmd_bone, "local_axis_z")
+
+            additional = box.column(align=True)
+            row = additional.row(align=True)
+            row.prop(
+                mmd_bone,
+                "has_additional_rotation",
+                text="旋转 +",
+                toggle=True,
+            )
+            row.prop(
+                mmd_bone,
+                "has_additional_location",
+                text="移动 +",
+                toggle=True,
+            )
+            if mmd_bone.is_additional_transform_dirty:
+                row.label(icon="ERROR")
+            additional.prop_search(
+                mmd_bone,
+                "additional_transform_bone",
+                armature.pose,
+                "bones",
+                text="目标骨骼",
+                icon="BONE_DATA",
+            )
+            additional.prop(
+                mmd_bone,
+                "additional_transform_influence",
+                text="影响",
+                slider=True,
+            )
+
+            connection = box.column(align=True)
+            connection.label(text="骨骼末端指向")
+            connection.prop(mmd_bone, "display_connection_type", text="类型")
+            if mmd_bone.display_connection_type == "BONE":
+                connection.prop_search(
+                    mmd_bone,
+                    "display_connection_bone",
+                    armature.pose,
+                    "bones",
+                    text="目标骨骼",
+                    icon="BONE_DATA",
+                )
+            elif mmd_bone.display_connection_type == "OFFSET":
+                connection.label(text="偏移将在导出时自动计算", icon="INFO")
         box.prop(pose_bone.bone, "use_deform")
         return
 
@@ -2977,7 +3582,9 @@ def unregister_browser_context_menu():
 
 CLASSES = (
     SPX_MMD_BrowserItem,
+    SPX_MMD_DiagnosticItem,
     SPX_UL_MMDItems,
+    SPX_UL_MMDDiagnostics,
     SPX_OT_CreateMMDPhysics,
     SPX_MT_PhysicsPresets,
     SPX_OT_ApplyStableLongSkirtPreset,
@@ -2986,6 +3593,7 @@ CLASSES = (
     SPX_OT_SyncMMDPhysics,
     SPX_OT_RefreshMMDBrowser,
     SPX_OT_SelectMMDItem,
+    SPX_OT_JumpToMMDDiagnostic,
     SPX_OT_SetMMDBrowserChecks,
     SPX_OT_QuickCheckMMDGroup,
     SPX_OT_PrefixFromActiveMMDItem,

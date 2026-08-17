@@ -16,6 +16,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 bpy.ops.preferences.addon_enable(module="bl_ext.blender_org.mmd_tools")
 
 import mmd_skirt_proxy_creator
+import mmd_skirt_proxy_creator.mmd_physics as mmd_physics_module
 from mmd_skirt_proxy_creator import sync as proxy_sync
 from mmd_skirt_proxy_creator.core import _smooth_open_column, grid_faces
 from mmd_skirt_proxy_creator.mmd_physics import (
@@ -25,9 +26,12 @@ from mmd_skirt_proxy_creator.mmd_physics import (
     PHYSICS_SETTING_NAMES,
     SPX_OT_AddPhysicsPreset,
     _adaptive_number_text,
+    _draw_active_mmd_inspector,
     _joint_interpolation_factor,
+    _mmd_browser_depsgraph_update,
     _missing_mmd_bone_names,
     _mmd_api,
+    _refresh_mmd_browser_from_changes,
     _rigid_size,
     _rigid_interpolation_factor,
     _segment_geometry,
@@ -203,6 +207,7 @@ def build_mirror_source_mesh(name, asymmetric=False):
 
 
 mmd_skirt_proxy_creator.register()
+assert _mmd_browser_depsgraph_update in bpy.app.handlers.depsgraph_update_post
 model = Model.create("MMDProxySmoke", add_root_bone=True)
 model_root = model.rootObject()
 model_root.empty_display_size = 0.4
@@ -398,6 +403,66 @@ bpy.ops.object.mode_set(mode="OBJECT")
 bpy.context.view_layer.objects.active = proxy
 settings.mmd_root = model_root
 settings.browser_kind = "BONE"
+
+
+class _FakeDepsgraphUpdate:
+    def __init__(self, data):
+        self.id = data
+
+
+class _FakeDepsgraph:
+    def __init__(self, *data_blocks):
+        self.updates = [_FakeDepsgraphUpdate(data) for data in data_blocks]
+
+
+unrelated_refresh_probe = bpy.data.objects.new("UnrelatedRefreshProbe", None)
+bpy.context.collection.objects.link(unrelated_refresh_probe)
+mmd_physics_module._BROWSER_AUTO_REFRESH_DIRTY = False
+settings.workspace_tab = "BROWSER"
+_mmd_browser_depsgraph_update(
+    bpy.context.scene,
+    _FakeDepsgraph(unrelated_refresh_probe),
+)
+assert not mmd_physics_module._BROWSER_AUTO_REFRESH_DIRTY
+assert not bpy.app.timers.is_registered(
+    mmd_physics_module._run_mmd_browser_auto_refresh
+)
+
+settings.workspace_tab = "PROXY"
+_mmd_browser_depsgraph_update(
+    bpy.context.scene,
+    _FakeDepsgraph(model_armature.data),
+)
+assert mmd_physics_module._BROWSER_AUTO_REFRESH_DIRTY
+assert not bpy.app.timers.is_registered(
+    mmd_physics_module._run_mmd_browser_auto_refresh
+)
+
+mmd_physics_module._BROWSER_AUTO_REFRESH_DIRTY = False
+settings.preview_running = True
+settings.workspace_tab = "BROWSER"
+_mmd_browser_depsgraph_update(
+    bpy.context.scene,
+    _FakeDepsgraph(model_armature),
+)
+assert not mmd_physics_module._BROWSER_AUTO_REFRESH_DIRTY
+assert not bpy.app.timers.is_registered(
+    mmd_physics_module._run_mmd_browser_auto_refresh
+)
+
+settings.preview_running = False
+_mmd_browser_depsgraph_update(
+    bpy.context.scene,
+    _FakeDepsgraph(model_armature),
+)
+assert mmd_physics_module._BROWSER_AUTO_REFRESH_DIRTY
+assert bpy.app.timers.is_registered(
+    mmd_physics_module._run_mmd_browser_auto_refresh
+)
+bpy.app.timers.unregister(mmd_physics_module._run_mmd_browser_auto_refresh)
+mmd_physics_module._BROWSER_AUTO_REFRESH_DIRTY = False
+settings.workspace_tab = "PROXY"
+bpy.data.objects.remove(unrelated_refresh_probe, do_unlink=True)
 bpy.ops.object.select_all(action="DESELECT")
 armature.select_set(True)
 bpy.context.view_layer.objects.active = armature
@@ -508,6 +573,11 @@ settings.preview_substeps = 2
 settings.top_rigid_type = "2"
 settings.body_rigid_type = "2"
 assert bpy.ops.surface_proxy.update_mmd_physics() == {"FINISHED"}
+# Keep this runtime-alignment fixture above MMD's native Y=0 ground plane.
+preview_fixture_root_matrix = model_root.matrix_world.copy()
+model_root.location.z += 2.0
+bpy.context.view_layer.update()
+unrelated_matrix = unrelated_rigid.matrix_world.copy()
 preview_bone = model_armature.pose.bones[rigids[-1].mmd_rigid.bone]
 preview_basis = preview_bone.matrix_basis.copy()
 anchor_pose_bone = model_armature.pose.bones[anchor_bone.name]
@@ -1093,6 +1163,9 @@ assert len(preview_runtime._ACTIVE_WORLDS) == 1
 assert bpy.ops.surface_proxy.stop_all_mmd_physics_previews() == {"FINISHED"}
 second_root.spx_mmd_import_scale_override = "0.1"
 settings.preview_scope = "CURRENT_PROXY"
+model_root.matrix_world = preview_fixture_root_matrix
+bpy.context.view_layer.update()
+assert bpy.ops.surface_proxy.update_mmd_physics() == {"FINISHED"}
 unrelated_mesh = unrelated_rigid.data
 bpy.data.objects.remove(unrelated_rigid, do_unlink=True)
 if unrelated_mesh.users == 0:
@@ -1562,6 +1635,123 @@ assert settings.collision_group_mask[5]
 assert sum(bool(value) for value in settings.collision_group_mask) == 1
 settings.collision_group_display = 5
 assert settings.collision_group_number == 4
+
+settings.browser_kind = "BONE"
+assert bpy.ops.surface_proxy.refresh_mmd_browser() == {"FINISHED"}
+settings.browser_index = next(
+    index
+    for index, item in enumerate(settings.browser_items)
+    if item.target_name == first_bone.name
+)
+bone_inspector_probe = LayoutProbe()
+_draw_active_mmd_inspector(bone_inspector_probe, settings)
+bone_detail_properties = {
+    name for name, _index, _text in bone_inspector_probe.records
+}
+assert {
+    "bone_id",
+    "name_j",
+    "name_e",
+    "transform_order",
+    "transform_after_dynamics",
+    "is_controllable",
+    "is_tip",
+    "enabled_fixed_axis",
+    "fixed_axis",
+    "enabled_local_axes",
+    "local_axis_x",
+    "local_axis_z",
+    "has_additional_rotation",
+    "has_additional_location",
+    "additional_transform_bone",
+    "additional_transform_influence",
+    "display_connection_type",
+    "use_deform",
+} <= bone_detail_properties
+
+diagnostic_unanchored = FnRigidBody.new_rigid_body_objects(
+    bpy.context,
+    anchor_group,
+    1,
+)[0]
+diagnostic_unanchored = FnRigidBody.setup_rigid_body_object(
+    obj=diagnostic_unanchored,
+    shape_type=rigid_module.shapeType("SPHERE"),
+    location=anchor_bone.head_local + Vector((0.0, 0.0, 4.0)),
+    rotation=(0.0, 0.0, 0.0),
+    size=(0.2, 0.0, 0.0),
+    dynamics_type=1,
+    name="DiagnosticUnanchoredRigid",
+    name_e="DiagnosticUnanchoredRigid",
+    collision_group_number=0,
+    collision_group_mask=[False] * 16,
+    mass=1.0,
+    friction=0.5,
+    bounce=0.0,
+    linear_damping=0.5,
+    angular_damping=0.5,
+    bone=anchor_bone.name,
+)
+bpy.context.view_layer.update()
+diagnostic_joint = all_joints[0]
+saved_rigid_b = diagnostic_joint.rigid_body_constraint.object2
+diagnostic_joint.rigid_body_constraint.object2 = None
+settings.browser_kind = "DIAGNOSTIC"
+assert bpy.ops.surface_proxy.refresh_mmd_browser() == {"FINISHED"}
+diagnostic_messages = {
+    (item.target_kind, item.target_name, item.message)
+    for item in settings.browser_diagnostics
+}
+assert (
+    "JOINT",
+    diagnostic_joint.name,
+    "缺少连接的刚体 B",
+) in diagnostic_messages
+assert next(
+    item
+    for item in settings.browser_diagnostics
+    if item.target_name == diagnostic_joint.name
+    and item.message == "缺少连接的刚体 B"
+).solution == "跳转后在活动项属性的“刚体 B”中选择正确刚体。"
+assert bpy.ops.surface_proxy.jump_to_mmd_diagnostic(
+    target_kind="JOINT",
+    target_name=diagnostic_joint.name,
+    armature_name="",
+) == {"FINISHED"}
+assert settings.browser_kind == "JOINT"
+assert settings.browser_items[settings.browser_index].target_name == diagnostic_joint.name
+assert bpy.context.active_object == diagnostic_joint
+diagnostic_joint.rigid_body_constraint.object2 = saved_rigid_b
+assert settings.browser_kind == "JOINT"
+assert _refresh_mmd_browser_from_changes()
+assert all(
+    item.target_name != diagnostic_joint.name or item.message != "缺少连接的刚体 B"
+    for item in settings.browser_diagnostics
+)
+settings.browser_kind = "DIAGNOSTIC"
+assert bpy.ops.surface_proxy.refresh_mmd_browser() == {"FINISHED"}
+assert all(
+    item.target_name != diagnostic_joint.name or item.message != "缺少连接的刚体 B"
+    for item in settings.browser_diagnostics
+)
+assert all(
+    item.message
+    not in {"骨骼末端连接目标不存在", "追加变换引用无效"}
+    for item in settings.browser_diagnostics
+)
+unanchored_issue = next(
+    item
+    for item in settings.browser_diagnostics
+    if item.target_name == diagnostic_unanchored.name
+    and "无法通过 Joint 到达 0 型锚点" in item.message
+)
+assert unanchored_issue.severity == "WARNING"
+assert unanchored_issue.target_kind == "RIGID"
+assert diagnostic_unanchored.name in unanchored_issue.search_text
+assert "不要把整条链全部改成 0 型" in unanchored_issue.solution
+diagnostic_unanchored_mesh = diagnostic_unanchored.data
+bpy.data.objects.remove(diagnostic_unanchored, do_unlink=True)
+bpy.data.meshes.remove(diagnostic_unanchored_mesh)
 
 for browser_kind in ("RIGID", "JOINT"):
     settings.browser_kind = browser_kind
@@ -2430,3 +2620,7 @@ print(
     f"rigids={len(rigids)} joints={len(joints)}"
 )
 mmd_skirt_proxy_creator.unregister()
+assert _mmd_browser_depsgraph_update not in bpy.app.handlers.depsgraph_update_post
+assert not bpy.app.timers.is_registered(
+    mmd_physics_module._run_mmd_browser_auto_refresh
+)

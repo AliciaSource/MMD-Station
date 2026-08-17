@@ -1,5 +1,87 @@
 # Development Log
 
+## 2026-08-17 - MMD 查看器架构级自动刷新与性能边界
+
+- 新增统一的 `depsgraph_update_post` 自动刷新服务，不再要求每个旧操作或未来新增功能逐一记得调用诊断刷新。当前 MMD 模型的 Object、Armature data 或所属 Collection 发生结构/属性变化后，会把查看器标记为 dirty；位于 MMD 查看器时自动刷新，位于代理创建/物理预览页时只记录 dirty，返回查看器后再刷新。
+- 自动刷新在后台始终重扫诊断集合，即使用户已经从诊断跳转到骨骼、刚体或 Joint Tab 修复问题，修好的诊断行也会直接从诊断数据中消失；当前可见的普通列表随后同步刷新，活动索引会安全收敛到剩余范围。手动刷新成功也会清除 dirty，避免紧接着重复扫描。
+- 性能边界保持保守：只观察当前所选 MMD root 的对象父链、该 root 子树使用的 Armature data 与包含该 root 对象的 Collection；无关场景对象更新不会触发。连续编辑使用 `0.25 s` quiet-window debounce 合并为一次扫描，Rust 物理预览运行期间完全跳过，非查看器页不启动 timer，面板 draw 只负责在返回时安排一次延迟刷新，不在 draw 内直接扫描模型。
+- `tests/headless_smoke.py` 增加 handler 注册、无关对象隔离、非查看器延迟、预览期间跳过、相关模型变更调度，以及“在 Joint Tab 修好刚体 B 后诊断行立即消失”的回归。Blender 4.4.3 完整 smoke 通过，输出 `MMD_SKIRT_PROXY_CREATOR_SMOKE_OK top_range=0.235911131 rigids=48 joints=96`；`BONE_PHYSICS_CREATOR_SMOKE_OK rigids=9 joints=5 ordered=3` 通过。已有 synthetic recovery traceback 是测试刻意注入。
+- 以 `D:\MMD\模型\Alicia\鳴潮-達尼婭\Test\07.blend` 做只读验证：在刚体 Tab 临时把 `187_左背蝴蝶结_0_1` 设为 0 型后，后台刷新会移除搜索 `191_左背蝴蝶结_4_1` 命中的未锚定链警告；恢复原类型后警告重新出现。工程未保存，临时脚本已删除；继续使用源码 Junction，不递增版本、不打包 zip。
+
+## 2026-08-17 - 诊断 Tab 刚体–Joint 连通图与未锚定动态链检查
+
+- 补上此前诊断只检查单项 RNA 字段、没有检查整体物理拓扑的缺口。诊断刷新现将当前 MMD 模型全部刚体按有效 Joint 端点拆成连通分量；只要一个含动态刚体的分量无法沿 Joint 到达任何 0 型刚体，就报告“未锚定动态链”警告。该规则与物理预览启动时的自由分量判定一致，但保留为 `WARNING`，因为独立自由物体也可能是作者有意设计。
+- 每条图级警告以稳定排序后的链首/端点刚体作为跳转目标，显示动态刚体数量和“无法到达 0 型锚点”的原因；搜索索引额外包含该分量内全部刚体对象名、MMD 日/英文名及绑定骨骼名，因此搜索链尾 `191_左背蝴蝶结_4_1` 也能定位到整组问题并跳到真正需要修复的链首 `187_左背蝴蝶结_0_1`。处理指引要求恢复链首到 0 型刚体或其它已锚定物理链的 Joint，并明确禁止把整条链盲目改成 0 型。
+- Blender 4.4.3 完整 `tests/headless_smoke.py` 通过，继续输出 `MMD_SKIRT_PROXY_CREATOR_SMOKE_OK top_range=0.235911131 rigids=48 joints=96`；回归临时创建单刚体自由分量，验证严重级别、跳转目标、全分量搜索文本和修复指引，结束后删除 fixture。
+- 以 `D:\MMD\模型\Alicia\鳴潮-達尼婭\Test\07.blend` 做只读 headless 复核：诊断现稳定报告 `3` 组未锚定动态链；搜索 `191_左背蝴蝶结_4_1` 命中“左背蝴蝶结_0_1，5 个动态刚体无法通过 Joint 到达 0 型锚点”，跳转目标为 `187_左背蝴蝶结_0_1`。未保存工程，临时探针已删除；不递增版本、不打包 zip。
+
+## 2026-08-17 - Endfield Laevatain 第三角色全轨迹逐 bit 复核
+
+- 使用 `D:\MMD\模型\Alicia\Endfield-Laevatain\Endfield-LaevatainVer1.04_By_Alicia` 的两个原始 PMX 做第三角色独立验证：`LaevatainVer1.04_ALL.pmx` 为 `305 bodies / 405 joints`，`LaevatainVer1.04_Body.pmx` 为 `115 bodies / 79 joints`；全部 Joint 均为受支持的 PMX Spring 6DOF，刚体引用全部有效。
+- 两侧消费同一份未经 Blender 场景导入或二次量化的 native payload，以 Y-up、重力 `-98`、60 Hz、`maxSubSteps=10` 连续运行 120 帧。比较双方 Bullet 刚体的原始 64-byte `btTransform`（3x3 basis + origin）：ALL 共 `2,342,400/2,342,400` bytes 逐 bit 相同，Body 共 `883,200/883,200` bytes 逐 bit 相同；位置、旋转、Joint、碰撞及长期传播均未出现分叉。
+- 验证使用当前生产 DLL SHA256 `29914B23889C3CB3E8D48BDC7A22089035D4BFF1E101DAA553F62CFEECE12405`，全程 headless；未修改求解器或 Blender adapter，不递增版本、不打包 zip。
+
+## 2026-08-17 - 诊断 Tab 骨骼误报修正与处理指引
+
+- 根据真实模型中一次出现 `203` 条错误的反馈，确认上一轮有两条诊断规则错误地把 `mmd_tools` 内部 UI/约束状态当成 PMX 结构损坏：`display_connection_type == BONE` 但未指定目标并非错误，exporter 会合法回退到骨尾 offset；`is_additional_transform_dirty` 默认即为 `True`，表示 Blender 追加变换约束待同步，不代表 PMX 追加变换引用失效。
+- 删除“骨骼末端连接目标不存在”和仅由 `is_additional_transform_dirty` 触发的“追加变换引用无效”诊断。仍保留真正会被 exporter 自动禁用的情况：已经开启“旋转 + / 移动 +”但没有追加变换目标骨骼。模型、骨骼、刚体和 Joint 数据均未被自动改写，用户不需要逐条修复此前的 203 条误报。
+- 诊断页新增明确边界说明与当前问题处理方法。每条保留问题现在携带对应修复指引，例如缺少刚体 B 时提示跳转后在活动项属性指定“刚体 B”；诊断跳转、搜索清空和活动项同步保持不变。
+- 扩展 `tests/headless_smoke.py`，断言合法的空骨骼末端目标与 `is_additional_transform_dirty` 不再出现于诊断，并验证缺失刚体 B 的修复指引。Blender 4.4.3 完整 headless smoke 通过，标记 `MMD_SKIRT_PROXY_CREATOR_SMOKE_OK top_range=0.235911131 rigids=48 joints=96`；另以截图对应的 `D:\MMD\模型\Alicia\鳴潮-達尼婭\Test\07.blend` 做只读 headless 扫描，模型 `鸣潮_达妮娅1.2（blue ver）` 刷新后为 `0 errors / 0 warnings`，未保存工程，临时脚本已删除。不递增版本、不打包 zip，真实 GUI 需 Reload Scripts 或重启 Blender 后刷新诊断页查看新结果。
+
+## 2026-08-16 - PmxNLib 碰撞网络与 VS2013 RTM LTCG 全轨迹逐 bit 对齐
+
+- 将 Rossi 完整物理的首个碰撞分叉缩减为只开放 body `62 下半身` Capsule 与 body `205 スカート_0_10` Box 碰撞的最小夹具。旧生产 DLL 在第 5 帧只出现一个 `5.960464477539063e-08` 的 float ULP 差异；逐帧读取双方 `btPersistentManifold` 后确认第 3 帧 contact 完全一致，第 4 帧开始只有 GJK witness point 的末位不同，因此误差不在重力、shape 参数、Joint、solver iterations 或模型特判。
+- 反汇编 `btConvexConvexAlgorithm::processCollision` 确认 PmxNLib 使用 VS2013 RTM whole-program optimization 路径；仅用 VS2013 编译但交给新 linker 会改变 LTCG codegen。native Bullet 现在固定由 `cl.exe 18.00.21005.1` 以 `/fp:fast /GL` 编译，并由同版 VS2013 `link.exe /LTCG` 完成 code generation。`build.rs` 将 native static library 以 `static:-bundle` 直接交给最终 linker，避免 Rust rlib 隐藏旧 LTCG object；`build.ps1` 新增 exact toolchain 探测、版本硬检查与可配置的 `MMD_V120_*` 路径，不允许普通当前 MSVC 静默产出“近似版”生产 DLL。
+- 同一份未经 Blender 二次转换的原始 PMX payload 在 PmxNLib 与生产 DLL 中以 Y-up、重力 `-98`、60 Hz、`maxSubSteps=10` 连续运行 120 帧。Rossi `339 bodies / 471 joints` 的 `2,603,520` 个原始 `btTransform` bytes 全部逐 bit 相同；达尼娅 `406 bodies / 561 joints` 的 `3,118,080` bytes 也全部逐 bit 相同。比较对象直接是每个 Bullet rigid body 的 3x3 basis 与 origin 共 64 bytes，不经过 matrix/quaternion 往返；因此同时证明位置、旋转、RGBA、普通裙子、完整 Joint 网络和碰撞长期传播对齐。
+- 最小 Capsule/Box 夹具同样连续 120 帧逐 bit 相同。生产 DLL SHA256 更新为 `29914B23889C3CB3E8D48BDC7A22089035D4BFF1E101DAA553F62CFEECE12405`。Rust release tests `9/9`、`MMD_TIME_DRIVER_UNIT_OK`、`MMD_SKIRT_PROXY_CREATOR_SMOKE_OK top_range=0.235911131 rigids=48 joints=96` 与 `BONE_PHYSICS_CREATOR_SMOKE_OK rigids=9 joints=5 ordered=3` 全部通过；已有 synthetic recovery traceback 是回归刻意注入。本轮全部验证为 headless，不操作 GUI、不递增版本、不打包 zip。
+
+## 2026-08-16 - MMD 骨骼详细属性与模型诊断 Tab
+
+- 补齐 `MMD 查看器 > 骨骼` 的活动项 Inspector：除日/英文名与变形开关外，现直接显示并可编辑 Bone ID、变形阶层、物理后变形、可控制/尖端骨骼、IK 角度、固定轴、局部轴、旋转/移动追加变换、追加目标与影响、骨骼末端连接类型和目标。字段直接绑定当前 `mmd_tools` 的 `mmd_bone` RNA，不复制其数据。
+- 在骨骼、刚体、Joint 右侧新增“诊断”Tab。刷新时扫描当前选定 MMD 模型的空 MMD 骨名、重复 Bone ID、失效追加变换/末端连接、缺失 Rigid Body 数据、刚体绑定不存在骨骼、Joint 缺失 constraint/刚体 A/刚体 B、端点不属于当前模型以及 A/B 指向同一对象；结果按错误/警告汇总，不受“仅显示当前代理”限制。
+- 每条可定位问题提供跳转按钮：自动清空搜索与代理过滤，切换到骨骼/刚体/Joint 对应 Tab，将问题项设为蓝色活动行，并同步为 Blender 的活动骨骼或活动对象。无法定位到具体对象的模型级问题只显示诊断，不提供伪跳转。
+- 修改 `mmd_skirt_proxy_creator/mmd_physics.py`、属性组注册顺序 `mmd_skirt_proxy_creator/__init__.py` 与 `tests/headless_smoke.py`。Blender 4.4.3 完整 `headless_smoke.py` 通过，标记 `MMD_SKIRT_PROXY_CREATOR_SMOKE_OK top_range=0.235911131 rigids=48 joints=96`；独立 `bone_physics_creator_smoke.py` 通过，标记 `BONE_PHYSICS_CREATOR_SMOKE_OK rigids=9 joints=5 ordered=3`。验证覆盖骨骼详细字段、缺失刚体 B 的诊断和跳转行为；已有 synthetic recovery traceback 仍为回归刻意注入。继续使用源码 Junction，不递增版本、不打包 zip；未改动本轮开始前已有的 native solver/DLL 工作树修改。
+
+## 2026-08-16 - Endfield Rossi 跨模型原始 PMX differential 验证
+
+- 使用 `D:\MMD\模型\Alicia\Endfield-Rossi\Endfield-RossiVer1.0_by_Alicia\Rossi Ver1.0.pmx` 做独立跨模型验证。仅以 headless `mmd_tools.core.pmx.load` 读取 PMX 二进制字段，不创建 Blender 场景对象；同一份 native payload 分别直连 PmxNLib 与生产 DLL，在原始 PMX 尺度、Y-up、重力 `-98`、60 Hz、`maxSubSteps=10` 下逐帧运行 120 帧。模型包含 339 bodies / 471 个 PMX Spring 6DOF Joint，Joint 引用全部有效；其中 RGBA graph 为 body `0..13`（10 个 dynamic body、18 Joint），普通裙子为 `スカート_*` 144 bodies / 288 个相关 Joint。
+- 自由积分与完整 471 Joint-only 网络在全部 120 帧均为 `122040/122040` 个位置 float component 逐 bit 相同，进一步证明达尼娅结果不是角色特判。完整 collision + Joint 的第 1 帧同样为 `1017/1017` component 逐 bit 相同；RGBA 10 个 dynamic body 在完整物理的 120 帧轨迹中为 `3600/3600` component 逐 bit 相同，可观测角度残差上限约 `1.04e-5°`，处于 matrix/quaternion 换算噪声。
+- 对完整模型连续 120 帧统计严格 bit 命中率：全 339 bodies 为 `69813/122040 = 57.205015%`，295 个非静态 bodies 为 `53973/106200 = 50.822034%`，裙子为 `5039/51840 = 9.720293%`。这说明此前约 99.92% 的说法只适用于达尼娅首帧 component，不能代表任意模型的长期轨迹；裙子网格中的极小碰撞差异会经 Joint 网络传播，使严格 bit 命中率快速下降。
+- 严格 bit 下降并不等于同量级视觉误差。完整 120 帧中全模型位置最大残差为 `0.010181357` PMX unit（0.08 导入约 `0.815 mm`，body `tail_base_L_a__jnt21`，frame 71），第 120 帧最大为 `0.003556893` PMX unit（约 `0.285 mm`）；裙子轨迹最大为 `0.005213510` PMX unit（约 `0.417 mm`），第 120 帧最大约 `0.285 mm`、平均约 `0.081 mm`。裙子第 120 帧可观测角度残差平均 `0.089574°`、P95 `0.245584°`、最大 `0.693022°`，120 帧内瞬时最大 `1.51525°`。
+- 隔离 collision-only 后，全部位置 component 的 120 帧 bit 命中率为 `97.009177%`，裙子为 `96.836420%`；Joint-only 则保持 100%。因此 Rossi 的剩余分叉同样来自 collision contact 的末位差异及其经 Joint 网络的长期传播，不是 RGBA/裙子参数特判。生产 DLL SHA256 保持 `4349BDEBE9489361216A76E996F531DFEB8E2C5D22DAA56F03F108400888C4E6`；本轮只做验证和记录，未修改求解器、Blender adapter、版本号或发布包。
+
+## 2026-08-16 - PmxNLib 浮点构建路径与 Box inertia / 多约束逐 bit 对齐
+
+- 对同一份 native payload 继续做对象级差分。最小 Joint 链 `(19, 35, 51)` 中，PmxNLib 与 Rust world 的 `btGeneric6DofSpringConstraint` frame、limit、spring 字段一致，首个分叉定位到 body `73` 的初始 inverse inertia，而不是 Joint 构造或 RGBA 特判。
+- 反汇编确认 PmxNLib 的 `btBoxShape::calculateLocalInertia` 来自 VS2013 `/fp:fast` 算术顺序：使用 `mass * float(1/12)`，尺寸乘 `2.0f`；当前 MSVC 默认路径使用 `mass / 12` 与不同的加法顺序，产生 float ULP 差异。native wrapper 现显式复现该 Box inertia 运算，并补充 VS2013 对 `thread_local` 和 move 语义的兼容实现；没有加入模型、骨名、RGBA 或裙子特判。
+- 达尼娅 `406` 个刚体的初始 local inverse inertia 已全部与 PmxNLib 逐 bit 相同：Sphere `71`、Box `219`、Capsule `116` 均零 mismatch。禁用 collision、启用全部 `561` 个 Joint 时，第 `1` 帧和第 `120` 帧的 `1218/1218` 个位置 float component 全部逐 bit 相同，修正了此前“复杂 Joint 网络必然因编译器版本累积分叉”的不精确判断。
+- 使用 VS2013 Update 5 + `/fp:fast` 构建后，collision-only 第 `1` 帧仅 body `216` 的一个位置 component 不同，最大残差 `2.51248e-10` PMX unit；完整 561 Joint + collision 第 `1` 帧最大残差 `1.89175e-10` PMX unit。抽样 Capsule/Box、Box/Box 碰撞对在第 `1`、`120` 帧均逐 bit 相同；剩余最小分叉缩小到 Sphere/Box `(38, 216)` 的首帧约一个 ULP，随后在多接触网络中混沌放大。故 Joint-only 与初始 inertia 已 bit-exact，但不能宣称全部碰撞网络 120 帧 perfect；完整模型第 `120` 帧最大位置残差仍为 `0.046535836` PMX unit。
+- 生产 DLL 改为 PmxNLib 同代的 VS2013 Update 5 `/fp:fast` 构建，SHA256 为 `4349BDEBE9489361216A76E996F531DFEB8E2C5D22DAA56F03F108400888C4E6`，依赖 `MSVCR120.dll` / `MSVCP120.dll`。`cargo test --release` 9 项、`MMD_TIME_DRIVER_UNIT_OK`、`MMD_SKIRT_PROXY_CREATOR_SMOKE_OK` 与 `BONE_PHYSICS_CREATOR_SMOKE_OK` 全部通过；验证均为 headless，未修改 Blender adapter，不递增版本，不打包 zip。
+
+## 2026-08-16 - PmxNLib 原生 world ground plane 对齐与 differential harness 更正
+
+- 更正上一条原始 PMX differential harness 的两处问题：Quaternion 现严格调用与 `PmxEditor.TransformPhysics.WriteBody/WriteJoint` 相同的 `SlimDX.Quaternion.RotationYawPitchRoll(Y, X, Z)`，不再用 `mathutils.Euler('YXZ')` 近似；Rust `BodyDesc.collision_group` 传入 PMX 的组号 `0..15`，不再错误地预先传 `1 << group` 后又被 native backend 二次移位。禁用 collision/joint 的达尼娅 406 bodies、120 帧位置仍为 `1218/1218` float component 逐 bit 相同，确认更正后的同 payload 基线有效。
+- 函数级反汇编确认 PmxNLib 创建每个 world 时都会先加入一个 `btStaticPlaneShape(normal=(0,1,0), constant=0)`，碰撞 group 为 `0x8000`、mask 为 `0xffff`。此前实验因为错误 collision group harness 得出“ground plane 会恶化”结论，现已推翻；生产 Bullet backend 按 PmxNLib 的创建顺序加入并持有同语义 ground shape/motion state/rigid body，销毁 world 前显式移除 ground body，避免悬空 world 引用。
+- ground proxy 的插入顺序不仅提供 MMD 地面，也决定 `btDbvtBroadphase` proxy/overlap ordering。修复后，达尼娅 collision-only、无 Joint 的第 1 帧由最大 `0.000746976` PMX unit 收敛到 `0.000000188`，`1194/1218` 个位置 component 逐 bit 相同；完整 561 Joint 第 1 帧最大位置残差为 `0.000082379` PMX unit，`1087/1218` component 逐 bit 相同。逐一只启用单个 Joint 时均小于 `1e-7` PMX unit，剩余首帧误差来自多约束网络内的 float/codegen 累积，不是 RGBA/裙子/骨名特判。
+- 同一份未经 Blender 场景转换的 PMX payload 连续逐帧运行 120 帧：Alicia RGBA body 5/11 的位置仍与 PmxNLib 完全相同，全模型最大位置残差仍为 `0.000108370` PMX unit；达尼娅完整模型最大位置残差为 `0.023246871` PMX unit（body `前链子_6_1`，0.08 导入约 `1.860 mm`），严格 `スカート_*` 176 bodies 最大为 `0.019432703` PMX unit（约 `1.555 mm`）。这比旧 harness 更接近且证明通用 world 语义缺口已修复，但复杂网络 120 帧仍未逐 bit 一致，不能宣称所有 MMD 物理 perfect/bit-exact。
+- `/fp:fast` A/B 会把完整模型 120 帧最大残差扩大到 `0.113459010` PMX unit，已拒绝并恢复 MSVC 默认 precise 路径。新增 `mmd_ground_plane_supports_dynamic_bodies` 回归，并把通用 runtime smoke fixture 临时整体移到 ground plane 上方、结束后恢复，避免把地面接触混入原有 adapter 对齐断言；`cargo test --release` 9 项、`MMD_TIME_DRIVER_UNIT_OK`、`MMD_SKIRT_PROXY_CREATOR_SMOKE_OK` 与 `BONE_PHYSICS_CREATOR_SMOKE_OK` 全部通过。生产 DLL SHA256 为 `C88E1602563386B8E7A03385D7A15B3FFB236D750C5F1CD70BE6622C7D3D2563`；未修改 Blender adapter、未加入模型参数补偿、不递增版本、不打包 zip。
+
+## 2026-08-16 - 原始 PMX 直连 PmxNLib/Rust differential 审计
+
+- 建立一次性 headless differential harness：仅用 `mmd_tools.core.pmx.load` 作为 PMX 二进制字段解析器，不创建 Blender 场景对象、不执行 mmd_tools 导入、不进入 PMX Editor/MMD GUI；同一组原始 body/joint 字段同时序列化为 `PmxNLib.SetObjects()` native payload 与 Rust C ABI descriptors，在原始 PMX 尺度、Y-up、重力 `-98`、60 Hz、`maxSubSteps=10` 下逐刚体运行 120 帧。RGBA 样本为 `D:\MMD\模型\Alicia\Body\Body_Ver4.23_26.6.20\Body_Ver4.23.pmx`（89 bodies / 50 joints），普通裙子样本为 `D:\MMD\模型\Alicia\鳴潮-達尼婭\達尼婭\鸣潮_达妮娅1.2（blue ver）.pmx`（406 bodies / 561 joints）；两者 joint kind 均全部为 PMX Spring 6DOF（`0`），无失效 body reference。
+- Alicia RGBA 的 body 5/11 在 120 帧共 720 个位置 float component 上与 PmxNLib 全部逐 bit 相同；全模型最大位置残差为 `0.000108370` PMX unit（0.08 导入尺度约 `0.00867 mm`）。当前 ABI 只返回 quaternion，而 PmxNLib `GetData1` 返回 matrix，`quaternion -> matrix` 往返本身引入 float 舍入，因此本轮不能把旋转 matrix bit 统计冒充底层 basis 逐 bit 证明。
+- 达尼娅严格日文名 `スカート_*` 的 176 个裙子刚体并未逐 bit 相同：120 帧最大位置残差为 `0.025766714` PMX unit（0.08 导入尺度约 `2.061 mm`），最大可观测旋转残差约 `3.65°`；包含链子、穗子、蝴蝶结和裙带等英文 `Skirt_*` 附件时，全组最大位置/旋转残差约 `0.040494747` PMX unit / `20.37°`。因此不能宣称所有物理均与 MMD/PmxNLib 逐 bit 相同。
+- 隔离结果：禁用 collision 与 joint 后，达尼娅全部 406 bodies 的 120 帧位置逐 bit 相同，证明原始 body transform、shape、质量/阻尼、重力与自由积分路径一致；仅 dynamic-static collision 前 5 帧最大残差约 `8.63e-6` PMX unit；仅 dynamic-dynamic collision 第 1 帧即约 `0.02885` PMX unit，主要分叉位于复杂多接触的 broadphase/manifold/solver ordering，joint-only 则从约 `9.54e-7` PMX unit 开始累积。两个重叠 Sphere/Box/Capsule 的最小单接触夹具前 5 帧位置均逐 bit 相同，排除了通用 shape 尺寸或单接触公式错误。
+- 对 PmxNLib 固有 `btStaticPlaneShape` 做了可回退 A/B：加入 Rust world 后 Alicia 不变、达尼娅最大位置残差反而增至 `0.045806259` PMX unit，故已撤销，生产源码不保留该实验。恢复后两组 120 帧 Rust 二进制输出与实验前 SHA256 完全一致。`cargo test` 8 项通过；因重新链接，生产 DLL SHA256 为 `A8A7EC47875FD05F22E4ED330D25C8423EEF7B8AAADEE0D850FEE9C303C4B7CF`。本轮未改 adapter/Rust 求解语义、不递增版本、不打包 zip。
+
+## 2026-08-16 - 07.blend 裙摆 Box 刚体 Y/Z 尺寸轴修复与 PmxNLib 轨迹复核
+
+- 用真实 `D:\MMD\模型\Alicia\鳴潮-達尼婭\Test\07.blend` 建立只读 headless 差分环：导出临时 PMX，直接按 `PmxEditor.TransformPhysics.WriteBody/WriteJoint` 的 native payload 格式驱动 `PmxNLib.dll`，并让当前 Rust DLL 在同一静止姿态、60 Hz、面板重力 `-9.8`（native `-98`）、`maxSubSteps=10` 下运行 120 帧；同时分别验证原碰撞 mask 与全禁用碰撞。未启动或操控 MMD/Blender GUI，未保存或覆盖 `07.blend`。
+- 根因不是裙子参数，而是通用 Box shape 的坐标基底转换遗漏：Blender/mmd_tools 在 Z-up 中保存 PMX Box 尺寸为 `X/Z/Y`，旧 DLL 已把 body 位置和旋转转换到 MMD Y-up，却把 Box half-extents 原样交给 Bullet。实际 `Skirt_C01_R01` 因而由 PMX/PmxNLib 的 `(0.220049, 0.376144, 0.102585)` 错建为 `(0.220049, 0.102585, 0.376144)`，造成竖向碰撞体被压扁、前后被加厚。
+- Rust 现仅对 Box half-extents 执行 Blender Z-up → MMD Y-up 的 Y/Z 交换；Sphere 不变，Capsule 继续按 PMX 的 `radius/height` 字段及 Bullet 原生 Y-axis capsule 处理，避免把 shape 类型无差别转换。新增 `blender_box_half_extents_are_reordered_for_mmd_y_up_space` 回归测试。
+- 修复前 `07.blend` 原碰撞 120 帧下半裙平均径向变化为 `-6.576808 mm`，PmxNLib 为 `-10.483351 mm`；修复后为 `-10.650660 mm`，残差收窄至约 `0.167309 mm`。最大外扩由修复前 `11.032579 mm` 变为 `12.642940 mm`，PmxNLib 为 `12.637069 mm`，残差约 `0.005871 mm`。全禁用碰撞时修复后下半裙平均径向残差约 `0.023104 mm`、最大外扩残差约 `0.127123 mm`。这证明截图中的主要异常来自 DLL Box 碰撞几何，而非可直接归咎于裙子参数；当前结果为近似 PmxNLib，不宣称所有模型/帧逐 bit 相同。
+- `cargo test --release` 8 项、`MMD_TIME_DRIVER_UNIT_OK`、`MMD_SKIRT_PROXY_CREATOR_SMOKE_OK`、`BONE_PHYSICS_CREATOR_SMOKE_OK` 全部通过。生产 DLL SHA256 为 `C5A6D99D16429474E229B59CE5C587ED8DA1CA3FE4792265959500EC8C4BBED5`；本轮不递增版本、不打包 zip。
+
 ## 2026-08-16 - Blender 实时预览双时钟与 MMD 追帧语义（主工作区开发）
 
 - 定位实时拖动比 MMD 更粘滞的 host 原因：旧 adapter 虽然让 DLL 固定使用 Bullet `1/60 s` 子步，却在每次 `bpy.app.timers` 回调时都硬传 `dt=1/preview_frequency`。Blender 交互、depsgraph 和界面刷新会让 timer 回调产生抖动，实际过去约 `30 ms` 时仍只推进 `16.67 ms`，因此物理时间落后于用户拖动；这不是 RGBA stiffness、阻尼或重力误差，本轮不改 DLL 求解参数。

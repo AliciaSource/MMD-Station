@@ -245,6 +245,22 @@ struct Solver {
     joints: Vec<JointBinding>,
 }
 
+fn rigid_body_shape(desc: &BodyDesc, world_scale: f32) -> Result<RigidBodyShape, String> {
+    match desc.shape {
+        0 => Ok(RigidBodyShape::Sphere {
+            radius: desc.size.x * world_scale,
+        }),
+        1 => Ok(RigidBodyShape::Box {
+            half_extents: desc.size.mmd_basis().scaled_array(world_scale),
+        }),
+        2 => Ok(RigidBodyShape::Capsule {
+            radius: desc.size.x * world_scale,
+            height: desc.size.y * world_scale,
+        }),
+        _ => Err(format!("unsupported rigid body shape {}", desc.shape)),
+    }
+}
+
 impl Solver {
     #[cfg(test)]
     fn new(body_descs: &[BodyDesc], joint_descs: &[JointDesc]) -> Result<Self, String> {
@@ -265,19 +281,7 @@ impl Solver {
         for desc in body_descs {
             let transform = desc.transform.mmd_basis();
             let bone_transform = desc.bone_transform.mmd_basis();
-            let shape = match desc.shape {
-                0 => RigidBodyShape::Sphere {
-                    radius: desc.size.x * world_scale,
-                },
-                1 => RigidBodyShape::Box {
-                    half_extents: desc.size.scaled_array(world_scale),
-                },
-                2 => RigidBodyShape::Capsule {
-                    radius: desc.size.x * world_scale,
-                    height: desc.size.y * world_scale,
-                },
-                _ => return Err(format!("unsupported rigid body shape {}", desc.shape)),
-            };
+            let shape = rigid_body_shape(desc, world_scale)?;
             let handle = world
                 .add_rigidbody(BulletBodyDesc {
                     shape,
@@ -694,6 +698,48 @@ mod tests {
     }
 
     #[test]
+    fn mmd_ground_plane_supports_dynamic_bodies() {
+        let body = BodyDesc {
+            mode: 1,
+            shape: 0,
+            transform: Transform {
+                position: Vec3 {
+                    x: 0.0,
+                    y: 0.0,
+                    z: 2.0,
+                },
+                rotation: Quat::default(),
+            },
+            size: Vec3 {
+                x: 0.2,
+                y: 0.2,
+                z: 0.2,
+            },
+            mass: 1.0,
+            collision_mask: u16::MAX as u32,
+            ..BodyDesc::default()
+        };
+        let mut solver = Solver::new_with_world_scale(&[body], &[], 1.0).unwrap();
+        solver
+            .set_gravity(Vec3 {
+                x: 0.0,
+                y: 0.0,
+                z: -9.8,
+            })
+            .unwrap();
+        for _ in 0..300 {
+            solver.step(1.0 / 60.0, 10).unwrap();
+        }
+        let mut output = [Transform::default()];
+        solver.transforms(&mut output).unwrap();
+        assert!(
+            (output[0].position.z - 0.2).abs() < 1.0e-3,
+            "unexpected resting height {}",
+            output[0].position.z
+        );
+    }
+
+    #[test]
     fn max_substeps_does_not_change_a_60_hz_step_when_capacity_is_sufficient() {
         let body = BodyDesc {
             mode: 1,
@@ -961,6 +1007,26 @@ mod tests {
         assert_eq!(
             blender_lower.mmd_angular_basis().array(),
             [0.5, 1.0, 0.25]
+        );
+    }
+
+    #[test]
+    fn blender_box_half_extents_are_reordered_for_mmd_y_up_space() {
+        let body = BodyDesc {
+            shape: 1,
+            size: Vec3 {
+                x: 2.0,
+                y: 3.0,
+                z: 5.0,
+            },
+            ..BodyDesc::default()
+        };
+        let shape = rigid_body_shape(&body, 10.0).unwrap();
+        assert_eq!(
+            shape,
+            RigidBodyShape::Box {
+                half_extents: [20.0, 50.0, 30.0],
+            }
         );
     }
 }

@@ -27,6 +27,7 @@ fn main() {
 
     let mut build = cc::Build::new();
     build
+        .cargo_metadata(false)
         .cpp(true)
         .include(&bullet_src)
         .file("native/mmd_bullet_api.cpp")
@@ -40,6 +41,8 @@ fn main() {
     }
 
     build.compile("mmd_anim_bullet");
+    println!("cargo:rustc-link-search=native={}", env::var("OUT_DIR").unwrap());
+    println!("cargo:rustc-link-lib=static:-bundle=mmd_anim_bullet");
 }
 
 fn add_cpp_files(build: &mut cc::Build, dir: &Path) {
