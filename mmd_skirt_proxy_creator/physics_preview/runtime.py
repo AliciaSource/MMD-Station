@@ -14,6 +14,7 @@ from .ffi import (
     Solver,
     Transform,
     Vec3,
+    default_library,
     pmx_euler_to_blender_quaternion,
     transform_to_components,
 )
@@ -214,22 +215,22 @@ def _resolve_hierarchical_bone_targets(armature, animation_pose, physics_targets
     return resolved
 
 
-def _pmx_native_matrix_transform(matrix, import_scale):
+def _pmx_native_matrix_transform(matrix, import_scale, library=None):
     position, rotation, _object_scale = matrix.decompose()
     euler = rotation.to_euler("YXZ")
     pmx_euler = (-float(euler.x), -float(euler.z), -float(euler.y))
     export_scale = 1.0 / import_scale
     return Transform(
         Vec3.from_value(tuple(float(value) * export_scale for value in position)),
-        pmx_euler_to_blender_quaternion(pmx_euler),
+        pmx_euler_to_blender_quaternion(pmx_euler, library=library),
     )
 
 
-def _pmx_native_object_transform(obj, import_scale):
-    return _pmx_native_matrix_transform(obj.matrix_world, import_scale)
+def _pmx_native_object_transform(obj, import_scale, library=None):
+    return _pmx_native_matrix_transform(obj.matrix_world, import_scale, library=library)
 
 
-def _body_desc(obj, armature, import_scale=1.0):
+def _body_desc(obj, armature, import_scale=1.0, library=None):
     rigid = obj.mmd_rigid
     body = obj.rigid_body
     blocked = tuple(rigid.collision_group_mask)
@@ -243,8 +244,8 @@ def _body_desc(obj, armature, import_scale=1.0):
     return BodyDesc(
         int(rigid.type),
         SHAPES.get(rigid.shape, 0),
-        _pmx_native_object_transform(obj, import_scale),
-        _pmx_native_matrix_transform(bone_world, import_scale),
+        _pmx_native_object_transform(obj, import_scale, library=library),
+        _pmx_native_matrix_transform(bone_world, import_scale, library=library),
         int(pose_bone is not None),
         Vec3.from_value(shape_size),
         max(float(body.mass), 0.0),
@@ -294,7 +295,7 @@ def _scene_is_playing(scene):
     return bool(screen is not None and screen.is_animation_playing)
 
 
-def _joint_desc(obj, body_indices, import_scale=1.0):
+def _joint_desc(obj, body_indices, import_scale=1.0, library=None):
     constraint = obj.rigid_body_constraint
     if constraint.object1 not in body_indices or constraint.object2 not in body_indices:
         return None
@@ -308,7 +309,7 @@ def _joint_desc(obj, body_indices, import_scale=1.0):
     return JointDesc(
         body_indices[constraint.object1],
         body_indices[constraint.object2],
-        _pmx_native_object_transform(obj, import_scale),
+        _pmx_native_object_transform(obj, import_scale, library=library),
         linear_lower,
         linear_upper,
         _constraint_vector(constraint, "limit_ang_{axis}_lower"),
@@ -324,6 +325,8 @@ class PreviewSession:
         self.settings = settings
         self.root = root
         self.root_name = root.name
+        self.solver_target = settings.preview_solver_target
+        self.library = default_library(self.solver_target)
         self.import_scale = _model_import_scale(root)
         self.world_scale = 1.0 / self.import_scale
         self.armature = _model_armature(root)
@@ -395,13 +398,23 @@ class PreviewSession:
             joint_descs = []
             self.joints = []
             for joint in joint_objects:
-                desc = _joint_desc(joint, body_indices, self.import_scale)
+                desc = _joint_desc(
+                    joint,
+                    body_indices,
+                    self.import_scale,
+                    library=self.library,
+                )
                 if desc is not None and desc.body_a != desc.body_b:
                     joint_descs.append(desc)
                     self.joints.append(joint)
             self.joint_names = [joint.name for joint in self.joints]
             self.body_descs = [
-                _body_desc(obj, self.armature, self.import_scale)
+                _body_desc(
+                    obj,
+                    self.armature,
+                    self.import_scale,
+                    library=self.library,
+                )
                 for obj in self.rigids
             ]
             self.joint_descs = joint_descs
@@ -473,13 +486,23 @@ class PreviewSession:
     def rebuild_descriptors(self):
         body_indices = {obj: index for index, obj in enumerate(self.rigids)}
         self.body_descs = [
-            _body_desc(obj, self.armature, self.import_scale)
+            _body_desc(
+                obj,
+                self.armature,
+                self.import_scale,
+                library=self.library,
+            )
             for obj in self.rigids
         ]
         self.joint_descs = [
             desc
             for desc in (
-                _joint_desc(joint, body_indices, self.import_scale)
+                _joint_desc(
+                    joint,
+                    body_indices,
+                    self.import_scale,
+                    library=self.library,
+                )
                 for joint in self.joints
             )
             if desc is not None and desc.body_a != desc.body_b
@@ -689,9 +712,11 @@ class PreviewSession:
 
 
 class PreviewWorld:
-    def __init__(self, key, import_scale):
+    def __init__(self, key, import_scale, solver_target, library):
         self.key = key
         self.import_scale = import_scale
+        self.solver_target = solver_target
+        self.library = library
         self.world_scale = 1.0
         self.sessions = []
         self.solver = None
@@ -722,7 +747,7 @@ class PreviewWorld:
                 adjusted.body_a += session.body_offset
                 adjusted.body_b += session.body_offset
                 joints.append(adjusted)
-        solver = Solver(bodies, joints, self.world_scale)
+        solver = Solver(bodies, joints, self.world_scale, library=self.library)
         solver.set_gravity(self.sessions[0].settings.preview_gravity)
         old_solver = self.solver
         self.solver = solver
@@ -796,6 +821,7 @@ def active_session_info():
             session.import_scale,
             session.world_scale,
             session.root.spx_mmd_interaction_group_id,
+            session.solver_target,
         )
         for session in _ACTIVE_SESSIONS.values()
     )
@@ -963,10 +989,20 @@ def _start_preview(context, root):
     stop_preview(root=root, restore=True)
     session = PreviewSession(context.scene, settings, root)
     interaction_group = root.spx_mmd_interaction_group_id
-    world_key = ("group", session.import_scale, interaction_group)
+    world_key = (
+        "group",
+        session.solver_target,
+        session.import_scale,
+        interaction_group,
+    )
     world = _ACTIVE_WORLDS.get(world_key)
     if world is None:
-        world = PreviewWorld(world_key, session.import_scale)
+        world = PreviewWorld(
+            world_key,
+            session.import_scale,
+            session.solver_target,
+            session.library,
+        )
         _ACTIVE_WORLDS[world_key] = world
     world.add(session)
     try:

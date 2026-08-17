@@ -39,7 +39,11 @@ from mmd_skirt_proxy_creator.mmd_physics import (
     _segment_geometry,
     draw_physics_settings,
 )
-from mmd_skirt_proxy_creator.physics_preview.ffi import ABI_VERSION, SolverLibrary
+from mmd_skirt_proxy_creator.physics_preview.ffi import (
+    ABI_VERSION,
+    SolverLibrary,
+    library_path,
+)
 import mmd_skirt_proxy_creator.physics_preview.runtime as preview_runtime
 from mmd_skirt_proxy_creator.physics_preview.runtime import (
     transform_to_components,
@@ -544,6 +548,7 @@ expected_horizontal = sum(
 )
 assert len(rigids) == expected_rigids, (len(rigids), expected_rigids)
 assert settings.preview_scope == "CURRENT_PROXY"
+assert settings.preview_solver_target == "MMD"
 unrelated_rigid = FnRigidBody.new_rigid_body_objects(
     bpy.context,
     anchor_group,
@@ -569,8 +574,12 @@ unrelated_rigid = FnRigidBody.setup_rigid_body_object(
 )
 bpy.context.view_layer.update()
 unrelated_matrix = unrelated_rigid.matrix_world.copy()
-preview_library = SolverLibrary()
+preview_library = SolverLibrary(target="MMD")
+pmx_preview_library = SolverLibrary(target="PMX")
+assert library_path("MMD").name == "mmd_physics_solver_mmd.dll"
+assert library_path("PMX").name == "mmd_physics_solver.dll"
 assert preview_library.dll.mmd_solver_abi_version() == ABI_VERSION
+assert pmx_preview_library.dll.mmd_solver_abi_version() == ABI_VERSION
 settings.preview_frequency = 60
 settings.preview_substeps = 2
 settings.top_rigid_type = "2"
@@ -1579,7 +1588,7 @@ import mmd_skirt_proxy_creator.physics_preview.ui as preview_ui
 original_active_session_info = preview_ui.active_session_info
 original_preview_is_running = preview_ui.is_running
 try:
-    preview_ui.active_session_info = lambda: (("Model", 0.08, 12.5, "1"),)
+    preview_ui.active_session_info = lambda: (("Model", 0.08, 12.5, "1", "MMD"),)
     preview_ui.is_running = lambda _root=None: True
     active_preview_probe = LayoutProbe()
     original_draw_preview(active_preview_probe, settings)
