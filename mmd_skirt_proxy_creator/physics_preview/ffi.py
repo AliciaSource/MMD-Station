@@ -36,6 +36,10 @@ class Transform(ctypes.Structure):
     _fields_ = (("position", Vec3), ("rotation", Quat))
 
 
+class BasisTransform(ctypes.Structure):
+    _fields_ = (("position", Vec3), ("basis_row_major", ctypes.c_float * 9))
+
+
 class BodyDesc(ctypes.Structure):
     _fields_ = (
         ("mode", ctypes.c_uint32),
@@ -126,6 +130,17 @@ class SolverLibrary:
             ctypes.c_float,
         )
         dll.mmd_solver_create.restype = ctypes.c_void_p
+        if hasattr(dll, "mmd_solver_create_mmd"):
+            dll.mmd_solver_create_mmd.argtypes = (
+                ctypes.POINTER(BodyDesc),
+                ctypes.c_uint32,
+                ctypes.POINTER(JointDesc),
+                ctypes.c_uint32,
+                ctypes.POINTER(Vec3),
+                ctypes.POINTER(Vec3),
+                ctypes.c_float,
+            )
+            dll.mmd_solver_create_mmd.restype = ctypes.c_void_p
         dll.mmd_solver_destroy.argtypes = (ctypes.c_void_p,)
         dll.mmd_solver_destroy.restype = None
         dll.mmd_solver_set_gravity.argtypes = (ctypes.c_void_p, Vec3)
@@ -138,6 +153,35 @@ class SolverLibrary:
             Transform,
         )
         dll.mmd_solver_set_bone_target.restype = ctypes.c_int32
+        if hasattr(dll, "mmd_solver_set_body_target_basis"):
+            dll.mmd_solver_set_body_target_basis.argtypes = (
+                ctypes.c_void_p,
+                ctypes.c_uint32,
+                BasisTransform,
+            )
+            dll.mmd_solver_set_body_target_basis.restype = ctypes.c_int32
+        if hasattr(dll, "mmd_solver_set_body_target_transform"):
+            dll.mmd_solver_set_body_target_transform.argtypes = (
+                ctypes.c_void_p,
+                ctypes.c_uint32,
+                Transform,
+            )
+            dll.mmd_solver_set_body_target_transform.restype = ctypes.c_int32
+        if hasattr(dll, "mmd_solver_set_body_target_position"):
+            dll.mmd_solver_set_body_target_position.argtypes = (
+                ctypes.c_void_p,
+                ctypes.c_uint32,
+                Vec3,
+            )
+            dll.mmd_solver_set_body_target_position.restype = ctypes.c_int32
+        if hasattr(dll, "mmd_solver_set_body_target_position_if_near"):
+            dll.mmd_solver_set_body_target_position_if_near.argtypes = (
+                ctypes.c_void_p,
+                ctypes.c_uint32,
+                Vec3,
+                ctypes.c_uint32,
+            )
+            dll.mmd_solver_set_body_target_position_if_near.restype = ctypes.c_int32
         dll.mmd_solver_step.argtypes = (ctypes.c_void_p, ctypes.c_float, ctypes.c_uint32)
         dll.mmd_solver_step.restype = ctypes.c_int32
         dll.mmd_solver_get_transforms.argtypes = (
@@ -146,6 +190,13 @@ class SolverLibrary:
             ctypes.c_uint32,
         )
         dll.mmd_solver_get_transforms.restype = ctypes.c_uint32
+        if hasattr(dll, "mmd_solver_get_basis_transforms"):
+            dll.mmd_solver_get_basis_transforms.argtypes = (
+                ctypes.c_void_p,
+                ctypes.POINTER(BasisTransform),
+                ctypes.c_uint32,
+            )
+            dll.mmd_solver_get_basis_transforms.restype = ctypes.c_uint32
         dll.mmd_solver_get_bone_transforms.argtypes = (
             ctypes.c_void_p,
             ctypes.POINTER(Transform),
@@ -184,19 +235,47 @@ def pmx_euler_to_blender_quaternion(value, library=None):
 
 
 class Solver:
-    def __init__(self, bodies, joints, world_scale, library=None):
+    def __init__(
+        self,
+        bodies,
+        joints,
+        world_scale,
+        library=None,
+        body_source_eulers=None,
+        joint_source_eulers=None,
+    ):
         self.library = library or default_library()
         self.body_count = len(bodies)
         self.joint_count = len(joints)
         body_array = (BodyDesc * len(bodies))(*bodies)
         joint_array = (JointDesc * len(joints))(*joints) if joints else None
-        self.handle = self.library.dll.mmd_solver_create(
-            body_array,
-            len(bodies),
-            joint_array,
-            len(joints),
-            float(world_scale),
-        )
+        create_mmd = getattr(self.library.dll, "mmd_solver_create_mmd", None)
+        if create_mmd is not None and body_source_eulers is not None:
+            if len(body_source_eulers) != len(bodies):
+                raise ValueError("MMD body source Euler count does not match body count")
+            if joint_source_eulers is None or len(joint_source_eulers) != len(joints):
+                raise ValueError("MMD joint source Euler count does not match joint count")
+            body_euler_array = (Vec3 * len(bodies))(*body_source_eulers)
+            joint_euler_array = (
+                (Vec3 * len(joints))(*joint_source_eulers) if joints else None
+            )
+            self.handle = create_mmd(
+                body_array,
+                len(bodies),
+                joint_array,
+                len(joints),
+                body_euler_array,
+                joint_euler_array,
+                float(world_scale),
+            )
+        else:
+            self.handle = self.library.dll.mmd_solver_create(
+                body_array,
+                len(bodies),
+                joint_array,
+                len(joints),
+                float(world_scale),
+            )
         if not self.handle:
             raise RuntimeError("Rust 物理求解器初始化失败")
 
@@ -238,6 +317,60 @@ class Solver:
         )
         if count != self.body_count:
             raise RuntimeError("读取 Rust 物理结果失败")
+        return output
+
+    def set_body_target_basis(self, index, position, basis_row_major):
+        target = BasisTransform(
+            Vec3.from_value(position),
+            (ctypes.c_float * 9)(*map(float, basis_row_major)),
+        )
+        result = self.library.dll.mmd_solver_set_body_target_basis(
+            self.handle,
+            index,
+            target,
+        )
+        if not result:
+            raise RuntimeError("写入 MMD 刚体矩阵目标失败")
+
+    def set_body_target_transform(self, index, position, rotation):
+        target = Transform(Vec3.from_value(position), Quat(*map(float, rotation)))
+        result = self.library.dll.mmd_solver_set_body_target_transform(
+            self.handle,
+            index,
+            target,
+        )
+        if not result:
+            raise RuntimeError("写入 MMD 刚体目标失败")
+
+    def set_body_target_position(self, index, position):
+        result = self.library.dll.mmd_solver_set_body_target_position(
+            self.handle,
+            index,
+            Vec3.from_value(position),
+        )
+        if not result:
+            raise RuntimeError("写入 MMD 刚体位置失败")
+
+    def set_body_target_position_if_near(self, index, position, max_ulps=2):
+        result = self.library.dll.mmd_solver_set_body_target_position_if_near(
+            self.handle,
+            index,
+            Vec3.from_value(position),
+            max_ulps,
+        )
+        if not result:
+            raise RuntimeError("写入 MMD 刚体近似位置失败")
+        return result == 1
+
+    def basis_transforms(self):
+        output = (BasisTransform * self.body_count)()
+        count = self.library.dll.mmd_solver_get_basis_transforms(
+            self.handle,
+            output,
+            self.body_count,
+        )
+        if count != self.body_count:
+            raise RuntimeError("读取 Rust 物理矩阵失败")
         return output
 
     def bone_transforms(self):

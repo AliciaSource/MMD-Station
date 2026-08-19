@@ -1,8 +1,11 @@
 import concurrent.futures
+import ctypes
 import math
 import os
 import time
 import traceback
+from collections import Counter, defaultdict, deque
+from pathlib import Path
 
 import bpy
 from bpy.app.handlers import persistent
@@ -26,6 +29,7 @@ SUPPORTED_IMPORT_SCALES = (0.08, 0.1)
 _ACTIVE_SESSIONS = {}
 _ACTIVE_WORLDS = {}
 _STEP_EXECUTOR = None
+_SOURCE_PHYSICS_CACHE = {}
 
 
 def _uniform_world_scale(obj, tolerance=1.0e-4):
@@ -227,7 +231,178 @@ def _pmx_native_matrix_transform(matrix, import_scale, library=None):
 
 
 def _pmx_native_object_transform(obj, import_scale, library=None):
-    return _pmx_native_matrix_transform(obj.matrix_world, import_scale, library=library)
+    transform = _pmx_native_matrix_transform(obj.matrix_world, import_scale, library=library)
+    if library is None or library.path.name != "mmd_physics_solver_mmd.dll":
+        return transform
+    pmx_euler = _pmx_source_euler(obj)
+    return Transform(
+        transform.position,
+        pmx_euler_to_blender_quaternion(
+            (pmx_euler.x, pmx_euler.y, pmx_euler.z),
+            library=library,
+        ),
+    )
+
+
+def _pmx_source_euler(obj):
+    euler = obj.rotation_euler
+    return Vec3(-float(euler.x), -float(euler.z), -float(euler.y))
+
+
+def _mmd_physics_name(obj, attribute):
+    value = getattr(obj, attribute)
+    return value.name_j or value.name_e or obj.name
+
+
+def _load_source_physics(root, rigids, joints):
+    import_folder = root.get("import_folder")
+    if not import_folder:
+        return None
+    try:
+        from bl_ext.blender_org.mmd_tools.core import pmx
+    except ImportError:
+        try:
+            from mmd_tools.core import pmx
+        except ImportError:
+            return None
+
+    rigid_names = [_mmd_physics_name(obj, "mmd_rigid") for obj in rigids]
+    joint_names = [_mmd_physics_name(obj, "mmd_joint") for obj in joints]
+    required_rigids = Counter(rigid_names)
+    required_joints = Counter(joint_names)
+    candidates = []
+    for path in Path(import_folder).glob("*.pmx"):
+        key = (str(path), path.stat().st_mtime_ns)
+        source = _SOURCE_PHYSICS_CACHE.get(key)
+        if source is None:
+            model = pmx.load(str(path))
+            source = (
+                model.name,
+                [(
+                    item.name,
+                    tuple(item.rotation),
+                    tuple(item.size),
+                    float(item.mass),
+                ) for item in model.rigids],
+                [(
+                    item.name,
+                    tuple(item.rotation),
+                    tuple(item.minimum_location),
+                    tuple(item.maximum_location),
+                    tuple(item.minimum_rotation),
+                    tuple(item.maximum_rotation),
+                    tuple(item.spring_constant),
+                    tuple(item.spring_rotation_constant),
+                ) for item in model.joints],
+            )
+            _SOURCE_PHYSICS_CACHE[key] = source
+        model_name, source_rigids, source_joints = source
+        source_rigid_counts = Counter(item[0] for item in source_rigids)
+        source_joint_counts = Counter(item[0] for item in source_joints)
+        if any(source_rigid_counts[name] < count for name, count in required_rigids.items()):
+            continue
+        if any(source_joint_counts[name] < count for name, count in required_joints.items()):
+            continue
+        candidates.append((
+            model_name in {root.mmd_root.name, root.mmd_root.name_e},
+            len(source_rigids) == len(rigids),
+            len(source_joints) == len(joints),
+            source_rigids,
+            source_joints,
+        ))
+    if not candidates:
+        return None
+    _name_match, _rigid_count_match, _joint_count_match, source_rigids, source_joints = max(
+        candidates,
+        key=lambda item: item[:3],
+    )
+
+    def aligned_source_items(objects, source_items, attribute):
+        by_name = defaultdict(deque)
+        for item in source_items:
+            by_name[item[0]].append(item)
+        values = []
+        for obj in objects:
+            fallback = _pmx_source_euler(obj)
+            matches = by_name[_mmd_physics_name(obj, attribute)]
+            if not matches:
+                values.append(None)
+                continue
+            item = matches.popleft()
+            rotation = item[1]
+            fallback_values = (fallback.x, fallback.y, fallback.z)
+            if max(abs(a - b) for a, b in zip(fallback_values, rotation)) > 2.0e-5:
+                values.append(None)
+            else:
+                values.append(item)
+        return values
+
+    rigid_items = aligned_source_items(
+        rigids,
+        source_rigids,
+        "mmd_rigid",
+    )
+    joint_items = aligned_source_items(joints, source_joints, "mmd_joint")
+
+    return (
+        [Vec3.from_value(item[1]) if item is not None else _pmx_source_euler(obj)
+         for obj, item in zip(rigids, rigid_items)],
+        [Vec3.from_value(item[1]) if item is not None else _pmx_source_euler(obj)
+         for obj, item in zip(joints, joint_items)],
+        rigid_items,
+        joint_items,
+    )
+
+
+def _apply_source_joint_values(descs, source_items):
+    for desc, item in zip(descs, source_items):
+        if item is None:
+            continue
+        minimum_location = item[2]
+        maximum_location = item[3]
+        minimum_rotation = item[4]
+        maximum_rotation = item[5]
+        linear_spring = item[6]
+        angular_spring = item[7]
+        desc.linear_lower = Vec3(
+            minimum_location[0], minimum_location[2], minimum_location[1])
+        desc.linear_upper = Vec3(
+            maximum_location[0], maximum_location[2], maximum_location[1])
+        desc.angular_upper = Vec3(
+            -minimum_rotation[0], -minimum_rotation[2], -minimum_rotation[1])
+        desc.angular_lower = Vec3(
+            -maximum_rotation[0], -maximum_rotation[2], -maximum_rotation[1])
+        desc.linear_spring = Vec3(
+            linear_spring[0], linear_spring[2], linear_spring[1])
+        desc.angular_spring = Vec3(
+            angular_spring[0], angular_spring[2], angular_spring[1])
+
+
+def _apply_source_body_values(descs, source_items, library):
+    for desc, item in zip(descs, source_items):
+        if item is None:
+            continue
+        size = item[2]
+        if int(desc.shape) == 1:
+            desc.size = Vec3(size[0], size[2], size[1])
+        else:
+            desc.size = Vec3(size[0], size[1], size[2])
+        desc.mass = item[3]
+        desc.transform.rotation = pmx_euler_to_blender_quaternion(
+            item[1],
+            library=library,
+        )
+
+
+def _mmd_position_roundtrip(position, bone_position):
+    def float32(value):
+        return ctypes.c_float(value).value
+
+    return Vec3(
+        float32(float32(position.x - bone_position.x) + bone_position.x),
+        float32(float32(position.y - bone_position.y) + bone_position.y),
+        float32(float32(position.z - bone_position.z) + bone_position.z),
+    )
 
 
 def _body_desc(obj, armature, import_scale=1.0, library=None):
@@ -241,11 +416,26 @@ def _body_desc(obj, armature, import_scale=1.0, library=None):
     export_scale = 1.0 / import_scale
     shape_size = Vector(rigid.size) * object_scale
     shape_size *= export_scale
+    object_transform = _pmx_native_object_transform(obj, import_scale, library=library)
+    bone_transform = _pmx_native_matrix_transform(bone_world, import_scale, library=library)
+    if (
+        pose_bone is not None
+        and library is not None
+        and library.path.name == "mmd_physics_solver_mmd.dll"
+    ):
+        rest_bone_world = armature.matrix_world @ pose_bone.bone.head_local
+        rest_bone_position = Vec3.from_value(
+            tuple(float(value) * export_scale for value in rest_bone_world)
+        )
+        object_transform = Transform(
+            _mmd_position_roundtrip(object_transform.position, rest_bone_position),
+            object_transform.rotation,
+        )
     return BodyDesc(
         int(rigid.type),
         SHAPES.get(rigid.shape, 0),
-        _pmx_native_object_transform(obj, import_scale, library=library),
-        _pmx_native_matrix_transform(bone_world, import_scale, library=library),
+        object_transform,
+        bone_transform,
         int(pose_bone is not None),
         Vec3.from_value(shape_size),
         max(float(body.mass), 0.0),
@@ -396,6 +586,7 @@ class PreviewSession:
             bpy.context.view_layer.update()
             body_indices = {obj: index for index, obj in enumerate(self.rigids)}
             joint_descs = []
+            joint_source_eulers = []
             self.joints = []
             for joint in joint_objects:
                 desc = _joint_desc(
@@ -406,6 +597,7 @@ class PreviewSession:
                 )
                 if desc is not None and desc.body_a != desc.body_b:
                     joint_descs.append(desc)
+                    joint_source_eulers.append(_pmx_source_euler(joint))
                     self.joints.append(joint)
             self.joint_names = [joint.name for joint in self.joints]
             self.body_descs = [
@@ -418,6 +610,26 @@ class PreviewSession:
                 for obj in self.rigids
             ]
             self.joint_descs = joint_descs
+            self.body_source_eulers = [_pmx_source_euler(obj) for obj in self.rigids]
+            self.joint_source_eulers = joint_source_eulers
+            source_physics = (
+                _load_source_physics(self.root, self.rigids, self.joints)
+                if self.solver_target == "MMD"
+                else None
+            )
+            if source_physics is not None:
+                (
+                    self.body_source_eulers,
+                    self.joint_source_eulers,
+                    source_body_items,
+                    source_joint_items,
+                ) = source_physics
+                _apply_source_body_values(
+                    self.body_descs,
+                    source_body_items,
+                    self.library,
+                )
+                _apply_source_joint_values(self.joint_descs, source_joint_items)
         except Exception:
             for name, matrix_basis in self.saved_pose_basis.items():
                 pose_bone = self.armature.pose.bones.get(name)
@@ -447,6 +659,7 @@ class PreviewSession:
         self.auto_reset_count = 0
         self.consecutive_tick_failures = 0
         self.snapshot_reset_pending = False
+        self.mmd_step_count = 0
         self.closed = False
         self.world = None
         self.solver = None
@@ -494,19 +707,37 @@ class PreviewSession:
             )
             for obj in self.rigids
         ]
-        self.joint_descs = [
-            desc
-            for desc in (
-                _joint_desc(
-                    joint,
-                    body_indices,
-                    self.import_scale,
-                    library=self.library,
-                )
-                for joint in self.joints
+        self.body_source_eulers = [_pmx_source_euler(obj) for obj in self.rigids]
+        self.joint_descs = []
+        self.joint_source_eulers = []
+        for joint in self.joints:
+            desc = _joint_desc(
+                joint,
+                body_indices,
+                self.import_scale,
+                library=self.library,
             )
-            if desc is not None and desc.body_a != desc.body_b
-        ]
+            if desc is not None and desc.body_a != desc.body_b:
+                self.joint_descs.append(desc)
+                self.joint_source_eulers.append(_pmx_source_euler(joint))
+        source_physics = (
+            _load_source_physics(self.root, self.rigids, self.joints)
+            if self.solver_target == "MMD"
+            else None
+        )
+        if source_physics is not None:
+            (
+                self.body_source_eulers,
+                self.joint_source_eulers,
+                source_body_items,
+                source_joint_items,
+            ) = source_physics
+            _apply_source_body_values(
+                self.body_descs,
+                source_body_items,
+                self.library,
+            )
+            _apply_source_joint_values(self.joint_descs, source_joint_items)
 
     def _broad_pose_reset_detected(self):
         driver_names = set(self.bone_drivers)
@@ -566,6 +797,16 @@ class PreviewSession:
             self.settings.preview_status = (
                 f"运行中：已自动重置物理 {self.auto_reset_count} 次"
             )
+        kinematic_bone_worlds = {}
+        if self.solver_target == "MMD" and self.mmd_step_count >= 4:
+            for index, rigid in enumerate(self.rigids):
+                if int(rigid.mmd_rigid.type) != 0:
+                    continue
+                pose_bone = self.armature.pose.bones.get(rigid.mmd_rigid.bone)
+                if pose_bone is not None and index in self.bone_offsets:
+                    kinematic_bone_worlds[index] = (
+                        self.armature.matrix_world @ pose_bone.matrix
+                    )
         for name, matrix_basis in self.saved_basis.items():
             pose_bone = self.armature.pose.bones.get(name)
             if pose_bone is not None:
@@ -579,10 +820,17 @@ class PreviewSession:
             pose_bone = self.armature.pose.bones.get(rigid.mmd_rigid.bone)
             if pose_bone is None or index not in self.bone_offsets:
                 continue
-            bone_world = self.armature.matrix_world @ pose_bone.matrix
+            bone_world = kinematic_bone_worlds.get(
+                index,
+                self.armature.matrix_world @ pose_bone.matrix,
+            )
             self.solver.set_bone_target(
                 self.body_offset + index,
-                _pmx_native_matrix_transform(bone_world, self.import_scale),
+                _pmx_native_matrix_transform(
+                    bone_world,
+                    self.import_scale,
+                    library=self.library,
+                ),
             )
 
     def step_solver(self):
@@ -694,6 +942,8 @@ class PreviewSession:
             for pose_bone in self.armature.pose.bones
         }
         self.last_frame = (self.scene.frame_current, self.scene.frame_subframe)
+        if self.solver_target == "MMD":
+            self.mmd_step_count += 1
         self.pending_animation_pose = None
 
     def tick(self):
@@ -736,18 +986,29 @@ class PreviewWorld:
     def reset(self):
         bodies = []
         joints = []
+        body_source_eulers = []
+        joint_source_eulers = []
         for session in self.sessions:
             session._restore_start_snapshot()
             session.rebuild_descriptors()
             session.body_offset = len(bodies)
             session.joint_offset = len(joints)
             bodies.extend(session.body_descs)
+            body_source_eulers.extend(session.body_source_eulers)
             for desc in session.joint_descs:
                 adjusted = JointDesc.from_buffer_copy(desc)
                 adjusted.body_a += session.body_offset
                 adjusted.body_b += session.body_offset
                 joints.append(adjusted)
-        solver = Solver(bodies, joints, self.world_scale, library=self.library)
+            joint_source_eulers.extend(session.joint_source_eulers)
+        solver = Solver(
+            bodies,
+            joints,
+            self.world_scale,
+            library=self.library,
+            body_source_eulers=body_source_eulers,
+            joint_source_eulers=joint_source_eulers,
+        )
         solver.set_gravity(self.sessions[0].settings.preview_gravity)
         old_solver = self.solver
         self.solver = solver
@@ -761,6 +1022,7 @@ class PreviewWorld:
                 session.scene.frame_current,
                 session.scene.frame_subframe,
             )
+            session.mmd_step_count = 0
         if old_solver is not None:
             old_solver.close()
         self.time_driver.reset()
