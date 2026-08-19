@@ -1,5 +1,7 @@
 param(
-    [string]$V90Root = $env:MMD_V90_ROOT,
+    [string]$Vc10Sp1Root = $env:MMD_VC10_SP1_ROOT,
+    [string]$Vc10Root = $env:MMD_VC10_ROOT,
+    [string]$WinSdk71Root = $env:MMD_WINSDK71_ROOT,
     [string]$VsDevCmd = $env:MMD_VSDEVCMD
 )
 
@@ -9,21 +11,28 @@ $crateRoot = $PSScriptRoot
 $projectRoot = Split-Path (Split-Path $crateRoot -Parent) -Parent
 $destination = Join-Path $projectRoot "mmd_skirt_proxy_creator\physics_preview\bin\win_amd64"
 
-if (-not $V90Root) {
-    $V90Root = Join-Path $env:TEMP "vcpy27-portable\Microsoft\Visual C++ for Python\9.0"
+if (-not $Vc10Sp1Root) {
+    $Vc10Sp1Root = Join-Path $env:TEMP "vc10sp1-portable\Program Files(64)\Microsoft Visual Studio 10.0"
 }
-$vcRoot = Join-Path $V90Root "VC"
-$sdkRoot = Join-Path $V90Root "WinSDK"
+if (-not $Vc10Root) {
+    $Vc10Root = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio 10.0"
+}
+if (-not $WinSdk71Root) {
+    $WinSdk71Root = Join-Path $env:TEMP "spx-winsdk71-portable\Program Files\Microsoft SDKs\Windows\v7.1"
+}
+$vcRoot = Join-Path $Vc10Sp1Root "VC"
+$sdkRoot = $WinSdk71Root
 $compilerBin = Join-Path $vcRoot "bin\amd64"
 $compiler = Join-Path $compilerBin "cl.exe"
 $linker = Join-Path $compilerBin "link.exe"
-$includePaths = @((Join-Path $vcRoot "include"), (Join-Path $sdkRoot "include"))
+$includePaths = @((Join-Path $Vc10Root "VC\include"), (Join-Path $sdkRoot "Include"))
 $libraryPaths = @((Join-Path $vcRoot "lib\amd64"), (Join-Path $sdkRoot "lib\x64"))
-$vc9Libcmt = Join-Path $libraryPaths[0] "libcmt.lib"
+$vcLibDirectory = $libraryPaths[0]
+$vcLibcmt = Join-Path $vcLibDirectory "libcmt.lib"
 
-foreach ($requiredPath in @($compiler, $linker, $vc9Libcmt) + $includePaths + $libraryPaths) {
+foreach ($requiredPath in @($compiler, $linker, $vcLibcmt) + $includePaths + $libraryPaths) {
     if (-not (Test-Path -LiteralPath $requiredPath)) {
-        throw "VC9 build input is missing: $requiredPath"
+        throw "VC10 SP1 build input is missing: $requiredPath"
     }
 }
 
@@ -50,7 +59,6 @@ $modernLinker = Get-ChildItem (Join-Path $visualStudioRoot "VC\Tools\MSVC") -Dir
 if (-not $modernLinker) {
     throw "Current MSVC x64 linker was not found under $visualStudioRoot"
 }
-
 function Get-ToolBanner([string]$toolPath) {
     $probe = [Diagnostics.ProcessStartInfo]::new()
     $probe.FileName = $toolPath
@@ -64,28 +72,32 @@ function Get-ToolBanner([string]$toolPath) {
     return $banner
 }
 
-if ((Get-ToolBanner $compiler) -notmatch "Version 15\.00\.30729\.01") {
-    throw "MMD-compatible builds require VC9 SP1 cl.exe 15.00.30729.01"
+if ((Get-ToolBanner $compiler) -notmatch "Version 16\.00\.40219\.01") {
+    throw "MMD-compatible builds require VC10 SP1 cl.exe 16.00.40219.01"
 }
-if ((Get-ToolBanner $linker) -notmatch "Version 9\.00\.30729\.01") {
-    throw "MMD-compatible builds require VC9 SP1 link.exe 9.00.30729.01"
+if ((Get-ToolBanner $linker) -notmatch "Version 10\.00\.40219\.01") {
+    throw "MMD-compatible builds require VC10 SP1 link.exe 10.00.40219.01"
 }
 
-$buildCommand = Join-Path $env:TEMP ("mmd-v90-ltcg-{0}.cmd" -f ([guid]::NewGuid().ToString("N")))
-$renamedLibDirectory = Join-Path $env:TEMP ("mmd-v90-libcmt-{0}" -f ([guid]::NewGuid().ToString("N")))
+$buildCommand = Join-Path $env:TEMP ("mmd-vc10sp1-{0}.cmd" -f ([guid]::NewGuid().ToString("N")))
+$renamedLibDirectory = Join-Path $env:TEMP ("mmd-vc10sp1-libcmt-{0}" -f ([guid]::NewGuid().ToString("N")))
 New-Item -ItemType Directory -Force -Path $renamedLibDirectory | Out-Null
-$renamedLibcmt = Join-Path $renamedLibDirectory "mmd_vc9_libcmt.lib"
-Copy-Item -LiteralPath $vc9Libcmt -Destination $renamedLibcmt -Force
+$renamedLibcmt = Join-Path $renamedLibDirectory "mmd_vc10sp1_libcmt.lib"
+Copy-Item -LiteralPath $vcLibcmt -Destination $renamedLibcmt -Force
 $commandLines = @(
     "@echo off",
     "call `"$VsDevCmd`" -arch=x64 -host_arch=x64 >nul",
     "set `"CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_LINKER=$modernLinker`"",
+    "set `"PATH=$compilerBin;%PATH%`"",
     "set `"CXX=$compiler`"",
     "set `"CXX_x86_64_pc_windows_msvc=$compiler`"",
-    "set `"MMD_V90_INCLUDE=$($includePaths -join ';')`"",
-    "set `"MMD_V90_LIBCMT=$renamedLibcmt`"",
-    "set `"CXXFLAGS=/D_ALLOW_MSC_VER_MISMATCH /fp:fast`"",
+    "set `"MMD_LEGACY_INCLUDE=$($includePaths -join ';')`"",
+    "set `"MMD_LEGACY_LIBCMT=$renamedLibcmt`"",
+    "set `"LIB=$renamedLibDirectory;%LIB%;$($libraryPaths -join ';')`"",
+    "set `"CXXFLAGS=/D_ALLOW_MSC_VER_MISMATCH /fp:fast /Ox`"",
+    "set `"RUSTFLAGS=-C link-arg=/LTCG`"",
     "cd /d `"$crateRoot`"",
+    "cargo clean",
     "cargo test --release",
     "if errorlevel 1 exit /b %errorlevel%",
     "cargo build --release"
@@ -99,7 +111,7 @@ try {
     Remove-Item -LiteralPath $renamedLibDirectory -Recurse -Force -ErrorAction SilentlyContinue
 }
 if ($cargoExitCode -ne 0) {
-    throw "VC9 SP1 LTCG build failed with exit code $cargoExitCode"
+    throw "VC10 SP1 build failed with exit code $cargoExitCode"
 }
 
 New-Item -ItemType Directory -Force -Path $destination | Out-Null

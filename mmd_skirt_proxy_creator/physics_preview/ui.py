@@ -212,7 +212,7 @@ def register_settings(cls):
         default="CURRENT_PROXY",
     )
     annotations["preview_solver_target"] = EnumProperty(
-        name="物理对齐目标",
+        name="物理 DLL",
         description="选择预览 DLL 的目标实现；切换前需停止全部物理预览",
         items=(
             ("MMD", "MMD 本体", "使用按 MikuMikuDance 9.32 x64 初始化路径构建的 DLL"),
@@ -245,9 +245,6 @@ def register_settings(cls):
 def draw_preview(layout, settings):
     box = layout.box()
     box.label(text="Rust MMD 物理预览", icon="PHYSICS")
-    target_row = box.row()
-    target_row.enabled = not is_running()
-    target_row.prop(settings, "preview_solver_target", expand=True)
     box.prop(settings, "preview_scope", expand=True)
     if settings.preview_scope == "CURRENT_PROXY":
         box.prop(settings, "mmd_root")
@@ -291,10 +288,13 @@ def draw_preview(layout, settings):
             except Exception:
                 error_row = box.row(align=True)
                 error_row.label(text=f"{root.name} 的预览设置无效", icon="ERROR")
+    target_row = box.row()
+    target_row.enabled = not is_running()
+    target_row.prop(settings, "preview_solver_target")
     target = settings.preview_solver_target
     path = library_path(target)
-    status = f"{target} DLL 已就绪" if path.is_file() else f"{target} DLL 缺失"
-    box.label(text=status, icon="CHECKMARK" if path.is_file() else "ERROR")
+    if not path.is_file():
+        box.label(text=f"{target} DLL 缺失", icon="ERROR")
     row = box.row(align=True)
     row.prop(settings, "preview_frequency")
     row.prop(settings, "preview_substeps")

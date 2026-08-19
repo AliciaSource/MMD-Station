@@ -7,7 +7,9 @@ from bpy.types import Operator
 
 from . import export_hook
 from .evaluator import is_active as evaluator_is_active
+from .evaluator import replay_live
 from .evaluator import start as start_evaluator
+from .evaluator import start_live
 from .evaluator import stop as stop_evaluator
 from .runtime import (
     MMDIKRuntimeError,
@@ -16,7 +18,6 @@ from .runtime import (
     refresh_bindings,
     resolve_root,
     restore_bindings,
-    runtime_armature,
     runtime_state,
     select_armature,
     selected_armature,
@@ -42,8 +43,7 @@ def _armature_poll(self, obj):
         from .runtime import canonical_armature
 
         canonical = canonical_armature(root, state)
-        runtime = runtime_armature(root, state)
-        return obj == canonical or obj == runtime
+        return obj == canonical
     return obj == canonical
 
 
@@ -122,14 +122,14 @@ def _require_physics_stopped(root):
 def register_settings(settings_cls):
     settings_cls.__annotations__["mmd_ik_root"] = PointerProperty(
         name="MMD 模型",
-        description="需要创建 MMD IK Runtime 的 mmd_tools 模型根对象",
+        description="需要启用或关闭 MMD 原生骨骼接管的 mmd_tools 模型",
         type=bpy.types.Object,
         poll=_root_poll,
         update=_root_updated,
     )
     settings_cls.__annotations__["mmd_ik_armature"] = PointerProperty(
         name="骨架",
-        description="切换当前模型全部 Mesh 使用的 mmd_tools 原骨架或 MMD IK 兼容骨架",
+        description="用户始终编辑且 Mesh 始终绑定的原 mmd_tools 骨架",
         type=bpy.types.Object,
         poll=_armature_poll,
         update=_armature_updated,
@@ -186,24 +186,44 @@ class _RuntimeOperator:
 class SPX_OT_CreateMMDIKRuntime(_RuntimeOperator, Operator):
     bl_idname = "surface_proxy.create_mmd_ik_runtime"
     bl_label = "启用 MMD IK 兼容"
-    bl_description = "创建独立 Runtime Armature，并切换当前 MMD 模型的全部 Armature Modifier"
+    bl_description = "让 native DLL 自动接管原 mmd_tools 骨架的最终求值，不改变 Mesh 骨架绑定"
     bl_options = {"REGISTER", "UNDO"}
 
     def run(self, context):
         export_hook.install()
         install_vmd_hook()
         root = _selected_root(context)
-        _require_physics_stopped(root)
-        runtime, count, created = create_runtime(context, root)
-        _set_armature_selector(context.scene.surface_proxy_creator, runtime)
-        action = "已创建" if created else "已刷新"
-        return f"{action} {runtime.name}，切换 {count} 个 Armature Modifier"
+        from ..physics_preview import runtime as physics_runtime
+
+        restart_physics = physics_runtime.is_running(root)
+        if restart_physics:
+            physics_runtime.stop_preview(root, restore=True)
+        canonical = selected_armature(root)
+        input_basis = {
+            pose_bone.name: pose_bone.matrix_basis.copy()
+            for pose_bone in canonical.pose.bones
+        }
+        _canonical, count, created = create_runtime(context, root)
+        try:
+            matched, total, _scale = start_live(root, input_basis=input_basis)
+        except Exception:
+            restore_bindings(root, keep_runtime=False)
+            raise
+        finally:
+            if restart_physics:
+                physics_runtime.start_preview(context)
+                replay_live(root, context.scene)
+        _set_armature_selector(
+            context.scene.surface_proxy_creator, selected_armature(root)
+        )
+        action = "已启用" if created else "已刷新"
+        return f"{action} MMD 原生骨骼接管：匹配 {matched}/{total} 根骨骼，保持 {count} 个 Mesh 绑定原骨架"
 
 
 class SPX_OT_RefreshMMDIKRuntime(_RuntimeOperator, Operator):
     bl_idname = "surface_proxy.refresh_mmd_ik_runtime"
     bl_label = "刷新模型物体"
-    bl_description = "扫描材质分离或新增的 Mesh，并切换其 Armature Modifier"
+    bl_description = "刷新内存态 MMD 骨骼接管，不改变任何 Armature Modifier"
     bl_options = {"REGISTER", "UNDO"}
 
     def run(self, context):
@@ -217,7 +237,7 @@ class SPX_OT_RefreshMMDIKRuntime(_RuntimeOperator, Operator):
 class SPX_OT_RestoreMMDIKRuntime(_RuntimeOperator, Operator):
     bl_idname = "surface_proxy.restore_mmd_ik_runtime"
     bl_label = "复原原始骨架"
-    bl_description = "将当前模型全部 Runtime Armature Modifier 无损恢复到 mmd_tools 原骨架"
+    bl_description = "暂停内存态 MMD 骨骼接管并恢复 Blender/mmd_tools 求值"
     bl_options = {"REGISTER", "UNDO"}
 
     def run(self, context):
@@ -230,8 +250,8 @@ class SPX_OT_RestoreMMDIKRuntime(_RuntimeOperator, Operator):
 
 class SPX_OT_ReenableMMDIKRuntime(_RuntimeOperator, Operator):
     bl_idname = "surface_proxy.reenable_mmd_ik_runtime"
-    bl_label = "重新启用运行骨架"
-    bl_description = "重新把当前模型的 Armature Modifier 切换到已有 Runtime Armature"
+    bl_label = "重新启用 MMD IK 接管"
+    bl_description = "重新建立内存态 MMD 骨骼接管，不改变 Armature Modifier"
     bl_options = {"REGISTER", "UNDO"}
 
     def run(self, context):
@@ -239,28 +259,36 @@ class SPX_OT_ReenableMMDIKRuntime(_RuntimeOperator, Operator):
         _require_physics_stopped(root)
         count = reenable_bindings(root)
         _set_armature_selector(context.scene.surface_proxy_creator, selected_armature(root))
-        return f"已重新启用并切换 {count} 个 Armature Modifier"
+        return f"已重新启用 MMD 骨骼接管，{count} 个 Mesh 保持绑定原骨架"
 
 
 class SPX_OT_RemoveMMDIKRuntime(_RuntimeOperator, Operator):
     bl_idname = "surface_proxy.remove_mmd_ik_runtime"
-    bl_label = "移除 MMD IK 兼容骨架"
-    bl_description = "将全部 Mesh 切回 mmd_tools 原骨架，并移除插件生成的兼容骨架"
+    bl_label = "关闭 MMD IK 兼容"
+    bl_description = "停止 native 骨骼接管并恢复 mmd_tools 原有 IK 结果"
     bl_options = {"REGISTER", "UNDO"}
 
     def run(self, context):
         root = _selected_root(context)
-        _require_physics_stopped(root)
-        stop_evaluator(root)
-        count = restore_bindings(root, keep_runtime=False)
+        from ..physics_preview import runtime as physics_runtime
+
+        restart_physics = physics_runtime.is_running(root)
+        if restart_physics:
+            physics_runtime.stop_preview(root, restore=True)
+        try:
+            stop_evaluator(root)
+            count = restore_bindings(root, keep_runtime=False)
+        finally:
+            if restart_physics:
+                physics_runtime.start_preview(context)
         _set_armature_selector(context.scene.surface_proxy_creator, selected_armature(root))
-        return f"已切回原骨架并同步 {count} 个 Armature Modifier，兼容骨架已移除"
+        return f"已关闭 MMD 原生骨骼接管，{count} 个 Mesh 继续使用原骨架"
 
 
 class SPX_OT_StartMMDIKEvaluator(_RuntimeOperator, Operator):
     bl_idname = "surface_proxy.start_mmd_ik_evaluator"
     bl_label = "启动原生 VMD 求值"
-    bl_description = "使用插件内 C++ DLL 直接读取原始 PMX/VMD 并驱动 Runtime Armature"
+    bl_description = "使用插件内 C++ DLL 直接读取原始 PMX/VMD 并驱动原 mmd_tools 骨架"
     bl_options = {"REGISTER"}
 
     def run(self, context):
@@ -280,7 +308,7 @@ class SPX_OT_StartMMDIKEvaluator(_RuntimeOperator, Operator):
 class SPX_OT_StopMMDIKEvaluator(_RuntimeOperator, Operator):
     bl_idname = "surface_proxy.stop_mmd_ik_evaluator"
     bl_label = "停止骨骼求值"
-    bl_description = "停止 C++ 骨骼求值并恢复 Runtime Armature 原有 Action 与约束状态"
+    bl_description = "停止 C++ 骨骼求值并恢复原骨架的 Action 与约束状态"
     bl_options = {"REGISTER"}
 
     def run(self, context):
@@ -292,50 +320,19 @@ class SPX_OT_StopMMDIKEvaluator(_RuntimeOperator, Operator):
 def draw(layout, settings, context):
     layout.prop(settings, "mmd_ik_root")
     root = settings.mmd_ik_root
-    physics_running = _physics_running(root)
-    armature_row = layout.row()
-    armature_row.enabled = not physics_running
-    armature_row.prop(settings, "mmd_ik_armature")
-    if physics_running:
-        layout.label(text="物理预览运行中，骨架切换已锁定", icon="LOCKED")
     state = runtime_state(root) if root is not None else None
-    runtime = runtime_armature(root, state) if state else None
     box = layout.box()
     if not state:
-        box.label(text="状态：尚未创建运行骨架", icon="INFO")
-        row = box.row()
-        row.enabled = not physics_running
-        row.operator("surface_proxy.create_mmd_ik_runtime", icon="ARMATURE_DATA")
+        box.label(text="状态：使用 Blender/mmd_tools 骨骼求值", icon="INFO")
+        box.operator("surface_proxy.create_mmd_ik_runtime", icon="PLAY")
         return
-    if runtime is None:
-        box.label(text="状态：Runtime Armature 已丢失", icon="ERROR")
-    elif state.get("enabled"):
-        box.label(text=f"状态：运行中 · {runtime.name}", icon="PLAY")
-    else:
-        box.label(text=f"状态：已复原 · {runtime.name}", icon="PAUSE")
-    row = box.row(align=True)
-    row.enabled = not physics_running
-    row.operator("surface_proxy.refresh_mmd_ik_runtime", icon="FILE_REFRESH")
-    row.operator("surface_proxy.remove_mmd_ik_runtime", icon="TRASH")
-
-    solver = layout.box()
-    solver.label(text="插件内独立 MMD 骨骼求值", icon="ANIM")
-    solver.prop(settings, "mmd_ik_pmx_path")
-    solver.prop(settings, "mmd_ik_vmd_path")
-    solver.prop(settings, "mmd_ik_action")
-    row = solver.row(align=True)
-    row.prop(settings, "mmd_ik_vmd_start_frame")
-    row.prop(settings, "mmd_ik_start_frame")
     active = evaluator_is_active(root)
-    solver.label(
-        text="状态：原生 VMD 求值运行中" if active else "状态：已停止",
-        icon="PLAY" if active else "PAUSE",
+    box.label(
+        text="状态：MMD 原生骨骼已自动接管" if active else "状态：接管已停止",
+        icon="CHECKMARK" if active else "ERROR",
     )
-    row = solver.row(align=True)
-    row.operator("surface_proxy.start_mmd_ik_evaluator", icon="PLAY")
-    row.operator("surface_proxy.stop_mmd_ik_evaluator", icon="PAUSE")
-    layout.label(text="生产运行时不会启动、调用或依赖 MikuMikuDance", icon="CHECKMARK")
-    layout.label(text="PMX 导出时临时切回原骨架，完成后自动恢复", icon="LOCKED")
+    box.label(text="原 mmd_tools 骨架保持为唯一可见、唯一绑定骨架", icon="INFO")
+    box.operator("surface_proxy.remove_mmd_ik_runtime", icon="PAUSE")
 
 
 CLASSES = (

@@ -35,7 +35,7 @@ fn main() {
         .define("WIN32", None)
         .define("BT_NO_PROFILE", None);
 
-    if let Some(include_paths) = env::var_os("MMD_V90_INCLUDE") {
+    if let Some(include_paths) = env::var_os("MMD_LEGACY_INCLUDE") {
         for include_path in env::split_paths(&include_paths) {
             build.include(include_path);
         }
@@ -49,13 +49,13 @@ fn main() {
     println!("cargo:rustc-link-search=native={}", env::var("OUT_DIR").unwrap());
     println!("cargo:rustc-link-lib=static:-bundle=mmd_anim_bullet");
 
-    if let Some(vc9_libcmt) = env::var_os("MMD_V90_LIBCMT") {
-        let vc9_libcmt = PathBuf::from(vc9_libcmt);
-        let link_dir = vc9_libcmt.parent().expect("VC9 libcmt path has no parent");
-        let link_name = vc9_libcmt
+    if let Some(legacy_libcmt) = env::var_os("MMD_LEGACY_LIBCMT") {
+        let legacy_libcmt = PathBuf::from(legacy_libcmt);
+        let link_dir = legacy_libcmt.parent().expect("legacy libcmt path has no parent");
+        let link_name = legacy_libcmt
             .file_stem()
             .and_then(|name| name.to_str())
-            .expect("VC9 libcmt path has no valid file stem");
+            .expect("legacy libcmt path has no valid file stem");
         println!("cargo:rustc-link-search=native={}", link_dir.display());
         println!("cargo:rustc-link-lib=static:-bundle={link_name}");
     }

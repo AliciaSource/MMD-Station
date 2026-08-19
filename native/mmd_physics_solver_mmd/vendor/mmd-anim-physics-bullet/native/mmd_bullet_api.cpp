@@ -5,6 +5,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
+#include <xmmintrin.h>
 #include <windows.h>
 
 static char g_last_error[1024] = {0};
@@ -21,7 +22,7 @@ struct RigidBodyEntry {
 struct mmd_anim_bullet_world {
     btDefaultCollisionConfiguration *collision_configuration;
     btCollisionDispatcher *dispatcher;
-    btDbvtBroadphase *broadphase;
+    btBroadphaseInterface *broadphase;
     btSequentialImpulseConstraintSolver *solver;
     btDiscreteDynamicsWorld *dynamics_world;
     btCollisionShape *ground_shape;
@@ -107,24 +108,14 @@ static void set_angular_limit(btGeneric6DofSpringConstraint &constraint, const f
     constraint.setAngularUpperLimit(btVector3(upper[0], upper[1], upper[2]));
 }
 
-static void configure_linear_spring_axis(
+static void configure_spring_axis(
     btGeneric6DofSpringConstraint &constraint,
     int axis,
-    int stiffness_axis,
     float stiffness) {
-    constraint.enableSpring(axis, false);
-    if (stiffness != 0.0f) {
+    if (stiffness > 0.0f) {
         constraint.enableSpring(axis, true);
-        constraint.setStiffness(stiffness_axis, stiffness);
+        constraint.setStiffness(axis, stiffness);
     }
-}
-
-static void configure_angular_spring_axis(
-    btGeneric6DofSpringConstraint &constraint,
-    int axis,
-    float stiffness) {
-    constraint.enableSpring(axis, true);
-    constraint.setStiffness(axis, stiffness);
 }
 
 static btCollisionShape *make_shape(const mmd_anim_bullet_rigidbody_desc &desc) {
@@ -171,6 +162,92 @@ static void copy_vec3(const btVector3 &source, float target[3]) {
     target[2] = source.z();
 }
 
+static float mmd_transform_component(
+    const float position[3],
+    const float matrix[16],
+    int column) {
+    __m128 value = _mm_mul_ss(_mm_set_ss(position[0]), _mm_set_ss(matrix[column]));
+    value = _mm_add_ss(value, _mm_mul_ss(
+        _mm_set_ss(position[1]), _mm_set_ss(matrix[4 + column])));
+    value = _mm_add_ss(value, _mm_mul_ss(
+        _mm_set_ss(position[2]), _mm_set_ss(matrix[8 + column])));
+    value = _mm_add_ss(value, _mm_set_ss(matrix[12 + column]));
+    return _mm_cvtss_f32(value);
+}
+
+static bool make_mmd_joint_frame(
+    const btRigidBody &body,
+    const float body_euler[3],
+    const float joint_position[3],
+    const float joint_euler[3],
+    btTransform *out_frame) {
+    typedef float D3dxMatrix[16];
+    typedef float D3dxQuaternion[4];
+    typedef D3dxMatrix * (WINAPI *MatrixRotationFn)(D3dxMatrix *, float);
+    typedef D3dxMatrix * (WINAPI *MatrixTranslationFn)(D3dxMatrix *, float, float, float);
+    typedef D3dxMatrix * (WINAPI *MatrixMultiplyFn)(D3dxMatrix *, const D3dxMatrix *, const D3dxMatrix *);
+    typedef D3dxQuaternion * (WINAPI *QuaternionRotationMatrixFn)(D3dxQuaternion *, const D3dxMatrix *);
+
+    HMODULE d3dx = LoadLibraryW(L"d3dx9_43.dll");
+    if (!d3dx) {
+        return false;
+    }
+    MatrixRotationFn rotation_x = reinterpret_cast<MatrixRotationFn>(GetProcAddress(d3dx, "D3DXMatrixRotationX"));
+    MatrixRotationFn rotation_y = reinterpret_cast<MatrixRotationFn>(GetProcAddress(d3dx, "D3DXMatrixRotationY"));
+    MatrixRotationFn rotation_z = reinterpret_cast<MatrixRotationFn>(GetProcAddress(d3dx, "D3DXMatrixRotationZ"));
+    MatrixTranslationFn translation = reinterpret_cast<MatrixTranslationFn>(GetProcAddress(d3dx, "D3DXMatrixTranslation"));
+    MatrixMultiplyFn multiply = reinterpret_cast<MatrixMultiplyFn>(GetProcAddress(d3dx, "D3DXMatrixMultiply"));
+    QuaternionRotationMatrixFn quaternion_from_matrix = reinterpret_cast<QuaternionRotationMatrixFn>(
+        GetProcAddress(d3dx, "D3DXQuaternionRotationMatrix"));
+    if (!rotation_x || !rotation_y || !rotation_z || !translation || !multiply || !quaternion_from_matrix) {
+        FreeLibrary(d3dx);
+        return false;
+    }
+
+    const btVector3 body_position = body.getWorldTransform().getOrigin();
+    D3dxMatrix position_matrix;
+    D3dxMatrix operation;
+    D3dxMatrix temporary;
+    translation(&position_matrix, -body_position.x(), -body_position.y(), -body_position.z());
+    rotation_y(&operation, -body_euler[1]);
+    multiply(&temporary, &position_matrix, &operation);
+    std::memcpy(position_matrix, temporary, sizeof(position_matrix));
+    rotation_x(&operation, -body_euler[0]);
+    multiply(&temporary, &position_matrix, &operation);
+    std::memcpy(position_matrix, temporary, sizeof(position_matrix));
+    rotation_z(&operation, -body_euler[2]);
+    multiply(&temporary, &position_matrix, &operation);
+    std::memcpy(position_matrix, temporary, sizeof(position_matrix));
+
+    D3dxMatrix rotation_matrix;
+    rotation_z(&rotation_matrix, joint_euler[2]);
+    rotation_x(&operation, joint_euler[0]);
+    multiply(&temporary, &rotation_matrix, &operation);
+    std::memcpy(rotation_matrix, temporary, sizeof(rotation_matrix));
+    rotation_y(&operation, joint_euler[1]);
+    multiply(&temporary, &rotation_matrix, &operation);
+    std::memcpy(rotation_matrix, temporary, sizeof(rotation_matrix));
+    rotation_y(&operation, -body_euler[1]);
+    multiply(&temporary, &rotation_matrix, &operation);
+    std::memcpy(rotation_matrix, temporary, sizeof(rotation_matrix));
+    rotation_x(&operation, -body_euler[0]);
+    multiply(&temporary, &rotation_matrix, &operation);
+    std::memcpy(rotation_matrix, temporary, sizeof(rotation_matrix));
+    rotation_z(&operation, -body_euler[2]);
+    multiply(&temporary, &rotation_matrix, &operation);
+    std::memcpy(rotation_matrix, temporary, sizeof(rotation_matrix));
+
+    D3dxQuaternion rotation;
+    quaternion_from_matrix(&rotation, &rotation_matrix);
+    out_frame->setOrigin(btVector3(
+        mmd_transform_component(joint_position, position_matrix, 0),
+        mmd_transform_component(joint_position, position_matrix, 1),
+        mmd_transform_component(joint_position, position_matrix, 2)));
+    out_frame->setRotation(btQuaternion(rotation[0], rotation[1], rotation[2], rotation[3]));
+    FreeLibrary(d3dx);
+    return true;
+}
+
 extern "C" {
 
 uint32_t mmd_anim_bullet_get_version(void) {
@@ -186,6 +263,38 @@ void mmd_anim_bullet_quaternion_rotation_yaw_pitch_roll(
     float pitch,
     float roll,
     float out_rotation_xyzw[4]) {
+    typedef float D3dxMatrix[16];
+    typedef float D3dxQuaternion[4];
+    typedef D3dxMatrix * (WINAPI *MatrixRotationFn)(D3dxMatrix *, float);
+    typedef D3dxMatrix * (WINAPI *MatrixMultiplyFn)(D3dxMatrix *, const D3dxMatrix *, const D3dxMatrix *);
+    typedef D3dxQuaternion * (WINAPI *QuaternionRotationMatrixFn)(D3dxQuaternion *, const D3dxMatrix *);
+    HMODULE d3dx = LoadLibraryW(L"d3dx9_43.dll");
+    if (d3dx) {
+        MatrixRotationFn rotation_x = reinterpret_cast<MatrixRotationFn>(GetProcAddress(d3dx, "D3DXMatrixRotationX"));
+        MatrixRotationFn rotation_y = reinterpret_cast<MatrixRotationFn>(GetProcAddress(d3dx, "D3DXMatrixRotationY"));
+        MatrixRotationFn rotation_z = reinterpret_cast<MatrixRotationFn>(GetProcAddress(d3dx, "D3DXMatrixRotationZ"));
+        MatrixMultiplyFn multiply = reinterpret_cast<MatrixMultiplyFn>(GetProcAddress(d3dx, "D3DXMatrixMultiply"));
+        QuaternionRotationMatrixFn quaternion_from_matrix = reinterpret_cast<QuaternionRotationMatrixFn>(
+            GetProcAddress(d3dx, "D3DXQuaternionRotationMatrix"));
+        if (rotation_x && rotation_y && rotation_z && multiply && quaternion_from_matrix) {
+            D3dxMatrix matrix_x;
+            D3dxMatrix matrix_y;
+            D3dxMatrix matrix_z;
+            D3dxMatrix temporary;
+            D3dxMatrix matrix;
+            D3dxQuaternion quaternion;
+            rotation_x(&matrix_x, pitch);
+            rotation_y(&matrix_y, yaw);
+            rotation_z(&matrix_z, roll);
+            multiply(&temporary, &matrix_z, &matrix_x);
+            multiply(&matrix, &temporary, &matrix_y);
+            quaternion_from_matrix(&quaternion, &matrix);
+            std::memcpy(out_rotation_xyzw, quaternion, sizeof(quaternion));
+            FreeLibrary(d3dx);
+            return;
+        }
+        FreeLibrary(d3dx);
+    }
     const float half_yaw = yaw * 0.5f;
     const float half_pitch = pitch * 0.5f;
     const float half_roll = roll * 0.5f;
@@ -226,14 +335,16 @@ mmd_anim_bullet_status mmd_anim_bullet_world_create(mmd_anim_bullet_world **out_
     mmd_anim_bullet_world *world = new mmd_anim_bullet_world();
     world->collision_configuration = new btDefaultCollisionConfiguration();
     world->dispatcher = new btCollisionDispatcher(world->collision_configuration);
-    world->broadphase = new btDbvtBroadphase();
+    world->broadphase = new bt32BitAxisSweep3(
+        btVector3(-10000.0f, -10000.0f, -10000.0f),
+        btVector3(10000.0f, 10000.0f, 10000.0f),
+        1500000);
     world->solver = new btSequentialImpulseConstraintSolver();
     world->dynamics_world = new btDiscreteDynamicsWorld(
         world->dispatcher,
         world->broadphase,
         world->solver,
         world->collision_configuration);
-    world->dynamics_world->setSynchronizeAllMotionStates(true);
     world->dynamics_world->getSolverInfo().m_numIterations = 10;
     world->dynamics_world->getSolverInfo().m_solverMode |= SOLVER_USE_WARMSTARTING;
     world->dynamics_world->setGravity(btVector3(0.0f, 0.0f, -98.0f));
@@ -249,11 +360,13 @@ mmd_anim_bullet_status mmd_anim_bullet_world_create(mmd_anim_bullet_world **out_
         world->ground_motion_state,
         world->ground_shape,
         btVector3(0.0f, 0.0f, 0.0f));
+    ground_info.m_restitution = 0.88f;
     world->ground_body = new btRigidBody(ground_info);
     world->dynamics_world->addRigidBody(
         world->ground_body,
         static_cast<short>(0x8000),
         static_cast<short>(-1));
+    world->dynamics_world->stepSimulation(0.0f, 10, 1.0f / 60.0f);
     *out_world = world;
     g_last_error[0] = '\0';
     return MMD_ANIM_BULLET_OK;
@@ -316,7 +429,7 @@ mmd_anim_bullet_status mmd_anim_bullet_world_reset(mmd_anim_bullet_world *world)
     }
     for (size_t i = 0; i < world->constraint_count; ++i) {
         btTypedConstraint *constraint = world->constraints[i];
-#if BT_BULLET_VERSION > 275
+#if BT_BULLET_VERSION > 276
         constraint->setEnabled(true);
 #endif
     }
@@ -364,7 +477,7 @@ mmd_anim_bullet_status mmd_anim_bullet_world_set_solver_iterations(
         return fail(MMD_ANIM_BULLET_INVALID_ARGUMENT, "solver iterations must be in [1, 128]");
     }
     world->dynamics_world->getSolverInfo().m_numIterations = iterations;
-#if BT_BULLET_VERSION > 275
+#if BT_BULLET_VERSION > 276
     for (size_t i = 0; i < world->constraint_count; ++i) {
         btTypedConstraint *constraint = world->constraints[i];
         constraint->setOverrideNumSolverIterations(iterations);
@@ -416,21 +529,19 @@ mmd_anim_bullet_status mmd_anim_bullet_world_add_rigidbody(
 
         btDefaultMotionState *motion_state = new btDefaultMotionState(initial_transform);
         btRigidBody::btRigidBodyConstructionInfo info(mass, motion_state, shape, inertia);
-        info.m_linearDamping = desc->linear_damping;
-        info.m_angularDamping = desc->angular_damping;
-        info.m_friction = desc->friction;
-        info.m_restitution = desc->restitution;
         info.m_additionalDamping = false;
 
         btRigidBody *body = new btRigidBody(info);
+        const int group = 1 << btMin<uint16_t>(desc->collision_group, 15);
+        const int mask = static_cast<int>(desc->collision_mask);
+        world->dynamics_world->addRigidBody(body, group, mask);
+        body->setDamping(desc->linear_damping, desc->angular_damping);
+        body->setFriction(desc->friction);
+        body->setRestitution(desc->restitution);
         if (mass == 0.0f) {
             body->setCollisionFlags(body->getCollisionFlags() | btCollisionObject::CF_KINEMATIC_OBJECT);
         }
         body->setActivationState(DISABLE_DEACTIVATION);
-
-        const int group = 1 << btMin<uint16_t>(desc->collision_group, 15);
-        const int mask = static_cast<int>(desc->collision_mask);
-        world->dynamics_world->addRigidBody(body, group, mask);
 
         RigidBodyEntry entry;
         entry.shape = shape;
@@ -519,10 +630,10 @@ mmd_anim_bullet_status mmd_anim_bullet_world_set_rigidbody_position(
         return fail(MMD_ANIM_BULLET_INVALID_ARGUMENT, "rigidbody index out of range");
     }
     RigidBodyEntry &entry = world->rigidbodies[static_cast<size_t>(index)];
-    btTransform transform = entry.body->getWorldTransform();
-    transform.setOrigin(btVector3(position[0], position[1], position[2]));
-    entry.body->setWorldTransform(transform);
     if (entry.motion_state) {
+        btTransform transform;
+        entry.motion_state->getWorldTransform(transform);
+        transform.setOrigin(btVector3(position[0], position[1], position[2]));
         entry.motion_state->setWorldTransform(transform);
     }
     g_last_error[0] = '\0';
@@ -547,28 +658,24 @@ mmd_anim_bullet_status mmd_anim_bullet_world_add_6dof_spring_joint(
         btTransform joint_transform = make_transform(desc->position, desc->rotation_xyzw);
         btTransform frame_a = body_a.getWorldTransform().inverse() * joint_transform;
         btTransform frame_b = body_b.getWorldTransform().inverse() * joint_transform;
-
         btGeneric6DofSpringConstraint *constraint = new btGeneric6DofSpringConstraint(body_a, body_b, frame_a, frame_b, true);
         set_vec3_limit(*constraint, desc->translation_lower_limit, desc->translation_upper_limit);
         set_angular_limit(*constraint, desc->rotation_lower_limit, desc->rotation_upper_limit);
-        for (int axis = 0; axis < 3; ++axis) {
-            configure_linear_spring_axis(
-                *constraint,
-                axis,
-                axis,
-                desc->spring_translation_factor[axis]);
-        }
-        for (int axis = 0; axis < 3; ++axis) {
-            configure_angular_spring_axis(
-                *constraint,
-                axis + 3,
-                desc->spring_rotation_factor[axis]);
-        }
-#if BT_BULLET_VERSION > 275
-        constraint->setOverrideNumSolverIterations(world->dynamics_world->getSolverInfo().m_numIterations);
-#endif
-        constraint->setEquilibriumPoint();
         world->dynamics_world->addConstraint(constraint, false);
+        bool has_spring = false;
+        for (int axis = 0; axis < 3; ++axis) {
+            const float stiffness = desc->spring_translation_factor[axis];
+            configure_spring_axis(*constraint, axis, stiffness);
+            has_spring = has_spring || stiffness > 0.0f;
+        }
+        for (int axis = 0; axis < 3; ++axis) {
+            const float stiffness = desc->spring_rotation_factor[axis];
+            configure_spring_axis(*constraint, axis + 3, stiffness);
+            has_spring = has_spring || stiffness > 0.0f;
+        }
+        if (has_spring) {
+            constraint->setEquilibriumPoint();
+        }
         if (!append_constraint(world, constraint)) {
             world->dynamics_world->removeConstraint(constraint);
             delete constraint;
@@ -576,6 +683,268 @@ mmd_anim_bullet_status mmd_anim_bullet_world_add_6dof_spring_joint(
         }
         *out_index = static_cast<int32_t>(world->constraint_count - 1);
         g_last_error[0] = '\0';
+    return MMD_ANIM_BULLET_OK;
+}
+
+mmd_anim_bullet_status mmd_anim_bullet_world_get_rigidbody_matrix(
+    const mmd_anim_bullet_world *world,
+    int32_t index,
+    float out_position[3],
+    float out_basis_row_major[9]) {
+    if (!world || !out_position || !out_basis_row_major) {
+        return fail(MMD_ANIM_BULLET_NULL_POINTER, "world or output buffer is null");
+    }
+    if (index < 0 || static_cast<size_t>(index) >= world->rigidbody_count) {
+        return fail(MMD_ANIM_BULLET_INVALID_ARGUMENT, "rigidbody index out of range");
+    }
+
+    const RigidBodyEntry &entry = world->rigidbodies[static_cast<size_t>(index)];
+    const btTransform &transform = entry.body->getWorldTransform();
+    const btVector3 origin = transform.getOrigin();
+    const btMatrix3x3 &basis = transform.getBasis();
+    out_position[0] = origin.x();
+    out_position[1] = origin.y();
+    out_position[2] = origin.z();
+    for (int row = 0; row < 3; ++row) {
+        for (int column = 0; column < 3; ++column) {
+            out_basis_row_major[row * 3 + column] = basis[row][column];
+        }
+    }
+    g_last_error[0] = '\0';
+    return MMD_ANIM_BULLET_OK;
+}
+
+mmd_anim_bullet_status mmd_anim_bullet_world_clear_rigidbody_velocities(
+    mmd_anim_bullet_world *world) {
+    if (!world) {
+        return fail(MMD_ANIM_BULLET_NULL_POINTER, "world is null");
+    }
+    const btVector3 zero(0.0f, 0.0f, 0.0f);
+    for (size_t index = 0; index < world->rigidbody_count; ++index) {
+        btRigidBody *body = world->rigidbodies[index].body;
+        body->setLinearVelocity(zero);
+        body->setAngularVelocity(zero);
+        body->setInterpolationLinearVelocity(zero);
+        body->setInterpolationAngularVelocity(zero);
+    }
+    g_last_error[0] = '\0';
+    return MMD_ANIM_BULLET_OK;
+}
+
+mmd_anim_bullet_status mmd_anim_bullet_world_set_rigidbody_motion_state_rotation(
+    mmd_anim_bullet_world *world,
+    int32_t index,
+    const float rotation_xyzw[4]) {
+    if (!world || !rotation_xyzw) {
+        return fail(MMD_ANIM_BULLET_NULL_POINTER, "world or rotation buffer is null");
+    }
+    if (index < 0 || static_cast<size_t>(index) >= world->rigidbody_count) {
+        return fail(MMD_ANIM_BULLET_INVALID_ARGUMENT, "rigidbody index out of range");
+    }
+    RigidBodyEntry &entry = world->rigidbodies[static_cast<size_t>(index)];
+    if (entry.motion_state) {
+        btTransform transform;
+        entry.motion_state->getWorldTransform(transform);
+        transform.setRotation(btQuaternion(
+            rotation_xyzw[0], rotation_xyzw[1], rotation_xyzw[2], rotation_xyzw[3]));
+        entry.motion_state->setWorldTransform(transform);
+    }
+    g_last_error[0] = '\0';
+    return MMD_ANIM_BULLET_OK;
+}
+
+mmd_anim_bullet_status mmd_anim_bullet_world_set_rigidbody_motion_state_matrix(
+    mmd_anim_bullet_world *world,
+    int32_t index,
+    const float position[3],
+    const float basis_row_major[9]) {
+    if (!world || !position || !basis_row_major) {
+        return fail(MMD_ANIM_BULLET_NULL_POINTER, "world or matrix buffer is null");
+    }
+    if (index < 0 || static_cast<size_t>(index) >= world->rigidbody_count) {
+        return fail(MMD_ANIM_BULLET_INVALID_ARGUMENT, "rigidbody index out of range");
+    }
+    RigidBodyEntry &entry = world->rigidbodies[static_cast<size_t>(index)];
+    if (entry.motion_state) {
+        btMatrix3x3 basis(
+            basis_row_major[0], basis_row_major[1], basis_row_major[2],
+            basis_row_major[3], basis_row_major[4], basis_row_major[5],
+            basis_row_major[6], basis_row_major[7], basis_row_major[8]);
+        btTransform transform(basis, btVector3(position[0], position[1], position[2]));
+        entry.motion_state->setWorldTransform(transform);
+    }
+    g_last_error[0] = '\0';
+    return MMD_ANIM_BULLET_OK;
+}
+
+mmd_anim_bullet_status mmd_anim_bullet_world_set_rigidbody_motion_state_mmd_euler(
+    mmd_anim_bullet_world *world,
+    int32_t index,
+    const float rotation_euler[3]) {
+    if (!world || !rotation_euler) {
+        return fail(MMD_ANIM_BULLET_NULL_POINTER, "world or Euler buffer is null");
+    }
+    if (index < 0 || static_cast<size_t>(index) >= world->rigidbody_count) {
+        return fail(MMD_ANIM_BULLET_INVALID_ARGUMENT, "rigidbody index out of range");
+    }
+
+    typedef float D3dxMatrix[16];
+    typedef D3dxMatrix * (WINAPI *MatrixRotationFn)(D3dxMatrix *, float);
+    typedef D3dxMatrix * (WINAPI *MatrixMultiplyFn)(D3dxMatrix *, const D3dxMatrix *, const D3dxMatrix *);
+    static HMODULE d3dx = LoadLibraryW(L"d3dx9_43.dll");
+    static MatrixRotationFn rotation_x = d3dx
+        ? reinterpret_cast<MatrixRotationFn>(GetProcAddress(d3dx, "D3DXMatrixRotationX")) : NULL;
+    static MatrixRotationFn rotation_y = d3dx
+        ? reinterpret_cast<MatrixRotationFn>(GetProcAddress(d3dx, "D3DXMatrixRotationY")) : NULL;
+    static MatrixRotationFn rotation_z = d3dx
+        ? reinterpret_cast<MatrixRotationFn>(GetProcAddress(d3dx, "D3DXMatrixRotationZ")) : NULL;
+    static MatrixMultiplyFn multiply = d3dx
+        ? reinterpret_cast<MatrixMultiplyFn>(GetProcAddress(d3dx, "D3DXMatrixMultiply")) : NULL;
+    if (!rotation_x || !rotation_y || !rotation_z || !multiply) {
+        return fail(MMD_ANIM_BULLET_INTERNAL_ERROR, "D3DX9 MMD motion-state construction failed");
+    }
+
+    D3dxMatrix matrix_x;
+    D3dxMatrix matrix_y;
+    D3dxMatrix matrix_z;
+    D3dxMatrix temporary;
+    D3dxMatrix matrix;
+    rotation_x(&matrix_x, rotation_euler[0]);
+    rotation_y(&matrix_y, rotation_euler[1]);
+    rotation_z(&matrix_z, rotation_euler[2]);
+    multiply(&temporary, &matrix_z, &matrix_x);
+    multiply(&matrix, &temporary, &matrix_y);
+
+    RigidBodyEntry &entry = world->rigidbodies[static_cast<size_t>(index)];
+    if (entry.motion_state) {
+        btTransform transform;
+        entry.motion_state->getWorldTransform(transform);
+        transform.setBasis(btMatrix3x3(
+            matrix[0], matrix[4], matrix[8],
+            matrix[1], matrix[5], matrix[9],
+            matrix[2], matrix[6], matrix[10]));
+        entry.motion_state->setWorldTransform(transform);
+    }
+    g_last_error[0] = '\0';
+    return MMD_ANIM_BULLET_OK;
+}
+
+mmd_anim_bullet_status mmd_anim_bullet_world_set_rigidbody_world_mmd_euler(
+    mmd_anim_bullet_world *world,
+    int32_t index,
+    const float position[3],
+    const float rotation_euler[3]) {
+    if (!world || !position || !rotation_euler) {
+        return fail(MMD_ANIM_BULLET_NULL_POINTER, "world, position, or Euler buffer is null");
+    }
+    if (index < 0 || static_cast<size_t>(index) >= world->rigidbody_count) {
+        return fail(MMD_ANIM_BULLET_INVALID_ARGUMENT, "rigidbody index out of range");
+    }
+
+    typedef float D3dxMatrix[16];
+    typedef D3dxMatrix * (WINAPI *MatrixRotationFn)(D3dxMatrix *, float);
+    typedef D3dxMatrix * (WINAPI *MatrixMultiplyFn)(D3dxMatrix *, const D3dxMatrix *, const D3dxMatrix *);
+    static HMODULE d3dx = LoadLibraryW(L"d3dx9_43.dll");
+    static MatrixRotationFn rotation_x = d3dx
+        ? reinterpret_cast<MatrixRotationFn>(GetProcAddress(d3dx, "D3DXMatrixRotationX")) : NULL;
+    static MatrixRotationFn rotation_y = d3dx
+        ? reinterpret_cast<MatrixRotationFn>(GetProcAddress(d3dx, "D3DXMatrixRotationY")) : NULL;
+    static MatrixRotationFn rotation_z = d3dx
+        ? reinterpret_cast<MatrixRotationFn>(GetProcAddress(d3dx, "D3DXMatrixRotationZ")) : NULL;
+    static MatrixMultiplyFn multiply = d3dx
+        ? reinterpret_cast<MatrixMultiplyFn>(GetProcAddress(d3dx, "D3DXMatrixMultiply")) : NULL;
+    if (!rotation_x || !rotation_y || !rotation_z || !multiply) {
+        return fail(MMD_ANIM_BULLET_INTERNAL_ERROR, "D3DX9 MMD rigid-body reset failed");
+    }
+
+    D3dxMatrix matrix_x;
+    D3dxMatrix matrix_y;
+    D3dxMatrix matrix_z;
+    D3dxMatrix temporary;
+    D3dxMatrix matrix;
+    rotation_x(&matrix_x, rotation_euler[0]);
+    rotation_y(&matrix_y, rotation_euler[1]);
+    rotation_z(&matrix_z, rotation_euler[2]);
+    multiply(&temporary, &matrix_z, &matrix_x);
+    multiply(&matrix, &temporary, &matrix_y);
+
+    btTransform transform;
+    transform.setOrigin(btVector3(position[0], position[1], position[2]));
+    transform.setBasis(btMatrix3x3(
+        matrix[0], matrix[4], matrix[8],
+        matrix[1], matrix[5], matrix[9],
+        matrix[2], matrix[6], matrix[10]));
+    world->rigidbodies[static_cast<size_t>(index)].body->setWorldTransform(transform);
+    g_last_error[0] = '\0';
+    return MMD_ANIM_BULLET_OK;
+}
+
+mmd_anim_bullet_status mmd_anim_bullet_world_add_mmd_6dof_spring_joint(
+    mmd_anim_bullet_world *world,
+    const mmd_anim_bullet_6dof_spring_joint_desc *desc,
+    const float body_euler_a[3],
+    const float body_euler_b[3],
+    const float joint_euler[3],
+    float out_frame_a[7],
+    float out_frame_b[7],
+    int32_t *out_index) {
+    if (!world || !desc || !body_euler_a || !body_euler_b || !joint_euler ||
+        !out_frame_a || !out_frame_b || !out_index) {
+        return fail(MMD_ANIM_BULLET_NULL_POINTER, "MMD joint input is null");
+    }
+    if (desc->rigidbody_index_a < 0 || desc->rigidbody_index_b < 0 ||
+        static_cast<size_t>(desc->rigidbody_index_a) >= world->rigidbody_count ||
+        static_cast<size_t>(desc->rigidbody_index_b) >= world->rigidbody_count) {
+        return fail(MMD_ANIM_BULLET_INVALID_ARGUMENT, "joint rigidbody index out of range");
+    }
+
+    btRigidBody &body_a = *world->rigidbodies[static_cast<size_t>(desc->rigidbody_index_a)].body;
+    btRigidBody &body_b = *world->rigidbodies[static_cast<size_t>(desc->rigidbody_index_b)].body;
+    btTransform frame_a;
+    btTransform frame_b;
+    if (!make_mmd_joint_frame(body_a, body_euler_a, desc->position, joint_euler, &frame_a) ||
+        !make_mmd_joint_frame(body_b, body_euler_b, desc->position, joint_euler, &frame_b)) {
+        return fail(MMD_ANIM_BULLET_INTERNAL_ERROR, "D3DX9 MMD joint-frame construction failed");
+    }
+    copy_vec3(frame_a.getOrigin(), out_frame_a);
+    copy_vec3(frame_b.getOrigin(), out_frame_b);
+    const btQuaternion frame_a_rotation = frame_a.getRotation();
+    const btQuaternion frame_b_rotation = frame_b.getRotation();
+    out_frame_a[3] = frame_a_rotation.x();
+    out_frame_a[4] = frame_a_rotation.y();
+    out_frame_a[5] = frame_a_rotation.z();
+    out_frame_a[6] = frame_a_rotation.w();
+    out_frame_b[3] = frame_b_rotation.x();
+    out_frame_b[4] = frame_b_rotation.y();
+    out_frame_b[5] = frame_b_rotation.z();
+    out_frame_b[6] = frame_b_rotation.w();
+
+    btGeneric6DofSpringConstraint *constraint = new btGeneric6DofSpringConstraint(
+        body_a, body_b, frame_a, frame_b, true);
+    set_vec3_limit(*constraint, desc->translation_lower_limit, desc->translation_upper_limit);
+    set_angular_limit(*constraint, desc->rotation_lower_limit, desc->rotation_upper_limit);
+    world->dynamics_world->addConstraint(constraint, false);
+    bool has_spring = false;
+    for (int axis = 0; axis < 3; ++axis) {
+        const float stiffness = desc->spring_translation_factor[axis];
+        configure_spring_axis(*constraint, axis, stiffness);
+        has_spring = has_spring || stiffness > 0.0f;
+    }
+    for (int axis = 0; axis < 3; ++axis) {
+        const float stiffness = desc->spring_rotation_factor[axis];
+        configure_spring_axis(*constraint, axis + 3, stiffness);
+        has_spring = has_spring || stiffness > 0.0f;
+    }
+    if (has_spring) {
+        constraint->setEquilibriumPoint();
+    }
+    if (!append_constraint(world, constraint)) {
+        world->dynamics_world->removeConstraint(constraint);
+        delete constraint;
+        return fail(MMD_ANIM_BULLET_INTERNAL_ERROR, "failed to grow constraint storage");
+    }
+    *out_index = static_cast<int32_t>(world->constraint_count - 1);
+    g_last_error[0] = '\0';
     return MMD_ANIM_BULLET_OK;
 }
 

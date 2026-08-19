@@ -50,6 +50,7 @@ from .mmd_physics import (
 )
 from .physics_preview import CLASSES as PHYSICS_PREVIEW_CLASSES
 from .physics_preview import draw_preview
+from .physics_preview import preload_libraries as preload_physics_libraries
 from .physics_preview import register_settings as register_preview_settings
 from .physics_preview import unregister_runtime as unregister_preview_runtime
 from .bone_physics_creator import CLASSES as BONE_PHYSICS_CREATOR_CLASSES
@@ -1101,6 +1102,7 @@ CLASSES = (
 
 
 def register():
+    preload_physics_libraries()
     register_settings(SPX_Settings)
     register_preview_settings(SPX_Settings)
     register_bone_physics_creator_settings(SPX_Settings)

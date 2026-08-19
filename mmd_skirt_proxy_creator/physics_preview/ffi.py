@@ -222,6 +222,42 @@ def default_library(target=DEFAULT_SOLVER_TARGET):
     return library
 
 
+def preload_libraries():
+    for target in ("MMD", "PMX"):
+        try:
+            default_library(target)
+        except Exception as error:
+            print(f"MMD physics DLL preload skipped for {target}: {error}")
+    try:
+        identity = Transform(Vec3(0.0, 0.0, 0.0), Quat(0.0, 0.0, 0.0, 1.0))
+        body = BodyDesc(
+            0,
+            0,
+            identity,
+            identity,
+            0,
+            Vec3(1.0, 1.0, 1.0),
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.5,
+            0,
+            0,
+        )
+        solver = Solver(
+            [body],
+            [],
+            1.0,
+            library=default_library("MMD"),
+            body_source_eulers=[Vec3(0.0, 0.0, 0.0)],
+            joint_source_eulers=[],
+        )
+        solver.close()
+    except Exception as error:
+        print(f"MMD physics solver preload skipped: {error}")
+
+
 def pmx_euler_to_blender_quaternion(value, library=None):
     library = library or default_library()
     output = Quat()

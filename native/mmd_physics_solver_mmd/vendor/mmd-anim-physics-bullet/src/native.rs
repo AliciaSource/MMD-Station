@@ -160,6 +160,12 @@ pub struct Transform {
     pub rotation_xyzw: [f32; 4],
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MatrixTransform {
+    pub position: [f32; 3],
+    pub basis_row_major: [f32; 9],
+}
+
 impl Transform {
     pub const IDENTITY: Self = Self {
         position: [0.0; 3],
@@ -297,6 +303,42 @@ impl BulletWorld {
         Ok(ConstraintHandle(index))
     }
 
+    pub fn add_mmd_6dof_spring_joint(
+        &mut self,
+        desc: SixDofSpringJointDesc,
+        body_euler_a: [f32; 3],
+        body_euler_b: [f32; 3],
+        joint_euler: [f32; 3],
+    ) -> Result<(ConstraintHandle, Transform, Transform), BulletError> {
+        let ffi_desc = desc.to_ffi();
+        let mut index = -1;
+        let mut frame_a = [0.0; 7];
+        let mut frame_b = [0.0; 7];
+        check(unsafe {
+            ffi::mmd_anim_bullet_world_add_mmd_6dof_spring_joint(
+                self.raw.as_ptr(),
+                &ffi_desc,
+                body_euler_a.as_ptr(),
+                body_euler_b.as_ptr(),
+                joint_euler.as_ptr(),
+                frame_a.as_mut_ptr(),
+                frame_b.as_mut_ptr(),
+                &mut index,
+            )
+        })?;
+        Ok((
+            ConstraintHandle(index),
+            Transform {
+                position: [frame_a[0], frame_a[1], frame_a[2]],
+                rotation_xyzw: [frame_a[3], frame_a[4], frame_a[5], frame_a[6]],
+            },
+            Transform {
+                position: [frame_b[0], frame_b[1], frame_b[2]],
+                rotation_xyzw: [frame_b[3], frame_b[4], frame_b[5], frame_b[6]],
+            },
+        ))
+    }
+
     pub fn constraint_count(&self) -> Result<usize, BulletError> {
         let count = unsafe { ffi::mmd_anim_bullet_world_get_constraint_count(self.raw.as_ptr()) };
         if count < 0 {
@@ -322,6 +364,23 @@ impl BulletWorld {
         })
     }
 
+    pub fn rigidbody_matrix(&self, handle: RigidBodyHandle) -> Result<MatrixTransform, BulletError> {
+        let mut position = [0.0; 3];
+        let mut basis_row_major = [0.0; 9];
+        check(unsafe {
+            ffi::mmd_anim_bullet_world_get_rigidbody_matrix(
+                self.raw.as_ptr(),
+                handle.0,
+                position.as_mut_ptr(),
+                basis_row_major.as_mut_ptr(),
+            )
+        })?;
+        Ok(MatrixTransform {
+            position,
+            basis_row_major,
+        })
+    }
+
     pub fn set_rigidbody_transform(
         &mut self,
         handle: RigidBodyHandle,
@@ -333,6 +392,21 @@ impl BulletWorld {
                 handle.0,
                 transform.position.as_ptr(),
                 transform.rotation_xyzw.as_ptr(),
+            )
+        })
+    }
+
+    pub fn set_rigidbody_motion_state_matrix(
+        &mut self,
+        handle: RigidBodyHandle,
+        transform: MatrixTransform,
+    ) -> Result<(), BulletError> {
+        check(unsafe {
+            ffi::mmd_anim_bullet_world_set_rigidbody_motion_state_matrix(
+                self.raw.as_ptr(),
+                handle.0,
+                transform.position.as_ptr(),
+                transform.basis_row_major.as_ptr(),
             )
         })
     }
@@ -349,6 +423,54 @@ impl BulletWorld {
                 position.as_ptr(),
             )
         })
+    }
+
+    pub fn set_rigidbody_motion_state_rotation(
+        &mut self,
+        handle: RigidBodyHandle,
+        rotation_xyzw: [f32; 4],
+    ) -> Result<(), BulletError> {
+        check(unsafe {
+            ffi::mmd_anim_bullet_world_set_rigidbody_motion_state_rotation(
+                self.raw.as_ptr(),
+                handle.0,
+                rotation_xyzw.as_ptr(),
+            )
+        })
+    }
+
+    pub fn set_rigidbody_motion_state_mmd_euler(
+        &mut self,
+        handle: RigidBodyHandle,
+        rotation_euler: [f32; 3],
+    ) -> Result<(), BulletError> {
+        check(unsafe {
+            ffi::mmd_anim_bullet_world_set_rigidbody_motion_state_mmd_euler(
+                self.raw.as_ptr(),
+                handle.0,
+                rotation_euler.as_ptr(),
+            )
+        })
+    }
+
+    pub fn set_rigidbody_world_mmd_euler(
+        &mut self,
+        handle: RigidBodyHandle,
+        position: [f32; 3],
+        rotation_euler: [f32; 3],
+    ) -> Result<(), BulletError> {
+        check(unsafe {
+            ffi::mmd_anim_bullet_world_set_rigidbody_world_mmd_euler(
+                self.raw.as_ptr(),
+                handle.0,
+                position.as_ptr(),
+                rotation_euler.as_ptr(),
+            )
+        })
+    }
+
+    pub fn clear_rigidbody_velocities(&mut self) -> Result<(), BulletError> {
+        check(unsafe { ffi::mmd_anim_bullet_world_clear_rigidbody_velocities(self.raw.as_ptr()) })
     }
 
     pub fn contact_points(&self) -> Result<Vec<ContactPoint>, BulletError> {
@@ -504,6 +626,12 @@ mod ffi {
             out_position: *mut f32,
             out_rotation_xyzw: *mut f32,
         ) -> i32;
+        pub fn mmd_anim_bullet_world_get_rigidbody_matrix(
+            world: *const World,
+            index: i32,
+            out_position: *mut f32,
+            out_basis_row_major: *mut f32,
+        ) -> i32;
         pub fn mmd_anim_bullet_world_set_rigidbody_transform(
             world: *mut World,
             index: i32,
@@ -515,9 +643,42 @@ mod ffi {
             index: i32,
             position: *const f32,
         ) -> i32;
+        pub fn mmd_anim_bullet_world_set_rigidbody_motion_state_rotation(
+            world: *mut World,
+            index: i32,
+            rotation_xyzw: *const f32,
+        ) -> i32;
+        pub fn mmd_anim_bullet_world_set_rigidbody_motion_state_matrix(
+            world: *mut World,
+            index: i32,
+            position: *const f32,
+            basis_row_major: *const f32,
+        ) -> i32;
+        pub fn mmd_anim_bullet_world_set_rigidbody_motion_state_mmd_euler(
+            world: *mut World,
+            index: i32,
+            rotation_euler: *const f32,
+        ) -> i32;
+        pub fn mmd_anim_bullet_world_set_rigidbody_world_mmd_euler(
+            world: *mut World,
+            index: i32,
+            position: *const f32,
+            rotation_euler: *const f32,
+        ) -> i32;
+        pub fn mmd_anim_bullet_world_clear_rigidbody_velocities(world: *mut World) -> i32;
         pub fn mmd_anim_bullet_world_add_6dof_spring_joint(
             world: *mut World,
             desc: *const SixDofSpringJointDesc,
+            out_index: *mut i32,
+        ) -> i32;
+        pub fn mmd_anim_bullet_world_add_mmd_6dof_spring_joint(
+            world: *mut World,
+            desc: *const SixDofSpringJointDesc,
+            body_euler_a: *const f32,
+            body_euler_b: *const f32,
+            joint_euler: *const f32,
+            out_frame_a: *mut f32,
+            out_frame_b: *mut f32,
             out_index: *mut i32,
         ) -> i32;
         pub fn mmd_anim_bullet_world_get_constraint_count(world: *const World) -> i32;

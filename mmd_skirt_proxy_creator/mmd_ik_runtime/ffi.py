@@ -2,25 +2,31 @@ import ctypes
 from pathlib import Path
 
 
-ABI_VERSION = 1
+ABI_VERSION = 2
 
 
 class NativeBoneSolver:
-    def __init__(self, pmx_path, vmd_path):
+    def __init__(self, pmx_path, vmd_path=None):
         self.pmx_path = str(Path(pmx_path).resolve())
-        self.vmd_path = str(Path(vmd_path).resolve())
+        self.vmd_path = str(Path(vmd_path).resolve()) if vmd_path else ""
         self._dll = self._load_dll()
         self._configure_abi()
         if self._dll.spx_mmd_bone_abi_version() != ABI_VERSION:
             raise RuntimeError("mmd_bone_solver.dll ABI 版本不匹配")
         self._pmx_bytes = Path(self.pmx_path).read_bytes()
-        self._vmd_bytes = Path(self.vmd_path).read_bytes()
+        self._vmd_bytes = Path(self.vmd_path).read_bytes() if self.vmd_path else b""
         self._pmx_buffer = ctypes.create_string_buffer(self._pmx_bytes)
-        self._vmd_buffer = ctypes.create_string_buffer(self._vmd_bytes)
+        self._vmd_buffer = (
+            ctypes.create_string_buffer(self._vmd_bytes) if self._vmd_bytes else None
+        )
         self._instance = self._create()
         self.count = int(self._dll.spx_mmd_bone_count(self._instance))
         self._output = (ctypes.c_float * (self.count * 16))()
         self.names = tuple(self._bone_name(index) for index in range(self.count))
+        self.morph_count = int(self._dll.spx_mmd_bone_morph_count(self._instance))
+        self.morph_names = tuple(
+            self._morph_name(index) for index in range(self.morph_count)
+        )
         self.rest_positions = tuple(self._rest_position(index) for index in range(self.count))
         self.rigid_count = int(self._dll.spx_mmd_bone_rigid_count(self._instance))
         self.rigid_positions = tuple(
@@ -134,6 +140,39 @@ class NativeBoneSolver:
             ctypes.c_size_t,
         )
         dll.spx_mmd_bone_rigid_matrix.restype = ctypes.c_int
+        dll.spx_mmd_bone_begin_live_input.argtypes = (ctypes.c_void_p,)
+        dll.spx_mmd_bone_begin_live_input.restype = None
+        dll.spx_mmd_bone_end_live_input.argtypes = (ctypes.c_void_p,)
+        dll.spx_mmd_bone_end_live_input.restype = None
+        dll.spx_mmd_bone_set_live_matrix.argtypes = (
+            ctypes.c_void_p,
+            ctypes.c_uint32,
+            ctypes.POINTER(ctypes.c_float),
+            ctypes.POINTER(ctypes.c_float),
+            ctypes.c_size_t,
+        )
+        dll.spx_mmd_bone_set_live_matrix.restype = ctypes.c_int
+        dll.spx_mmd_bone_set_live_ik_enabled.argtypes = (
+            ctypes.c_void_p,
+            ctypes.c_uint32,
+            ctypes.c_int,
+        )
+        dll.spx_mmd_bone_set_live_ik_enabled.restype = ctypes.c_int
+        dll.spx_mmd_bone_morph_count.argtypes = (ctypes.c_void_p,)
+        dll.spx_mmd_bone_morph_count.restype = ctypes.c_uint32
+        dll.spx_mmd_bone_morph_name_utf8.argtypes = (
+            ctypes.c_void_p,
+            ctypes.c_uint32,
+            ctypes.c_char_p,
+            ctypes.c_size_t,
+        )
+        dll.spx_mmd_bone_morph_name_utf8.restype = ctypes.c_int
+        dll.spx_mmd_bone_set_live_morph_weight.argtypes = (
+            ctypes.c_void_p,
+            ctypes.c_uint32,
+            ctypes.c_float,
+        )
+        dll.spx_mmd_bone_set_live_morph_weight.restype = ctypes.c_int
         dll.spx_mmd_bone_set_external_rigid_matrix.argtypes = (
             ctypes.c_void_p,
             ctypes.c_uint32,
@@ -196,6 +235,14 @@ class NativeBoneSolver:
         self._dll.spx_mmd_bone_name_utf8(self._instance, index, buffer, len(buffer))
         return buffer.value.decode("utf-8")
 
+    def _morph_name(self, index):
+        size = self._dll.spx_mmd_bone_morph_name_utf8(self._instance, index, None, 0)
+        buffer = ctypes.create_string_buffer(size + 1)
+        self._dll.spx_mmd_bone_morph_name_utf8(
+            self._instance, index, buffer, len(buffer)
+        )
+        return buffer.value.decode("utf-8")
+
     def _rest_position(self, index):
         values = (ctypes.c_float * 3)()
         if not self._dll.spx_mmd_bone_rest_position(self._instance, index, values, 3):
@@ -218,6 +265,34 @@ class NativeBoneSolver:
         ):
             raise RuntimeError(self._error())
         return self._output
+
+    def begin_live_input(self):
+        self._dll.spx_mmd_bone_begin_live_input(self._instance)
+
+    def end_live_input(self):
+        self._dll.spx_mmd_bone_end_live_input(self._instance)
+
+    def set_live_matrix(self, index, position, basis_rows):
+        position_values = (ctypes.c_float * 3)(*position)
+        basis_values = (ctypes.c_float * 9)(
+            *(value for row in basis_rows for value in row)
+        )
+        if not self._dll.spx_mmd_bone_set_live_matrix(
+            self._instance, index, position_values, basis_values, 9
+        ):
+            raise RuntimeError(f"无法提交第 {index} 根骨骼的实时姿态")
+
+    def set_live_ik_enabled(self, index, enabled):
+        if not self._dll.spx_mmd_bone_set_live_ik_enabled(
+            self._instance, index, int(bool(enabled))
+        ):
+            raise RuntimeError(f"无法提交第 {index} 根骨骼的 IK 状态")
+
+    def set_live_morph_weight(self, index, weight):
+        if not self._dll.spx_mmd_bone_set_live_morph_weight(
+            self._instance, index, ctypes.c_float(weight)
+        ):
+            raise RuntimeError(f"无法提交第 {index} 个 Morph 的权重")
 
     def evaluate_before_physics(self, frame):
         if not self._instance:

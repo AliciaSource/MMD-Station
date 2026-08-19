@@ -1,0 +1,5 @@
+MikuMikuDance 9.32 embedded Bullet 2.75 snapshot
+Upstream commit: 3da9c832aef0eea74ecc8221d834e9a879f43a43
+Commit date: 2009-09-16
+Evidence: MMD STATIC_PLANE_PROXYTYPE is 26; commit f65e829ca08c0856d1923e7008e2663486949493 adds the two 2D proxy types and shifts it to 28.
+Raw parity scope: identical Rossi body/constraint payload, broadphase reinsertion order, solver configuration, pre-step state, timestep, and call order.
