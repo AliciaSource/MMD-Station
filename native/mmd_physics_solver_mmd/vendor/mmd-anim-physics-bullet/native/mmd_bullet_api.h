@@ -102,20 +102,60 @@ mmd_anim_bullet_world_get_rigidbody_transform(
     float out_position[3],
     float out_rotation_xyzw[4]);
 MMD_ANIM_BULLET_API mmd_anim_bullet_status
+mmd_anim_bullet_world_get_rigidbody_matrix(
+    const mmd_anim_bullet_world *world,
+    int32_t index,
+    float out_position[3],
+    float out_basis_row_major[9]);
+MMD_ANIM_BULLET_API mmd_anim_bullet_status
 mmd_anim_bullet_world_set_rigidbody_transform(
     mmd_anim_bullet_world *world,
     int32_t index,
     const float position[3],
     const float rotation_xyzw[4]);
 MMD_ANIM_BULLET_API mmd_anim_bullet_status
+mmd_anim_bullet_world_set_rigidbody_motion_state_rotation(
+    mmd_anim_bullet_world *world,
+    int32_t index,
+    const float rotation_xyzw[4]);
+MMD_ANIM_BULLET_API mmd_anim_bullet_status
+mmd_anim_bullet_world_set_rigidbody_motion_state_matrix(
+    mmd_anim_bullet_world *world,
+    int32_t index,
+    const float position[3],
+    const float basis_row_major[9]);
+MMD_ANIM_BULLET_API mmd_anim_bullet_status
+mmd_anim_bullet_world_set_rigidbody_motion_state_mmd_euler(
+    mmd_anim_bullet_world *world,
+    int32_t index,
+    const float rotation_euler[3]);
+MMD_ANIM_BULLET_API mmd_anim_bullet_status
+mmd_anim_bullet_world_set_rigidbody_world_mmd_euler(
+    mmd_anim_bullet_world *world,
+    int32_t index,
+    const float position[3],
+    const float rotation_euler[3]);
+MMD_ANIM_BULLET_API mmd_anim_bullet_status
 mmd_anim_bullet_world_set_rigidbody_position(
     mmd_anim_bullet_world *world,
     int32_t index,
     const float position[3]);
 MMD_ANIM_BULLET_API mmd_anim_bullet_status
+mmd_anim_bullet_world_clear_rigidbody_velocities(mmd_anim_bullet_world *world);
+MMD_ANIM_BULLET_API mmd_anim_bullet_status
 mmd_anim_bullet_world_add_6dof_spring_joint(
     mmd_anim_bullet_world *world,
     const mmd_anim_bullet_6dof_spring_joint_desc *desc,
+    int32_t *out_index);
+MMD_ANIM_BULLET_API mmd_anim_bullet_status
+mmd_anim_bullet_world_add_mmd_6dof_spring_joint(
+    mmd_anim_bullet_world *world,
+    const mmd_anim_bullet_6dof_spring_joint_desc *desc,
+    const float body_euler_a[3],
+    const float body_euler_b[3],
+    const float joint_euler[3],
+    float out_frame_a[7],
+    float out_frame_b[7],
     int32_t *out_index);
 MMD_ANIM_BULLET_API int32_t
 mmd_anim_bullet_world_get_constraint_count(const mmd_anim_bullet_world *world);

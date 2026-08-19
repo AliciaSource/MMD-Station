@@ -200,17 +200,12 @@ public:
 	{
 		btScalar s = btSqrt(length2() * q.length2());
 		btAssert(s != btScalar(0.0));
-    btScalar retval;
-    if (dot(q) < 0) // Take care of long angle case see http://en.wikipedia.org/wiki/Slerp
-      retval = btAcos(GEN_clamped(dot(-q) / s, (btScalar)-1.0, (btScalar)1.0)); //Clamped to prevent floating point precision crashes
-    else 
-      retval = btAcos(GEN_clamped(dot(q) / s, (btScalar)-1.0, (btScalar)1.0)); //Clamped to prevent floating point precision crashes
-    return retval;
+		return btAcos(dot(q) / s);
 	}
   /**@brief Return the angle of rotation represented by this quaternion */
 	btScalar getAngle() const 
 	{
-    btScalar s = btScalar(2.) * btAcos(GEN_clamped(m_floats[3], (btScalar)-1.0, (btScalar)1.0));
+		btScalar s = btScalar(2.) * btAcos(m_floats[3]);
 		return s;
 	}
 
@@ -290,17 +285,10 @@ public:
 			btScalar d = btScalar(1.0) / btSin(theta);
 			btScalar s0 = btSin((btScalar(1.0) - t) * theta);
 			btScalar s1 = btSin(t * theta);   
-                        if (dot(q) < 0) // Take care of long angle case see http://en.wikipedia.org/wiki/Slerp
-                          return btQuaternion((m_floats[0] * s0 + -q.x() * s1) * d,
-                                              (m_floats[1] * s0 + -q.y() * s1) * d,
-                                              (m_floats[2] * s0 + -q.z() * s1) * d,
-                                              (m_floats[3] * s0 + -q.m_floats[3] * s1) * d);
-                        else
-                          return btQuaternion((m_floats[0] * s0 + q.x() * s1) * d,
-                                              (m_floats[1] * s0 + q.y() * s1) * d,
-                                              (m_floats[2] * s0 + q.z() * s1) * d,
-                                              (m_floats[3] * s0 + q.m_floats[3] * s1) * d);
-                        
+			return btQuaternion((m_floats[0] * s0 + q.x() * s1) * d,
+				(m_floats[1] * s0 + q.y() * s1) * d,
+				(m_floats[2] * s0 + q.z() * s1) * d,
+				(m_floats[3] * s0 + q.m_floats[3] * s1) * d);
 		}
 		else
 		{

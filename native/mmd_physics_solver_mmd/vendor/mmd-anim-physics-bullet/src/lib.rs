@@ -18,7 +18,8 @@ mod test_support;
 #[cfg(feature = "native")]
 pub use native::{
     BulletError, BulletWorld, ConstraintHandle, ContactPoint, RigidBodyDesc, RigidBodyHandle,
-    RigidBodyShape, SixDofSpringJointDesc, Transform, quaternion_rotation_yaw_pitch_roll,
+    MatrixTransform, RigidBodyShape, SixDofSpringJointDesc, Transform,
+    quaternion_rotation_yaw_pitch_roll,
 };
 #[cfg(all(feature = "native", feature = "pmx-format"))]
 pub use pmx::build_bullet_world_from_pmx;

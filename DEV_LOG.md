@@ -1,10 +1,114 @@
 # Development Log
 
-## 2026-08-19 - 冻结 V0.1.8 物理预览基线
+## 2026-08-18 - V0.1.8 修复 07.blend 根容器与全ての親双重平移
 
-- 放弃上一轮未能消除刚体/骨骼追踪漂移的工作树；原错误工作树已完整保存在 `D:\MOD\BlenderAddonProjects\_recovery\MMD-Skirt-Proxy-Creator-error-20260819-121443`，并另存活动目录副本 `MMD-Skirt-Proxy-Creator-error-live-20260819-121804`，未删除。
-- 从 `_archive\zip-packages\MMD-Skirt-Proxy-Creator-V0.1.8.zip` 恢复插件源码、MMD IK runtime 与 PMX/MMD physics DLL；`native/` 与 `tests/` 使用干净的仓库基线补回。当前目标是先验证“无漂移但 `全ての親` 不能移动”的旧边界，确认前不修改生产代码、不递增版本、不打包、不 push。
-- 真实 Blender 4.4 Junction 仍指向本项目 `mmd_skirt_proxy_creator`；本条只记录恢复动作，未宣称视口物理行为已验收。
+- 在真实 `D:\MMD\模型\Alicia\鳴潮-達尼婭\Test\07.blend` 中复现：MMD/PMX 两个 DLL 的 `202_Skirt_C01_R01`（type 2）在 30 帧 `-0.182507 m` Empty 或 `全ての親` 移动后均出现约 `5–7 mm` 偏移；两者数值一致，根因在共享 adapter 的坐标时序，不是 DLL core。
+- 根因是 solver 已在启动坐标系中接收骨骼/根容器的绝对 world target，而 Blender 层又通过 Root/Armature parent 叠加同一全局位移；`全ての親` 还会把全局骨骼位移再次作为动态刚体追拉。现在每步剥离纯模型级 `Root Empty` 或 `全ての親` delta 后提交 solver，再在输出写回时只叠加一次；局部骨骼运动仍保留给物理。
+- 真实工程回归：MMD Empty 最大偏移 `1.36e-3 m`、`全ての親` `1.36e-3 m`；PMX 分别 `1.38e-3 m`、`1.36e-3 m`。两种路径的刚体位移均与骨骼约 `-0.182507 m` 对齐，不再出现约 `-0.365 m` 双倍漂移或 `7 mm` 弹簧式偏移。
+- 修改 `physics_preview/runtime.py` 与 `tests/physics_root_offset_regression.py`；DLL 未修改、版本未递增、未打包 ZIP。验证使用 headless Blender 4.4 真实工程；未宣称视口人工验收。
+
+## 2026-08-18 - V0.1.8 修复 Root 运动被固定物理参考系吞掉
+
+- 用户反馈 PMX/MMD 物理预览共同出现“骨骼追踪刚体不追踪骨骼、微小移动后物理刚体漂移”的回归。新增回归断言后确认此前 `solver_armature_matrix` 固定参考系让 Root/Armature 位移只进入显示搬运，不进入 0 型刚体的 solver kinematic target；两套 DLL 在同一输入下均以约 `0.14` native unit 的误差复现，故根因在共享 Blender adapter，不在 DLL core。
+- `physics_preview/runtime.py` 恢复每帧以当前 `armature.matrix_world @ pose_bone.matrix` 提交 bone target，并恢复当前 Armature world-space 输出/Joint 写回；移除逐帧 `last_kinematic_targets` 近似复用，避免吞掉真实的小幅骨骼运动。mode 0 刚体显示改为当前骨骼 world matrix 乘启动时 rigid-to-bone offset，避免 Bullet 的碰撞/约束回写覆盖骨骼追踪语义。保留既有 type 2 translation 写回修复与 MMD source payload 路径，不修改两个 native DLL。
+- `tests/physics_root_offset_regression.py` 现在验证 Root 位移确实传播到 0 型 kinematic targets，并验证全部 mode 0 显示刚体都随 Root 平移；不再错误地要求 native frame 不变。`tests/headless_smoke.py` 同步按 mode 0 bone-offset 语义断言。PMX/MMD 均通过，`kinematic_target_pass_fraction=0.954545`、`display_frame_error=5.13e-8`，type 2 translation error 分别为 `6.01e-7 / 6.07e-7`；完整 smoke marker `MMD_SKIRT_PROXY_CREATOR_SMOKE_OK` 通过。
+- 未递增版本、未打包 ZIP。真实 Blender 4.4 仍使用源码 Junction；需要 Reload Scripts 或重启 Blender 后加载本轮 adapter。
+
+## 2026-08-18 - V0.1.8 Root 固定物理参考系与 type 2 写回回归修复
+
+- 否定并撤回同日上一条“逐帧减去 Armature world translation、输出端再补回”的实现。该实现只通过了单次 `+1` 平移、单刚体测试；在 `D:\MMD\模型\Alicia\鳴潮-達尼婭\Test\07.blend` 连续 60 次微移中，浮点抵消的末位差会传播进完整 Joint/碰撞网络，PMX/MMD 都会出现弹簧式漂移，同时 0 型刚体没有真正跟随模型参考系。对应的 `depsgraph_update_post` 即时搬运和每 tick 对全部 Rigid/Joint 的矩阵快照也已删除。
+- 明确区分 Blender 模型容器与 PMX 骨骼：Root Empty / Armature Object transform 现在只改变显示参考系；solver 输入使用启动或 Reset 时固定的 `solver_armature_matrix @ pose_bone.matrix`，solver 输出通过 `current_armature_matrix @ solver_armature_matrix^-1` 整体映回 Blender。因此移动 Empty 不再被错误解释成高速 0 型 kinematic motion，0/1/2 型刚体保持相对状态并整体跟随；`全ての親` 等 Pose Bone 仍进入 solver 并产生真实物理。
+- 修复共用 Blender adapter 的 type 2 层级写回。旧代码用受物理父骨影响的 `inherited.translation`，导致“物理 + 骨骼”骨骼自身也随父级物理漂移；现在严格使用 DLL `bone_transforms()` 返回的 animation position，只采用物理 rotation。实际 `07.blend` 连续移动 `全ての親` 120 step 后，PMX/MMD 的 type 2 Blender translation 最大误差分别为 `5.99e-7 / 7.28e-7` Blender unit，均无自动 Reset。
+- 为避免纯参考系移动时 Blender matrix 往返产生 1 ULP 的 0 型 target 抖动，adapter 只对相邻帧差不超过 `5e-7` 的 kinematic target 复用上一份 float32 payload；更大的真实骨骼运动不被吞掉。四个全新 Blender 进程分别运行实际 `07.blend` 的 PMX/MMD 静止对照与 60 次 Root 微移：两套 DLL 的全部 0/1/2 raw rigid transforms 均与对照逐 bit 相同，扣除 Root delta 后显示矩阵最大误差均为 `4.16e-8` Blender unit，Reset count 均为 `0`。
+- 重写 `tests/physics_root_offset_regression.py`，覆盖固定 native frame、全部刚体的显示 frame 映射、PMX kinematic payload 稳定及 type 2 Pose Bone 位移。PMX/MMD marker 均通过，`display_frame_error=5.49795931e-08`、`type2_blender_error=5.26680826e-07`；`MMD_TIME_DRIVER_UNIT_OK`、`PMX_PHYSICS_READER_REGRESSION_OK`、`MMD_IK_PHYSICS_RESET_REGRESSION_OK`、`MMD_RAW_CORE_PARITY_OK` 通过。完整 smoke 已越过本轮修改的物理对齐断言，但随后在既有名称修复断言 `repair_pose_bone.mmd_bone.name_j == repair_pose_bone.name` 失败；该失败不在本轮物理范围，未擅自修改他人命名改动。
+- 实际 `07.blend` 50-step 均值为 PMX `46.08 ms/tick`、MMD `49.83 ms/tick`，MMD 稳态约慢 `8.1%`；启动分别约 `66.5 ms / 712.7 ms`。本轮删除了错误补偿的逐 tick 大量矩阵复制，没有降低 fixed frequency/substeps。PMX DLL SHA256 仍为 `EDF5A6DCC445741FEA4C68A7CEE8D7C8B2D3C49E7B44C0F04D3E75A07E7D7537`，MMD DLL仍为 `12EA03E1A1F1B4C88D5B83DCAB0484F1684611DDD55EF1FACCF6C374163078E7`；不递增版本、不打包 zip。
+## 2026-08-18 - V0.1.8 预览交互平移回归、长帧物理冲击与 MMD 启动性能修复
+
+- 复现并修正普通 `mmd_tools` 骨架下的模型平移回归。旧补偿只以 MMD Root Empty 的 translation 作为 solver 原点，因此单独移动 Armature Object 时会把整段位移作为 0 型刚体目标提交给 Bullet，动态刚体只能被 Joint 追拉；现在统一以 Armature world translation 作为模型平移原点，Root Empty 与 Armature Object 两条移动路径都会在输入端消除纯模型平移、输出端整体叠回，不重建 solver、不清零速度。`depsgraph_update_post` 同时只对发生 Root/Armature Object 变换的活动 Session 做显示矩阵平移，因此在 Blender modal 拖动期间即使 app timer 暂停，刚体仍会立即跟随，而不是等松开鼠标后才跳变。
+- 修正交互操作阻塞 timer 后的超大 timestep。`PreviewTimeDriver` 过去保存了 `max_substeps` 却从未使用，拖动数秒后会把整段 wall delta 一次交给 Bullet，造成锚点瞬移、积压追帧和剧烈刚体冲击；现在 timeline/wall 两条路径都把单次 step 限制为 `fixed_step * preview_substeps`，默认上限为 `10 / 60 s`，并继续保留正常短帧的真实 wall delta。该修复同时作用于 PMX/MMD adapter，不修改任一 native Bullet core。
+- 定位 MMD 首次启动慢的两个独立来源：MMD DLL/D3DX 的首次加载初始化，以及为了保留 raw PMX float/Euler 而用 `mmd_tools.pmx.load()` 完整解析大模型网格。插件注册时预热两套 DLL 和一个最小 MMD world；新增只顺序跳过 PMX mesh/bone/morph payload、仅读取 rigid/joint 原始字段的二进制 reader。Rossi 对照 `mmd_tools` 完整 reader 的 `339` rigid / `471` joint 全字段完全一致，fast reader 为约 `0.1056 s`。首次建 world 还移除了 `PreviewSession` 已生成 descriptors 后立即 restore + rebuild 的重复工作；Rossi MMD 预览启动从本轮复现的约 `3.10 s` 降到约 `0.815 s`。
+- 性能剖析确认稳定 tick 的 DLL solve 本身没有显著 MMD 劣化。Rossi、显示刚体、10-step 去预热均值：普通骨架 PMX `42.04 ms/tick`、MMD `43.12 ms/tick`；MMD IK 兼容 PMX `105.73 ms/tick`、MMD `110.62 ms/tick`。MMD IK 的 frame/depsgraph handler 现在在 physics bridge 的 `suspended` 临界区入口直接跳过，不再先计算整骨架 signature；没有修改已验证的 IK/append/morph 求值数学。MMD 相对 PMX 的剩余实测差为普通约 `2.6%`、兼容约 `4.6%`，主要压力仍是 Blender pose/rigid/joint writeback，而不是 DLL step。
+- 新增/扩展 `tests/pmx_physics_reader_regression.py`、`tests/physics_root_offset_regression.py` 与 `tests/time_driver_unit.py`。PMX/MMD 两条路径的 Root 与 Armature modal 前置反馈及 step 后显示位移均约为 `1.0`，solver 内动态刚体没有随模型平移约 `12.5` MMD unit；`MMD_IK_PHYSICS_RESET_REGRESSION_OK`、完整 smoke marker 与 `MMD_RAW_CORE_PARITY_OK`（`339/339` transforms、`4068/4068` float components、`max_error=0`）通过。PMX DLL SHA256 仍为 `EDF5A6DCC445741FEA4C68A7CEE8D7C8B2D3C49E7B44C0F04D3E75A07E7D7537`，MMD DLL仍为 `12EA03E1A1F1B4C88D5B83DCAB0484F1684611DDD55EF1FACCF6C374163078E7`；继续使用源码 Junction，不递增版本、不打包 zip。
+
+## 2026-08-18 - V0.1.8 MMD DLL raw Bullet core 完全逐 bit 对齐
+
+- 重新审计 MMD 9.32 x64 内嵌 Bullet 的真实 source revision。旧实现使用了较晚的 Bullet 2.75 development tree；该树的 `STATIC_PLANE_PROXYTYPE` 为 `28`，而直接挂接 MMD world 读取到的值为 `26`。上游提交 `f65e829ca08c0856d1923e7008e2663486949493` 恰好新增 `BOX_2D_SHAPE_PROXYTYPE` 与 `CONVEX_2D_SHAPE_PROXYTYPE`，使后续所有 shape type 顺延两位。因此将 MMD 分支 vendor source 精确切换到其前一提交 `3da9c832aef0eea74ecc8221d834e9a879f43a43`（2009-09-16）；`LinearMath`、`BulletCollision`、`BulletDynamics` 以及 vendor 内其余 `src` 文件均与该 upstream tree byte-for-byte 相同。
+- 依据 MMD PE Rich Header 中占主导的 build `40219` 记录，恢复并固定 Visual C++ 2010 SP1 `cl.exe 16.00.40219.01`，使用 `/fp:fast /Ox` 构建 native C++。VC9 SP1 全量构建会让 clean pre-step 从 `339/339` 降到 `310/339`，已被 differential 实测否定；VC10 RTM 与 VC10 SP1 在错误 source revision 上都只能达到 `318/339`，说明根因不是单纯 compiler/LTCG，而是 Bullet snapshot 错配。
+- 修正 raw differential 的隐藏输入差异：真实 MMD 在首个 positive step 前会 remove/reinsert 全部模型刚体，从而重新分配 broadphase handles；验证 hook 现在对 DLL world 执行同一顺序。修复后双方 ground + 339 bodies 的完整 pre-step state、body/shape/constraint payload、solver info、pair topology、timestep 与调用顺序一致。Rossi 完整 471 Joint + collision 首个 clean `1/60` step 得到 `339/339` rigid-body transforms、`4068/4068` float32 components 逐 bit 相同，`max_error = 0`，marker 为 `MMD_RAW_CORE_PARITY_OK`。
+- 新增可重复回归 `tests/mmd_raw_core_parity.py`、`tests/tools/mmd_raw_trace_hook_generic.cpp` 与对应测试 hook DLL；验证对象直接是双方 `btDiscreteDynamicsWorld::stepSimulation` 的 raw transform，不经过 Blender matrix/quaternion writeback。该证据证明 MMD DLL native Bullet core 在 identical payload/state/call-order 范围内完全 bit-exact；不把 Blender 两种骨架适配器或 MMD 独立播放之间的宿主层非确定性提升为端到端 bit-exact 声明。
+- `native/mmd_physics_solver_mmd/build.ps1` release tests `12/12` 通过；最终 MMD DLL SHA256 为 `12EA03E1A1F1B4C88D5B83DCAB0484F1684611DDD55EF1FACCF6C374163078E7`。PMX source/DLL 未修改，PMX DLL SHA256 仍为 `EDF5A6DCC445741FEA4C68A7CEE8D7C8B2D3C49E7B44C0F04D3E75A07E7D7537`。本轮不递增插件版本、不打包 zip；生产 DLL 已由 build script 原地安装到源码 junction 使用的 `physics_preview/bin/win_amd64`。
+
+## 2026-08-18 - V0.1.8 MMD 本体与 MMD DLL 原始刚体 step 逐 bit 验证
+
+- 直接挂接 MMD 9.32 x64 与当前 `mmd_physics_solver_mmd.dll` 内各自的 `btDiscreteDynamicsWorld::stepSimulation`，使用 Rossi `Rossi Ver1.0.pmx`、Teo `m7_teo_0918.vmd`、60 Hz、`maxSubSteps=10` 采集 Bullet 原始状态。为排除 MMD 宿主层在模型载入与首个正时间步之间执行的刚体初始化，受控 oracle 在首个正时间步前恢复 authored 状态；随后逐对象验证 ground + 339 个模型刚体的 world/interpolation/motion-state transform、四组速度、activation state 与 collision flags。首步之前 `340/340` 个对象的完整 200-byte 记录逐 bit 相同，339 个模型刚体的 mass/inertia、damping、friction/restitution、shape margin/scaling/AABB、factor 与 collision filter payload 也全部逐 bit 相同。
+- 在上述相同输入和相同首步状态下，首个 `1/60` step 后只有 `165/339` 个模型刚体的 3x3 basis + origin 完全一致（`48.672566%`），float32 分量为 `2282/4068`（`56.096362%`），最大单分量误差为 `0.0622847378` MMD unit；第一个分歧为刚体 120 `120_cape_base_L_a_01_jnt`。两次独立受控 MMD 本体运行在相同 startup calls 上则保持 `340/340` 个完整记录逐 bit 一致，排除了本次首步 oracle 自身随机抖动。
+- 额外移除两侧全部 Joint 后重跑首步，MMD DLL 提升到 `314/339` 个刚体和 `3812/4068` 个 float32 分量完全一致，但仍未全等。这证明碰撞路径本身已经存在分歧，Joint 只会把该分歧继续传播到连接链；因此当前证据明确否决“MMD DLL 已通过真实 MMD raw step bit-exact 验证”的说法。验证证据保存在 `_archive/headless-validation-runs/mmd-raw-core-parity-20260818/`。
+- 本轮只建立和执行验证，没有修改生产源码或两个物理 DLL，不递增版本、不打包。MMD DLL SHA256 保持 `E51C6E2B2045B87D9437888624F6EDF568198A829537808984C11FA2B850CD8C`；PMX DLL 未触碰，SHA256 保持 `EDF5A6DCC445741FEA4C68A7CEE8D7C8B2D3C49E7B44C0F04D3E75A07E7D7537`。
+
+## 2026-08-18 - V0.1.8 Rossi 四组合全骨骼逐 bit 验证与声明边界纠正
+
+- 使用 Rossi `Rossi Ver1.0.pmx` 与 `m7_teo_0918.vmd` 建立 60 Hz headless 差分验证，覆盖 `mmd_tools / MMD IK` 两种骨架与 `PMX / MMD` 两种物理 DLL 的全部四种组合。新增 `tests/rossi_four_way_bone_parity.py`，逐帧记录 680 根 PMX 骨骼的完整 4x4 矩阵；每个矩阵以 16 个 little-endian IEEE-754 float32 的原始 bit 保存，并分别统计完整矩阵、3x3 rotation 和 translation 的一致数及首个差异。
+- 通过隐藏 MMD 9.32 + MMDBridge 以物理 trace mode 独立生成两份 frame 0-4 oracle。两次 MMD 本体运行自身仅有 `670/680, 673/680, 673/680, 673/680, 673/680` 根骨骼逐 bit 重复，差异集中在 `左高跟鞋1/2` 与 `左FootTie_01-08`；因此“任意独立运行的全部骨骼必然逐 bit 相同”本身不是成立的 MMD oracle 前提。
+- 固定第一份真实 MMD oracle 后，`MMD IK + MMD DLL` 每帧仅 `349,349,349,346,349 / 680` 根骨骼完全一致；扫描 0-7 个 startup step 后最高仍为 `349/680`，排除单纯预热相位错一帧。`mmd_tools + MMD DLL` 每帧只有 `6/680` 完全一致。两个 PMX DLL 组合对 MMD oracle 的数值只作横向诊断，不作为 PMX Editor 验收。
+- `tests/pmx_runtime_bone_parity.py` 复跑得到 `PMX_RUNTIME_BONE_PARITY_OK frames=5 bodies=339`，但该 marker 只证明相同 NativeBoneSolver payload 下两条 PMX adapter 路径的 PMX DLL body 输出一致；本轮没有构造出“真实 PmxNLib + 任意 VMD + 全 680 骨骼”的直接 oracle，因此不得把内部双路径一致升级表述为 PMX Editor 端到端全骨骼 bit 对齐。综合本轮证据，已确认的端到端 bit-exact 组合为 `0`，不是 `3`。
+- 原始 oracle、四组合全部骨骼 bit、startup phase 扫描、PMX 内部 marker 与机器可读汇总保存在 `_archive/headless-validation-runs/rossi-four-way-bit-parity-20260818/`。本轮只新增验证测试和证据，没有修改任何生产实现或 DLL；PMX DLL SHA256 仍为 `EDF5A6DCC445741FEA4C68A7CEE8D7C8B2D3C49E7B44C0F04D3E75A07E7D7537`，MMD DLL SHA256 为 `E51C6E2B2045B87D9437888624F6EDF568198A829537808984C11FA2B850CD8C`，不递增版本、不打包 zip。
+
+## 2026-08-18 - V0.1.8 Root 偏移物理平移、PMX + MMD IK 重置与预览性能修复
+
+- 在 Rossi `199_スカート_0_4` 上复现 Root 直接平移：该刚体属于含 0 型锚点的完整连通分量，并非模型缺 Joint 或自由漂浮链。旧适配器把 Root 位移只提交给骨骼/0 型刚体，动态刚体仍留在旧 solver world，Root 平移 1 Blender unit 后该刚体首步原生 X 从约 `1.083` 跳到 `14.255`，Joint 因瞬时约束冲量产生整组前漂；PMX/MMD 两个 DLL 都会发生，因此这是共享 Blender adapter 的 world-space 错误，不是两套 Bullet core 的 bit 对齐证据。
+- `PreviewSession` 现在记录当前 solver 建立时的 Root translation。运行中直接平移 Root 时，提交骨骼目标前先映回 solver translation frame，读取刚体、骨骼和 Joint 输出后再叠回当前 Root translation；不重建 solver、不清零速度，也不修改旋转/重力语义。Rossi 回归中 Root X `+1` 后，PMX/MMD 原生刚体 X 仅自然变化 `0.00115895 / 0.00349438`，显示刚体 X 分别平移 `1.00009277 / 1.00027955`，不再以锚点瞬移拉扯动态链。
+- 修复 MMD IK 兼容 + PMX DLL 每 tick 自动重置：native 骨架在 physics prepare 前写回 Pose 后，旧桥接仅对 MMD DLL 禁用了 broad-pose reset probe，PMX 路径把同一次插件内部写回误判成外部整姿态编辑。现在只要本帧存在 native pose 就临时屏蔽该 probe；仅 MMD exact-target 路径继续单独屏蔽普通 bone setter，PMX 路径仍正常提交 native 求值结果。Rossi 连续 4 step 的 reset count 从 `3` 降为 `0`。
+- 性能剖析确认 MMD/PMX 在不开 MMD IK 时耗时接近，主要压力来自 MMD IK 的 `_apply_output()` 写骨骼触发 `depsgraph_update_post`，同一 physics tick 被递归重复求值。physics bridge 现在只在 prepare/apply 临界区把该 native Session 标记为 `suspended`，直接的 before/after-physics 求值仍执行，普通 handler 不再重入。Rossi 5-step headless 均值：PMX 从约 `275 ms/tick` 降至 `141 ms/tick`，MMD 从约 `333 ms/tick` 降至 `130 ms/tick`；没有减少固定频率、substeps、刚体反馈或 MMD before/after 阶段。
+- 新增 `tests/physics_root_offset_regression.py`（PMX/MMD 双目标）与 `tests/mmd_ik_physics_reset_regression.py`。`PY_COMPILE_OK`、两个 Root offset marker、PMX + MMD IK reset marker和完整 `MMD_SKIRT_PROXY_CREATOR_SMOKE_OK top_range=0.235911131 rigids=48 joints=96` 均通过；完整 smoke 的 traceback 仍来自既有主动注入恢复分支。PMX DLL SHA256 保持 `EDF5A6DCC445741FEA4C68A7CEE8D7C8B2D3C49E7B44C0F04D3E75A07E7D7537`，MMD DLL保持 `E51C6E2B2045B87D9437888624F6EDF568198A829537808984C11FA2B850CD8C`；继续使用源码 Junction，不递增版本、不打包 zip。
+
+## 2026-08-17 - V0.1.8 MMD DLL 静止姿态颤抖修复与 bit 对齐边界纠正
+
+- 重新以 Rossi 静止姿态同时采集 MMD/MMDBridge、Blender 普通 `mmd_tools` 骨架和内存态 MMD IK 骨架的长序列。确认此前“`339/339` bodies、`2373/2373` float bits”只证明相同 payload 下的隔离 Bullet step；fresh 端到端序列不存在完整刚体逐 bit 对齐，因此不再把该结果表述为 Blender 最终预览与 MMD 本体完全对齐。
+- 根因位于 MMD 物理 DLL：`Solver::step()` 内硬编码了第 2-4 次调用时把全部刚体重放到 authored transform 并清零速度。真实 MMD 的启动回卷发生在宿主层、位于相邻 `stepSimulation` 调用之间；把该行为藏进 DLL 会在 Blender 已提交本帧骨骼目标后再次覆盖 solver 状态，并错误清除动态速度。已删除该 test-derived replay；PMX DLL、PMX native 源码和 MMD IK 实现均未修改。
+- 新增 Rust 回归 `solver_steps_do_not_replay_authored_body_transforms`，要求携带 raw PMX Euler 的静态刚体在连续 5 个 step 中始终服从每步新目标，防止以后为了窄 oracle fixture 再把宿主初始化逻辑塞回 Bullet core。VC10 RTM `/fp:fast` + VC9 CRT LTCG 正式构建 `12/12` tests 通过；新 MMD DLL SHA256 为 `E51C6E2B2045B87D9437888624F6EDF568198A829537808984C11FA2B850CD8C`。
+- Rossi 320 个固定 60 Hz step 回归：普通 `mmd_tools` 骨架 late bone peak 从旧 600-step 基线 `0.195745729` 降至 `0.052939421`；内存态 MMD IK 骨架从 `0.195272357` 降至 `0.042154452`。两条骨架路径均消除原先约 `0.195` 的持续尖峰，且 MMD IK 路径改善约 `78.4%`。完整 Blender 4.4.3 smoke 输出 `MMD_SKIRT_PROXY_CREATOR_SMOKE_OK top_range=0.235911131 rigids=48 joints=96`。
+- PMX DLL SHA256 复核仍为 `EDF5A6DCC445741FEA4C68A7CEE8D7C8B2D3C49E7B44C0F04D3E75A07E7D7537`。继续使用源码 Junction，不递增版本、不打包 zip；真实视口主观平稳度仍需用户在当前模型上验收。
+
+## 2026-08-17 - V0.1.8 MMD IK 严格内存态接管与零场景构件
+
+- 将 MMD IK 兼容从“隐藏 Runtime Armature + `.MMD Native Output` 约束”改为严格内存态架构：Blender 中始终只有原 `mmd_tools` Armature，Mesh Armature Modifier 始终绑定原骨架；启用前后不新增 Object、Collection、Armature data、骨骼约束或特殊修改器。DLL 的骨架状态、输入 Pose 缓存与输出矩阵只存在于插件进程内存。
+- 原骨架现在同时承担用户入口和最终显示，但输入/输出在内存中分离：Action/手动 Pose 作为输入快照，native DLL 输出直接写回同一骨架；帧切换采用 `frame_change_pre` 恢复输入、`frame_change_post` 求值并写回，避免把上一帧 native 输出再次当成输入。接管关闭时恢复原约束 mute 状态和输入 Pose，Blender/mmd_tools IK 结果立即返回。
+- 补齐普通建模工作流的 Keying 事务：Pose Mode 的 `I` / `Alt+I` 由插件在内存中先恢复输入 Pose，再调用 Blender Keying Set，完成后立即恢复 DLL 输出；直接点击属性关键帧菱形或脚本调用 `PoseBone.keyframe_insert()` 时，Action watcher 会把误写的 DLL 输出值修正为缓存输入值。Action 首次被用户编辑后切换为持久 `action_input` 模式，后续切帧使用正常 Blender Action 插值作为 DLL 输入，不会返回只读原始 VMD 重放路径。
+- 补齐 `.blend` 生命周期：`save_pre` 暂停接管并恢复输入/原约束，文件写入结束或失败后无条件恢复 DLL 输出；`load_post` 与插件重新注册会按隐藏 schema 状态自动重建内存 Session；`undo_pre/redo_pre` 先解除旧 RNA 引用，`undo_post/redo_post` 再按稳定对象名重建，避免 Undo 替换 data-block 后保留悬空 PoseBone。运行标记不再写入 Root Custom Properties，唯一持久 schema 注册为 `HIDDEN` Object RNA 属性。
+- Runtime 状态升级为 schema 2。打开旧工程或插件更新后再次启用时，会自动迁移 schema 1：移除旧 `.MMD Native Output`、把误绑隐藏 Runtime 的 Mesh 恢复到 canonical Armature、删除旧 Runtime Object/Armature data，再以内存态重建。根对象只保留接管会话元数据，不保存第二套骨架数据。
+- 物理预览与内存态骨骼接管可同时运行；物理停止/重放与 PMX 导出事务会先恢复缓存输入，结束后重新执行 native 求值，避免回放时把输出污染进输入。普通 UI 只保留启用/关闭接管，原始 PMX/VMD 精确重放 operator 继续不在默认界面显示。
+- Rossi `Rossi Ver1.0.pmx` + Teo `m7_teo_0918.vmd` 在 MMD 9.32 x64 oracle frame 0-40 验收：Blender frame 41 启用时 native 输出 `680/680` bone matrices 逐 bit 一致；膝盖相对 Blender/mmd_tools IK 的切换差为 `0.034821432`，关闭后左右膝恢复残差分别为 `5.364418e-07`、`1.132488e-06`。测试同时确认启用物理期间可切换、同帧手动 Pose 会进入 live input、全程 Object/Collection/Armature/constraint 集合不变。
+- 验证通过：`PY_COMPILE_OK`、`MMD_IK_AUTHORING_SAVE_OK 全ての親`、`MMD_IK_AUTHORING_RELOAD_OK Rossi Ver1.0 802`（覆盖普通 Keying Set、Property diamond、切帧、Undo、Redo、保存、重开与自动 Session 重建）、`MMD_IK_MEMORY_ONLY_ORACLE_OK 802 全ての親`、`MMD_IK_RUNTIME_SMOKE_OK solver=MMD meshes=4 modifiers=4 bone_morphs=23`（含 schema 1 自动迁移、帧播放、物理、导出 round-trip）以及 `MMD_SKIRT_PROXY_CREATOR_SMOKE_OK top_range=0.235911131 rigids=48 joints=96`。真实 Blender 4.4 继续通过源码 Junction 使用本轮代码；不递增版本、不打包 zip。
+
+## 2026-08-17 - V0.1.8 物理 DLL 选择器位置与形态调整
+
+- 将物理预览顶部的 `MMD 本体 / PMX Editor` 横向按钮组移到预览对象选择区下方、固定频率参数上方，并改为单行 `物理 DLL` 下拉选择器，替换原来的“DLL 已就绪”占位行；当前代理模式下因此紧邻“当前代理”，选择目标更明确。
+- 保留运行期间禁止切换 DLL 的既有边界；所选 DLL 正常存在时不再重复显示就绪文案，文件缺失时仍额外显示错误提示。未修改 DLL 枚举值、默认目标、加载路径、world cache 或求解行为。
+- `tests/headless_smoke.py` 增加选择器只绘制一次、位于固定频率之前以及运行时禁用的回归断言。Blender 4.4.3 完整 headless smoke 通过并输出 `MMD_SKIRT_PROXY_CREATOR_SMOKE_OK top_range=0.235911131 rigids=48 joints=96`；末尾 traceback 仍是测试主动注入的恢复路径。继续使用真实 Blender 4.4 源码 Junction，本轮不递增版本、不另打 zip。
+
+## 2026-08-17 - V0.1.8 独立 MMD 骨骼求值、双骨架与双物理后端闭环
+
+- 完成独立 VC9 C++ `mmd_bone_solver.dll`，生产运行时只读取原始 PMX/VMD bytes，不启动、不注入、不调用 MikuMikuDance/MMDBridge。核心实现 MMD float32 Bezier、定制 quaternion slerp、Bone Morph、Append Transform、自附加、fixed-axis、变形层级、IK 开关、CCD/link limits 以及 MMD/PMX 两套刚体反馈语义；最终 SHA256 为 `3B16FD66B3EAAB3CBB178F4C2D3677701322687F9FE832295F81C9A897973AE5`。
+- `MMD IK` tab 完成 canonical/runtime 双骨架工作流：模型/骨架选择器、按材质分离后全 Mesh Armature Modifier 同步切换、物理运行期切换锁、移除 Runtime、原始 VMD SHA256 来源校验，以及 `mmd_tools` PMX 导出前临时切回 canonical、导出后无损恢复。Bone Morph/IK payload 的 PMX round-trip 与 Runtime 创建/删除前后 Bone Morph 绑定均一致。
+- 接通 Runtime 骨架与两个物理 DLL。PMX backend 保留原 setter；MMD backend 使用 MMD 刚体静止位姿舍入、before/after-physics 分相和动态刚体世界矩阵反馈。Rossi 根平移 13 step 中 MMD backend 对 MMD oracle 为 `339/339` bodies、`2373/2373` float bits 每步一致；同一 Runtime 骨架进入 PMX backend 的 13 step 仍为 `PMX_RUNTIME_BONE_PARITY_OK`，既有 PMX DLL SHA256 保持 `EDF5A6DCC445741FEA4C68A7CEE8D7C8B2D3C49E7B44C0F04D3E75A07E7D7537`，MMD DLL SHA256 为 `FE055F0E384EB31063A08BAB55938BA8075AC45FDCC826F57A020EBFA6062552`。
+- MMD 最终骨矩阵验收：Rossi 含半帧插值和物理反馈的 5 个输出帧达到 `680/680` matrices、`10880/10880` float bits。Alicia Laevatain 的 AnalToy/PussyToy/UrethraToy 均逐 bit 一致；`自動振動` 自引用链的 MMD 首帧相位取决于模型载入后到渲染开始前的空闲求值次数，同一 PMX/VMD 两次 headless MMD 首帧分别对应 native phase `593` 与 `597`，因此输入本身不存在唯一首帧 bit 值。相位对齐后，帧 1-30 的 `621/621` matrices、`9936/9936` float bits 每帧一致；这证明求值转移逐 bit 一致，同时不把 MMD 自身不确定的空闲首相位伪报成确定输入结果。
+- Runtime 写入 native 精确矩阵后仍由 Blender depsgraph 正常叠加用户 constraint/driver；回归同时证明 native output bytes 不变而 pose 输出按公式和 `COPY_LOCATION` 约束变化。旧 mmd_tools 骨架只测 `センター` Root 位移时，相对 MMD 3 帧最大误差为 `2.98023223877e-08` Blender unit（`3.72529029846e-07` MMD unit），RMS 为 `1.9237316381e-08` Blender unit。
+- 验收通过：MMD physics `11/11` Rust tests、`MMD_COORDINATE_ADAPTER_OK`、`MMD_RUNTIME_PHYSICS_ORACLE_OK`、`PMX_RUNTIME_BONE_PARITY_OK`、MMD/PMX 两套 `MMD_IK_RUNTIME_SMOKE_OK`（含按材质分离、自由切换、物理锁、overlay、导出事务、IK/Bone Morph round-trip）以及完整 `MMD_SKIRT_PROXY_CREATOR_SMOKE_OK`。发布包为 `_archive/zip-packages/MMD-Skirt-Proxy-Creator-V0.1.8.zip`，真实 Blender 4.4 继续使用源码 Junction，安装状态已由 headless 注册与 smoke 验证。
+
+## 2026-08-17 - raw PMX/VMD C++ 骨骼求值器与 MMD 逐 bit 差分闭环
+
+- 新建 `native/mmd_bone_solver/`，使用与 MMD 9.32 x64 同代的 VC9 SP1、`/fp:fast`、`/GL`/LTCG 构建独立 `mmd_bone_solver.dll`。C ABI 直接接收原始 PMX/VMD bytes，不读取 `mmd_tools` 导入后的 Blender Action；当前已实现 PMX 2.0 骨骼/Bone Morph/Append/IK payload 解析、VMD bone/morph/IK 开关解析、基础 VMD interpolation、D3DX float32 矩阵路径和首版 CCD 求解骨架。
+- 将 MMD 自动化严格迁移到 `tests/tools/` 开发 oracle：隔离复制、suspended hidden launch、headless hook、MMDBridge 原始 float32 bone world matrix 采集及 SHA256 来源校验均不进入生产插件。生产目录中旧的 `mmd_headless_hook.dll` 不再作为运行时方案保留。
+- 新增 `tests/mmd_bone_solver_diff.py`、`tests/tools/pmx_ik_patch.py` 与 `tests/tools/mmd_fixture.py`，可以按 frame/bone 输出首差异、最大残差和逐骨 bit 结果。Rossi 空动作且 IK 关闭的基线曾达到 `680/680` bone matrices 逐 byte 一致，证明 PMX bone order、原始 world matrix 布局及 D3DX 基础路径正确；真实 Teo 动作仍在 Append/Toy cycle、IK link/local space、求值顺序和少量 VMD float grouping 处存在差异，当前不得标记为 bit-exact。
+- 坐标处理改为独立验收边界：native 核心只输出 MMD 坐标系矩阵，后续 Blender adapter 必须另测静止姿态、单轴位移/旋转、父子链、左右非对称骨、矩阵转置/乘法顺序与 scale；不得用 Blender pose matrix 直接对比 MMD raw matrix。`mmd_tools` Action 路线继续冻结，必须等 raw PMX/VMD 路线全部 bit 对齐后再验证其导入转换是否有损。
+- 本轮仍处于诊断/实现阶段，不递增版本、不打包 zip、不宣称完成；物理 DLL 与相邻物理调查文件未由本骨骼求值器修改。
+
+## 2026-08-17 - 撤销 MMD 后台缓存方案，保留双骨架 UI 基础
+
+- 撤销了以隐藏 MikuMikuDance/MMDBridge 生成矩阵缓存并在 Blender 播放的错误生产方案；插件源码不再包含 MMD 启动器、注入器、oracle cache 或 Python 近似骨骼求值器，面板也不再提供缓存生成/播放按钮。MMD 后续只能作为开发期外部 oracle，不能成为已安装插件的运行依赖。
+- 保留 canonical/runtime 双骨架基础、MMD 模型与骨架选择器、全模型 Mesh Armature Modifier 同步切换、物理预览运行期切换锁、兼容骨架移除以及 mmd_tools 导出事务保护。这些属于后续独立 native 求值器需要的宿主基础，不代表求值核心已经完成。
+- `MMD IK` tab 明确显示“独立 native 求值核心待实现”，不再宣称 MMD IK/Morph 已在 Blender 内独立 bit 级复刻。下一阶段需先确定 native DLL 技术路线，再实现 VMD interpolation、Bone Morph、Append Transform、PMX transform order、IK enable、CCD/link limits 和物理组合。
+- 本轮不递增版本、不打包 zip；只保留 UI/双骨架基础，错误求值实现不作为交付结果。
 
 ## 2026-08-17 - MMD 9.32 独立 DLL 与双目标预览选择器
 

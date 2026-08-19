@@ -2,16 +2,28 @@ from dataclasses import dataclass, field
 import math
 from pathlib import Path
 import struct
+import tempfile
 
 import bpy
 from bpy.app.handlers import persistent
 
-from .coordinates import blender_pose_matrix, mmd_position_to_blender
+from .coordinates import (
+    blender_pose_matrix,
+    blender_position_to_mmd,
+    blender_rotation_to_mmd_rows,
+    mmd_position_to_blender,
+)
 from .ffi import NativeBoneSolver
-from .runtime import MMDIKRuntimeError, runtime_armature, runtime_state
+from .runtime import (
+    MMDIKRuntimeError,
+    canonical_armature,
+    refresh_bindings,
+    runtime_state,
+    set_action_input,
+)
+from .vmd_hook import SOURCE_FRAME_KEY, SOURCE_VMD_KEY
 
 
-ACTIVE_KEY = "spx_mmd_ik_evaluator_active"
 _SESSIONS = {}
 
 
@@ -56,11 +68,12 @@ def _pose_bone_name(pose_bone):
 
 
 def _bone_map(armature, solver):
+    exact = {pose_bone.name: pose_bone for pose_bone in armature.pose.bones}
     aliases = {}
     for pose_bone in armature.pose.bones:
         for name in _pose_bone_name(pose_bone):
             aliases.setdefault(name, pose_bone)
-    return tuple(aliases.get(name) for name in solver.names)
+    return tuple(exact.get(name) or aliases.get(name) for name in solver.names)
 
 
 def _infer_scale(mapping, solver):
@@ -107,6 +120,138 @@ def _restore_constraints(runtime, muted):
             constraint.mute = previous
 
 
+def _mute_all_constraints(armature):
+    muted = []
+    for pose_bone in armature.pose.bones:
+        for constraint in pose_bone.constraints:
+            muted.append((pose_bone.name, constraint.name, bool(constraint.mute)))
+            constraint.mute = True
+    return muted
+
+
+def _raw_pose_matrices(armature, bases=None):
+    matrices = {}
+
+    def resolve(pose_bone):
+        cached = matrices.get(pose_bone.name)
+        if cached is not None:
+            return cached
+        rest = pose_bone.bone.matrix_local
+        basis = bases.get(pose_bone.name, pose_bone.matrix_basis).copy() if bases else pose_bone.matrix_basis.copy()
+        if pose_bone.parent is None:
+            matrix = rest @ basis
+        else:
+            parent_matrix = resolve(pose_bone.parent)
+            matrix = (
+                parent_matrix
+                @ pose_bone.parent.bone.matrix_local.inverted_safe()
+                @ rest
+                @ basis
+            )
+        matrices[pose_bone.name] = matrix
+        return matrix
+
+    for pose_bone in armature.pose.bones:
+        resolve(pose_bone)
+    return matrices
+
+
+def _submit_live_pose(session, canonical):
+    matrices = _raw_pose_matrices(canonical, session.input_basis)
+    session.solver.begin_live_input()
+    for index, runtime_bone in enumerate(session.mapping):
+        if runtime_bone is None:
+            continue
+        source_bone = canonical.pose.bones.get(runtime_bone.name)
+        if source_bone is None:
+            continue
+        pose_matrix = matrices[source_bone.name]
+        rest_orientation = source_bone.bone.matrix_local.to_3x3().to_4x4()
+        head_transform = pose_matrix @ rest_orientation.inverted_safe()
+        session.solver.set_live_matrix(
+            index,
+            blender_position_to_mmd(head_transform.translation, session.scale),
+            blender_rotation_to_mmd_rows(head_transform.to_3x3()),
+        )
+
+
+def _live_input_signature(canonical, scene):
+    values = [int(scene.frame_current), float(scene.frame_subframe)]
+    for pose_bone in canonical.pose.bones:
+        values.extend(float(value) for row in pose_bone.matrix_basis for value in row)
+    return tuple(values)
+
+
+def _action_frame_signature(canonical, frame):
+    action = canonical.animation_data.action if canonical.animation_data else None
+    if action is None:
+        return ()
+    values = []
+    for curve in action.fcurves:
+        if not curve.data_path.startswith('pose.bones["'):
+            continue
+        for point in curve.keyframe_points:
+            if abs(float(point.co.x) - float(frame)) < 1.0e-6:
+                values.append(
+                    (curve.data_path, int(curve.array_index), float(point.co.y))
+                )
+                break
+    return tuple(values)
+
+
+def _basis_channel_values(pose_bone, basis, channel):
+    location, rotation, scale = basis.decompose()
+    if channel == "location":
+        return tuple(location)
+    if channel == "scale":
+        return tuple(scale)
+    if channel == "rotation_quaternion":
+        return tuple(rotation)
+    if channel == "rotation_euler":
+        return tuple(rotation.to_euler(pose_bone.rotation_mode, pose_bone.rotation_euler))
+    if channel == "rotation_axis_angle":
+        axis, angle = rotation.to_axis_angle()
+        return (angle, axis.x, axis.y, axis.z)
+    return None
+
+
+def _export_current_pmx(root, vmd_path=None):
+    selected = tuple(bpy.context.selected_objects)
+    active = bpy.context.view_layer.objects.active
+    mode = active.mode if active is not None else "OBJECT"
+    if active is not None and mode != "OBJECT":
+        bpy.ops.object.mode_set(mode="OBJECT")
+    try:
+        for obj in bpy.context.selected_objects:
+            obj.select_set(False)
+        root.hide_set(False)
+        root.select_set(True)
+        bpy.context.view_layer.objects.active = root
+        with tempfile.TemporaryDirectory(prefix="mmd-native-live-") as directory:
+            path = Path(directory) / "current_model.pmx"
+            result = bpy.ops.mmd_tools.export_pmx(
+                filepath=str(path),
+                scale=12.5,
+                copy_textures_mode="NONE",
+                fix_bone_order=False,
+                sort_materials=False,
+                sort_vertices="NONE",
+            )
+            if result != {"FINISHED"} or not path.is_file():
+                raise MMDIKRuntimeError("无法自动生成 native 求值所需的 PMX 定义")
+            return NativeBoneSolver(path, vmd_path)
+    finally:
+        for obj in bpy.context.selected_objects:
+            obj.select_set(False)
+        for obj in selected:
+            if obj.name in bpy.context.view_layer.objects:
+                obj.select_set(True)
+        if active is not None and active.name in bpy.context.view_layer.objects:
+            bpy.context.view_layer.objects.active = active
+            if mode != "OBJECT":
+                bpy.ops.object.mode_set(mode=mode)
+
+
 @dataclass
 class Session:
     root_name: str
@@ -124,17 +269,108 @@ class Session:
     bone_indices: dict = field(default_factory=dict)
     external_transforms: dict = field(default_factory=dict)
     physics_bind_positions: tuple = ()
+    canonical_name: str = ""
+    live: bool = False
+    updating: bool = False
+    input_signature: tuple = ()
+    source_vmd: bool = False
+    pose_override: bool = False
+    input_basis: dict = field(default_factory=dict)
+    output_basis: dict = field(default_factory=dict)
+    suspended: bool = False
+    action_input: bool = False
+    action_signature: tuple = ()
 
     def _apply_output(self, runtime):
-        for index, pose_bone in enumerate(self.mapping):
-            if pose_bone is not None:
-                pose_bone.matrix = blender_pose_matrix(
-                    self.solver.matrix(index), self.scale, pose_bone.bone.matrix_local
+        mapped = [(index, pose_bone) for index, pose_bone in enumerate(self.mapping) if pose_bone is not None]
+        mapped.sort(key=lambda item: len(item[1].parent_recursive))
+        desired = {
+            pose_bone.name: blender_pose_matrix(
+                self.solver.matrix(index), self.scale, pose_bone.bone.matrix_local
+            )
+            for index, pose_bone in mapped
+        }
+        for index, pose_bone in mapped:
+            parent = pose_bone.parent
+            if parent is None:
+                pose_bone.matrix_basis = pose_bone.bone.convert_local_to_pose(
+                    desired[pose_bone.name], pose_bone.bone.matrix_local, invert=True
                 )
+            else:
+                pose_bone.matrix_basis = pose_bone.bone.convert_local_to_pose(
+                    desired[pose_bone.name],
+                    pose_bone.bone.matrix_local,
+                    parent_matrix=desired.get(parent.name, parent.matrix),
+                    parent_matrix_local=parent.bone.matrix_local,
+                    invert=True,
+                )
+        runtime.update_tag(refresh={"OBJECT"})
+        bpy.context.view_layer.update()
+        self.output_basis = {
+            pose_bone.name: pose_bone.matrix_basis.copy()
+            for _index, pose_bone in mapped
+        }
+        self.input_signature = _live_input_signature(runtime, bpy.context.scene)
+        self.action_signature = _action_frame_signature(
+            runtime, bpy.context.scene.frame_current
+        )
+
+    def repair_current_action_keys(self, canonical, frame):
+        action = canonical.animation_data.action if canonical.animation_data else None
+        if action is None:
+            self.action_signature = ()
+            return False
+        paths = {
+            pose_bone.path_from_id(): pose_bone
+            for pose_bone in canonical.pose.bones
+        }
+        changed = False
+        for curve in action.fcurves:
+            owner_path, separator, channel = curve.data_path.rpartition(".")
+            pose_bone = paths.get(owner_path) if separator else None
+            basis = self.input_basis.get(pose_bone.name) if pose_bone else None
+            values = (
+                _basis_channel_values(pose_bone, basis, channel)
+                if basis is not None
+                else None
+            )
+            if values is None or curve.array_index >= len(values):
+                continue
+            for point in curve.keyframe_points:
+                if abs(float(point.co.x) - float(frame)) >= 1.0e-6:
+                    continue
+                expected = float(values[curve.array_index])
+                if abs(float(point.co.y) - expected) > 1.0e-7:
+                    point.co.y = expected
+                    changed = True
+                break
+        if changed:
+            action.update_tag()
+        self.action_signature = _action_frame_signature(canonical, frame)
+        return changed
+
+    def restore_input(self, update=True):
+        canonical = bpy.data.objects.get(self.canonical_name or self.runtime_name)
+        if canonical is None:
+            return
+        was_updating = self.updating
+        self.updating = True
+        try:
+            for name, matrix in self.input_basis.items():
+                pose_bone = canonical.pose.bones.get(name)
+                if pose_bone is not None:
+                    pose_bone.matrix_basis = matrix
+            canonical.update_tag(refresh={"OBJECT"})
+            if update:
+                bpy.context.view_layer.update()
+        finally:
+            self.updating = was_updating
 
     def close(self):
         runtime = bpy.data.objects.get(self.runtime_name)
         if runtime is not None:
+            if self.live:
+                self.restore_input()
             _restore_constraints(runtime, self.muted_constraints)
             if runtime.animation_data is not None:
                 runtime.animation_data.action = self.original_action
@@ -171,6 +407,8 @@ class Session:
         )
 
     def evaluate_to(self, scene):
+        if self.live:
+            return self.evaluate_live(scene)
         runtime = bpy.data.objects.get(self.runtime_name)
         if runtime is None:
             raise MMDIKRuntimeError("MMD IK Runtime Armature 已丢失")
@@ -188,10 +426,70 @@ class Session:
         self.last_vmd_frame = target
         self._apply_output(runtime)
 
+    def evaluate_live(self, scene):
+        if self.updating or self.suspended:
+            return float(scene.frame_current)
+        runtime = bpy.data.objects.get(self.runtime_name)
+        canonical = bpy.data.objects.get(self.canonical_name)
+        if runtime is None or canonical is None:
+            raise MMDIKRuntimeError("MMD native 接管骨架已丢失")
+        self.updating = True
+        try:
+            signature = _live_input_signature(canonical, scene)
+            current_frame = (int(scene.frame_current), float(scene.frame_subframe))
+            previous_frame = self.input_signature[:2] if self.input_signature else None
+            new_frame = previous_frame != current_frame
+            was_override = self.pose_override
+            if not self.input_basis or new_frame:
+                self.input_basis = {
+                    pose_bone.name: pose_bone.matrix_basis.copy()
+                    for pose_bone in canonical.pose.bones
+                }
+            if self.source_vmd and new_frame:
+                self.pose_override = False
+            elif not new_frame and self.input_signature and signature != self.input_signature:
+                for name, output in self.output_basis.items():
+                    pose_bone = canonical.pose.bones.get(name)
+                    source = self.input_basis.get(name)
+                    if pose_bone is None or source is None or pose_bone.matrix_basis == output:
+                        continue
+                    delta = output.inverted_safe() @ pose_bone.matrix_basis
+                    self.input_basis[name] = source @ delta
+                self.pose_override = True
+            target = self.target_frame(scene) if self.source_vmd else float(scene.frame_current)
+            if self.source_vmd and not self.pose_override and not self.action_input:
+                self.solver.end_live_input()
+                if was_override or self.last_vmd_frame is None or target < self.last_vmd_frame:
+                    self.solver.reset()
+                    first = int(self.vmd_start)
+                else:
+                    first = int(self.last_vmd_frame) + 1
+                for frame in range(first, int(target) + 1):
+                    self.solver.evaluate(float(frame))
+                if target != int(target):
+                    self.solver.evaluate(float(target))
+            else:
+                _submit_live_pose(self, canonical)
+                self.solver.evaluate(float(target))
+            self.last_vmd_frame = float(target)
+            self._apply_output(runtime)
+            bpy.context.view_layer.update()
+        finally:
+            self.updating = False
+        return float(scene.frame_current)
+
     def evaluate_exact(self, frame, apply_output=True):
         runtime = bpy.data.objects.get(self.runtime_name)
         if runtime is None:
             raise MMDIKRuntimeError("MMD IK Runtime Armature 已丢失")
+        if self.live:
+            canonical = bpy.data.objects.get(self.canonical_name)
+            if canonical is None:
+                raise MMDIKRuntimeError("MMD native 控制骨架已丢失")
+            if self.source_vmd and not self.pose_override and not self.action_input:
+                self.solver.end_live_input()
+            else:
+                _submit_live_pose(self, canonical)
         frame = max(float(self.vmd_start), float(frame))
         if self.last_vmd_frame is not None and frame < self.last_vmd_frame:
             self.solver.reset()
@@ -206,6 +504,14 @@ class Session:
         runtime = bpy.data.objects.get(self.runtime_name)
         if runtime is None:
             raise MMDIKRuntimeError("MMD IK Runtime Armature 已丢失")
+        if self.live:
+            canonical = bpy.data.objects.get(self.canonical_name)
+            if canonical is None:
+                raise MMDIKRuntimeError("MMD native 控制骨架已丢失")
+            if self.source_vmd and not self.pose_override and not self.action_input:
+                self.solver.end_live_input()
+            else:
+                _submit_live_pose(self, canonical)
         frame = max(float(self.vmd_start), float(frame))
         if self.last_vmd_frame is not None and frame < self.last_vmd_frame:
             self.solver.reset()
@@ -231,9 +537,9 @@ class Session:
 
 def start(root, pmx_path, vmd_path, blender_start=1, vmd_start=0):
     state = runtime_state(root)
-    runtime = runtime_armature(root, state) if state and state.get("enabled") else None
+    runtime = canonical_armature(root, state) if state and state.get("enabled") else None
     if runtime is None:
-        raise MMDIKRuntimeError("请先创建并启用 MMD IK 兼容骨架")
+        raise MMDIKRuntimeError("请先启用 MMD IK 兼容")
     pmx = Path(bpy.path.abspath(str(pmx_path)))
     vmd = Path(bpy.path.abspath(str(vmd_path)))
     if not pmx.is_file():
@@ -249,8 +555,6 @@ def start(root, pmx_path, vmd_path, blender_start=1, vmd_start=0):
         raise MMDIKRuntimeError("PMX 骨名与 Runtime Armature 完全不匹配")
     scale = _infer_scale(mapping, solver)
     original_action = runtime.animation_data.action if runtime.animation_data else None
-    if runtime.animation_data is not None:
-        runtime.animation_data.action = None
     session = Session(
         root.name,
         runtime.name,
@@ -271,10 +575,69 @@ def start(root, pmx_path, vmd_path, blender_start=1, vmd_start=0):
         for alias in _pose_bone_name(pose_bone):
             session.bone_indices.setdefault(alias, index)
     _SESSIONS[root.name] = session
-    root[ACTIVE_KEY] = True
     root["spx_mmd_ik_source_pmx"] = str(pmx)
     session.evaluate_to(bpy.context.scene)
     bpy.context.view_layer.update()
+    return matched, solver.count, scale
+
+
+def start_live(root, input_basis=None):
+    state = runtime_state(root)
+    canonical = canonical_armature(root, state) if state else None
+    if not state or not state.get("enabled") or canonical is None:
+        raise MMDIKRuntimeError("请先启用 MMD IK 兼容")
+    stop(root)
+    source_path = Path(str(root.get("spx_mmd_ik_source_pmx", "")))
+    action = canonical.animation_data.action if canonical.animation_data else None
+    source_vmd = Path(str(action.get(SOURCE_VMD_KEY, ""))) if action is not None else Path()
+    has_source_vmd = bool(action is not None and source_vmd.is_file())
+    if source_path.is_file():
+        solver = NativeBoneSolver(source_path, source_vmd if has_source_vmd else None)
+    else:
+        solver = _export_current_pmx(root, source_vmd if has_source_vmd else None)
+    mapping = _bone_map(canonical, solver)
+    matched = sum(item is not None for item in mapping)
+    if not matched:
+        solver.close()
+        raise MMDIKRuntimeError("当前模型与 native PMX 骨名完全不匹配")
+    scale = _infer_scale(mapping, solver)
+    muted = []
+    session = Session(
+        root_name=root.name,
+        runtime_name=canonical.name,
+        pmx_path=str(source_path) if source_path.is_file() else "<current model>",
+        vmd_path=str(source_vmd) if has_source_vmd else "",
+        blender_start=int(action.get(SOURCE_FRAME_KEY, 1)) if has_source_vmd else 1,
+        vmd_start=0,
+        solver=solver,
+        mapping=mapping,
+        scale=scale,
+        muted_constraints=muted,
+        original_action=None,
+        canonical_name=canonical.name,
+        live=True,
+        source_vmd=has_source_vmd,
+        action_input=bool(state.get("action_input", False)),
+        input_basis={
+            name: matrix.copy()
+            for name, matrix in (
+                input_basis.items()
+                if input_basis is not None
+                else (
+                    (pose_bone.name, pose_bone.matrix_basis)
+                    for pose_bone in canonical.pose.bones
+                )
+            )
+        },
+    )
+    for index, pose_bone in enumerate(mapping):
+        if pose_bone is None:
+            continue
+        session.bone_indices[pose_bone.name] = index
+        for alias in _pose_bone_name(pose_bone):
+            session.bone_indices.setdefault(alias, index)
+    _SESSIONS[root.name] = session
+    session.evaluate_live(bpy.context.scene)
     return matched, solver.count, scale
 
 
@@ -284,11 +647,96 @@ def stop(root):
     session = _SESSIONS.pop(root.name, None)
     if session is not None:
         session.close()
-    root[ACTIVE_KEY] = False
 
 
 def is_active(root):
     return root is not None and root.name in _SESSIONS
+
+
+def enable_action_input(root):
+    session = _SESSIONS.get(root.name) if root is not None else None
+    if session is None or not session.live:
+        return False
+    session.action_input = True
+    set_action_input(root, True)
+    return True
+
+
+def replay_live(root, scene=None):
+    session = _SESSIONS.get(root.name) if root is not None else None
+    if session is None or not session.live:
+        return False
+    session.restore_input()
+    session.last_vmd_frame = None
+    session.pose_override = False
+    session.input_signature = ()
+    session.evaluate_live(scene or bpy.context.scene)
+    return True
+
+
+def capture_live_input(root):
+    session = _SESSIONS.get(root.name) if root is not None else None
+    if session is None or not session.live:
+        return None
+    return {name: matrix.copy() for name, matrix in session.input_basis.items()}
+
+
+def restore_live_input(root, snapshot):
+    session = _SESSIONS.get(root.name) if root is not None else None
+    canonical = bpy.data.objects.get(session.canonical_name) if session and session.live else None
+    if canonical is None or snapshot is None:
+        return False
+    session.input_basis = {name: matrix.copy() for name, matrix in snapshot.items()}
+    for name, matrix in snapshot.items():
+        pose_bone = canonical.pose.bones.get(name)
+        if pose_bone is not None:
+            pose_bone.matrix_basis = matrix
+    canonical.update_tag(refresh={"OBJECT"})
+    return True
+
+
+def detach_all_sessions():
+    for root_name, session in tuple(_SESSIONS.items()):
+        if session.live:
+            session.restore_input()
+        session.solver.close()
+        _SESSIONS.pop(root_name, None)
+
+
+def rebuild_enabled_sessions():
+    rebuilt = []
+    for root in tuple(bpy.data.objects):
+        if getattr(root, "mmd_type", "") != "ROOT":
+            continue
+        state = runtime_state(root)
+        if not state or not state.get("enabled") or root.name in _SESSIONS:
+            continue
+        try:
+            refresh_bindings(root)
+            start_live(root)
+        except Exception as error:
+            print(f"MMD native live evaluator rebuild failed for {root.name}: {error}")
+            continue
+        rebuilt.append(root.name)
+    return tuple(rebuilt)
+
+
+def suspend_live(root):
+    session = _SESSIONS.get(root.name) if root is not None else None
+    if session is None or not session.live:
+        return False
+    session.suspended = True
+    session.restore_input()
+    return True
+
+
+def resume_live(root):
+    session = _SESSIONS.get(root.name) if root is not None else None
+    if session is None or not session.live:
+        return False
+    session.suspended = False
+    replay_live(root)
+    return True
 
 
 def capture_physics_bindings(root, preview_session):
@@ -455,6 +903,9 @@ def _frame_change_pre(scene, _depsgraph=None):
         if root is None:
             stale.append(root_name)
             continue
+        if session.live:
+            session.restore_input(update=False)
+            continue
         try:
             session.evaluate_to(scene)
         except Exception as error:
@@ -466,14 +917,66 @@ def _frame_change_pre(scene, _depsgraph=None):
             session.close()
 
 
+@persistent
+def _frame_change_post(scene, _depsgraph=None):
+    for root_name, session in tuple(_SESSIONS.items()):
+        if not session.live or session.updating or session.suspended:
+            continue
+        try:
+            session.evaluate_live(scene)
+        except Exception as error:
+            print(f"MMD native live evaluator stopped for {root_name}: {error}")
+            _SESSIONS.pop(root_name, None)
+            session.close()
+
+
+@persistent
+def _depsgraph_update_post(scene, _depsgraph=None):
+    stale = []
+    for root_name, session in tuple(_SESSIONS.items()):
+        if not session.live or session.updating or session.suspended:
+            continue
+        root = bpy.data.objects.get(root_name)
+        canonical = bpy.data.objects.get(session.canonical_name)
+        if root is None or canonical is None:
+            stale.append(root_name)
+            continue
+        signature = _live_input_signature(canonical, scene)
+        action_signature = _action_frame_signature(canonical, scene.frame_current)
+        action_changed = action_signature != session.action_signature
+        if action_changed:
+            session.repair_current_action_keys(canonical, scene.frame_current)
+            session.action_input = True
+            set_action_input(root, True)
+        if signature == session.input_signature and not action_changed:
+            continue
+        try:
+            session.evaluate_live(scene)
+        except Exception as error:
+            print(f"MMD native live evaluator stopped for {root_name}: {error}")
+            stale.append(root_name)
+    for root_name in stale:
+        session = _SESSIONS.pop(root_name, None)
+        if session is not None:
+            session.close()
+
+
 def install_handler():
     if _frame_change_pre not in bpy.app.handlers.frame_change_pre:
         bpy.app.handlers.frame_change_pre.append(_frame_change_pre)
+    if _depsgraph_update_post not in bpy.app.handlers.depsgraph_update_post:
+        bpy.app.handlers.depsgraph_update_post.append(_depsgraph_update_post)
+    if _frame_change_post not in bpy.app.handlers.frame_change_post:
+        bpy.app.handlers.frame_change_post.append(_frame_change_post)
 
 
 def uninstall_handler():
     if _frame_change_pre in bpy.app.handlers.frame_change_pre:
         bpy.app.handlers.frame_change_pre.remove(_frame_change_pre)
+    if _depsgraph_update_post in bpy.app.handlers.depsgraph_update_post:
+        bpy.app.handlers.depsgraph_update_post.remove(_depsgraph_update_post)
+    if _frame_change_post in bpy.app.handlers.frame_change_post:
+        bpy.app.handlers.frame_change_post.remove(_frame_change_post)
     for root_name in tuple(_SESSIONS):
         root = bpy.data.objects.get(root_name)
         if root is not None:

@@ -44,13 +44,16 @@ class PreviewTimeDriver:
                 return StepDecision(0.0, True, "timeline-rewind")
             if scene_delta <= 1.0e-9:
                 return StepDecision(0.0, False, "timeline-idle")
-            return StepDecision(scene_delta, False, "timeline")
+            return StepDecision(self._clamp_step(scene_delta), False, "timeline")
 
         if abs(scene_delta) > 1.0e-9:
             return StepDecision(0.0, True, "timeline-seek")
         if wall_delta < 0.0:
             return StepDecision(0.0, True, "clock-rewind")
-        return StepDecision(wall_delta, False, "wall")
+        return StepDecision(self._clamp_step(wall_delta), False, "wall")
+
+    def _clamp_step(self, value):
+        return min(value, self.fixed_step_seconds * self.max_substeps)
 
     def _remember(self, scene_seconds, wall_seconds, playing):
         self.last_scene_seconds = scene_seconds

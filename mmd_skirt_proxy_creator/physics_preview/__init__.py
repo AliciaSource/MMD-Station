@@ -1,5 +1,6 @@
 import bpy
 
+from .ffi import preload_libraries
 from .runtime import stop_preview, unregister_model_id_service
 from .ui import CLASSES, draw_preview, register_settings
 
@@ -18,6 +19,7 @@ def unregister_runtime():
 __all__ = (
     "CLASSES",
     "draw_preview",
+    "preload_libraries",
     "register_settings",
     "unregister_runtime",
 )

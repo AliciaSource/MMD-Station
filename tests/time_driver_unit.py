@@ -132,6 +132,13 @@ with tempfile.TemporaryDirectory(prefix="mmd-time-driver-") as temporary_directo
         for actual, expected in zip(manual_steps, (0.016, 0.033, 0.008))
     )
 
+    stalled = driver.sample(
+        scene_seconds=10.0 / 30.0,
+        wall_seconds=102.187,
+        playing=False,
+    )
+    assert abs(stalled.step_seconds - 10.0 / 60.0) < 1.0e-12
+
     seek = driver.sample(
         scene_seconds=2.0 / 30.0,
         wall_seconds=100.200,

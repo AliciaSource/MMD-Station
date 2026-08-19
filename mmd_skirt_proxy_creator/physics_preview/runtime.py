@@ -2,6 +2,7 @@ import concurrent.futures
 import ctypes
 import math
 import os
+import struct
 import time
 import traceback
 from collections import Counter, defaultdict, deque
@@ -209,7 +210,7 @@ def _resolve_hierarchical_bone_targets(armature, animation_pose, physics_targets
             mode, physics_matrix = target
             if mode == 2:
                 inherited = Matrix.LocRotScale(
-                    inherited.translation,
+                    physics_matrix.translation,
                     physics_matrix.to_quaternion(),
                     inherited.to_scale(),
                 )
@@ -254,18 +255,167 @@ def _mmd_physics_name(obj, attribute):
     return value.name_j or value.name_e or obj.name
 
 
+def _read_pmx_physics(path):
+    data = memoryview(Path(path).read_bytes())
+    offset = 0
+
+    def read(format_string):
+        nonlocal offset
+        values = struct.unpack_from("<" + format_string, data, offset)
+        offset += struct.calcsize("<" + format_string)
+        return values[0] if len(values) == 1 else values
+
+    def skip(size):
+        nonlocal offset
+        offset += size
+        if offset > len(data):
+            raise ValueError("PMX data is truncated")
+
+    def text():
+        nonlocal offset
+        size = read("i")
+        raw = bytes(data[offset:offset + size])
+        offset += size
+        return raw.decode(encoding, errors="replace")
+
+    if bytes(data[:4]) != b"PMX ":
+        raise ValueError("Not a PMX file")
+    offset = 8
+    header_size = read("B")
+    header = bytes(data[offset:offset + header_size])
+    skip(header_size)
+    if len(header) < 8:
+        raise ValueError("Invalid PMX header")
+    encoding = "utf-16-le" if header[0] == 0 else "utf-8"
+    additional_uvs = header[1]
+    vertex_index_size = header[2]
+    texture_index_size = header[3]
+    material_index_size = header[4]
+    bone_index_size = header[5]
+    morph_index_size = header[6]
+    rigid_index_size = header[7]
+
+    model_name = text()
+    text()
+    text()
+    text()
+
+    for _index in range(read("i")):
+        skip(32 + additional_uvs * 16)
+        deform = read("B")
+        if deform == 0:
+            skip(bone_index_size)
+        elif deform == 1:
+            skip(bone_index_size * 2 + 4)
+        elif deform in {2, 4}:
+            skip(bone_index_size * 4 + 16)
+        elif deform == 3:
+            skip(bone_index_size * 2 + 40)
+        else:
+            raise ValueError(f"Unsupported PMX vertex deform {deform}")
+        skip(4)
+    skip(read("i") * vertex_index_size)
+    for _index in range(read("i")):
+        text()
+    for _index in range(read("i")):
+        text()
+        text()
+        skip(66 + texture_index_size * 2)
+        shared_toon = read("B")
+        skip(1 if shared_toon else texture_index_size)
+        text()
+        skip(4)
+    for _index in range(read("i")):
+        text()
+        text()
+        skip(12 + bone_index_size + 4)
+        flags = read("H")
+        skip(bone_index_size if flags & 0x0001 else 12)
+        if flags & (0x0100 | 0x0200):
+            skip(bone_index_size + 4)
+        if flags & 0x0400:
+            skip(12)
+        if flags & 0x0800:
+            skip(24)
+        if flags & 0x2000:
+            skip(4)
+        if flags & 0x0020:
+            skip(bone_index_size + 8)
+            for _link in range(read("i")):
+                skip(bone_index_size)
+                if read("B"):
+                    skip(24)
+    for _index in range(read("i")):
+        text()
+        text()
+        skip(1)
+        morph_type = read("B")
+        count = read("i")
+        sizes = {
+            0: morph_index_size + 4,
+            1: vertex_index_size + 12,
+            2: bone_index_size + 28,
+            3: vertex_index_size + 16,
+            4: vertex_index_size + 16,
+            5: vertex_index_size + 16,
+            6: vertex_index_size + 16,
+            7: vertex_index_size + 16,
+            8: material_index_size + 113,
+            9: morph_index_size + 4,
+            10: rigid_index_size + 25,
+        }
+        if morph_type not in sizes:
+            raise ValueError(f"Unsupported PMX morph type {morph_type}")
+        skip(count * sizes[morph_type])
+    for _index in range(read("i")):
+        text()
+        text()
+        skip(1)
+        for _element in range(read("i")):
+            kind = read("B")
+            skip(morph_index_size if kind else bone_index_size)
+
+    rigids = []
+    for _index in range(read("i")):
+        name = text()
+        text()
+        skip(bone_index_size + 4)
+        size = read("3f")
+        skip(12)
+        rotation = read("3f")
+        mass = read("f")
+        skip(17)
+        rigids.append((name, rotation, size, mass))
+
+    joints = []
+    for _index in range(read("i")):
+        name = text()
+        text()
+        skip(1 + rigid_index_size * 2 + 12)
+        rotation = read("3f")
+        minimum_location = read("3f")
+        maximum_location = read("3f")
+        minimum_rotation = read("3f")
+        maximum_rotation = read("3f")
+        spring_constant = read("3f")
+        spring_rotation_constant = read("3f")
+        joints.append((
+            name,
+            rotation,
+            minimum_location,
+            maximum_location,
+            minimum_rotation,
+            maximum_rotation,
+            spring_constant,
+            spring_rotation_constant,
+        ))
+    return model_name, rigids, joints
+
+
 def _load_source_physics(root, rigids, joints):
     import_folder = root.get("import_folder")
     if not import_folder:
         return None
-    try:
-        from bl_ext.blender_org.mmd_tools.core import pmx
-    except ImportError:
-        try:
-            from mmd_tools.core import pmx
-        except ImportError:
-            return None
-
     rigid_names = [_mmd_physics_name(obj, "mmd_rigid") for obj in rigids]
     joint_names = [_mmd_physics_name(obj, "mmd_joint") for obj in joints]
     required_rigids = Counter(rigid_names)
@@ -275,26 +425,7 @@ def _load_source_physics(root, rigids, joints):
         key = (str(path), path.stat().st_mtime_ns)
         source = _SOURCE_PHYSICS_CACHE.get(key)
         if source is None:
-            model = pmx.load(str(path))
-            source = (
-                model.name,
-                [(
-                    item.name,
-                    tuple(item.rotation),
-                    tuple(item.size),
-                    float(item.mass),
-                ) for item in model.rigids],
-                [(
-                    item.name,
-                    tuple(item.rotation),
-                    tuple(item.minimum_location),
-                    tuple(item.maximum_location),
-                    tuple(item.minimum_rotation),
-                    tuple(item.maximum_rotation),
-                    tuple(item.spring_constant),
-                    tuple(item.spring_rotation_constant),
-                ) for item in model.joints],
-            )
+            source = _read_pmx_physics(path)
             _SOURCE_PHYSICS_CACHE[key] = source
         model_name, source_rigids, source_joints = source
         source_rigid_counts = Counter(item[0] for item in source_rigids)
@@ -524,6 +655,12 @@ class PreviewSession:
             raise RuntimeError("所选 MMD 模型没有 Armature")
         self.armature_name = self.armature.name
         self.saved_root_matrix = root.matrix_world.copy()
+        root_pose_bone = self.armature.pose.bones.get("全ての親")
+        self.saved_global_bone_matrix = (
+            self.armature.matrix_world @ root_pose_bone.matrix
+            if root_pose_bone is not None
+            else None
+        )
         self.saved_pose_basis = {
             pose_bone.name: pose_bone.matrix_basis.copy()
             for pose_bone in self.armature.pose.bones
@@ -797,16 +934,14 @@ class PreviewSession:
             self.settings.preview_status = (
                 f"运行中：已自动重置物理 {self.auto_reset_count} 次"
             )
-        kinematic_bone_worlds = {}
+        kinematic_bone_poses = {}
         if self.solver_target == "MMD" and self.mmd_step_count >= 4:
             for index, rigid in enumerate(self.rigids):
                 if int(rigid.mmd_rigid.type) != 0:
                     continue
                 pose_bone = self.armature.pose.bones.get(rigid.mmd_rigid.bone)
                 if pose_bone is not None and index in self.bone_offsets:
-                    kinematic_bone_worlds[index] = (
-                        self.armature.matrix_world @ pose_bone.matrix
-                    )
+                    kinematic_bone_poses[index] = pose_bone.matrix.copy()
         for name, matrix_basis in self.saved_basis.items():
             pose_bone = self.armature.pose.bones.get(name)
             if pose_bone is not None:
@@ -820,18 +955,31 @@ class PreviewSession:
             pose_bone = self.armature.pose.bones.get(rigid.mmd_rigid.bone)
             if pose_bone is None or index not in self.bone_offsets:
                 continue
-            bone_world = kinematic_bone_worlds.get(
+            bone_pose = kinematic_bone_poses.get(
                 index,
-                self.armature.matrix_world @ pose_bone.matrix,
+                pose_bone.matrix,
             )
-            self.solver.set_bone_target(
-                self.body_offset + index,
-                _pmx_native_matrix_transform(
-                    bone_world,
-                    self.import_scale,
-                    library=self.library,
-                ),
+            bone_world = self.armature.matrix_world @ bone_pose
+            root_delta = self.root.matrix_world @ self.saved_root_matrix.inverted_safe()
+            root_pose_bone = self.armature.pose.bones.get("全ての親")
+            global_bone_delta = Matrix.Identity(4)
+            if root_pose_bone is not None and self.saved_global_bone_matrix is not None:
+                global_bone_delta = (
+                    self.armature.matrix_world @ root_pose_bone.matrix
+                    @ self.saved_global_bone_matrix.inverted_safe()
+                )
+            motion_delta = (
+                root_delta
+                if root_delta.translation.length > 1.0e-8
+                else global_bone_delta
             )
+            bone_world = motion_delta.inverted_safe() @ bone_world
+            target = _pmx_native_matrix_transform(
+                bone_world,
+                self.import_scale,
+                library=self.library,
+            )
+            self.solver.set_bone_target(self.body_offset + index, target)
 
     def step_solver(self):
         return self.world.step()
@@ -850,6 +998,19 @@ class PreviewSession:
             self.joint_offset:self.joint_offset + len(self.joints)
         ]
         armature_inverse = self.armature.matrix_world.inverted_safe()
+        root_delta = self.root.matrix_world @ self.saved_root_matrix.inverted_safe()
+        global_bone_delta = Matrix.Identity(4)
+        root_pose_bone = self.armature.pose.bones.get("全ての親")
+        if root_pose_bone is not None and self.saved_global_bone_matrix is not None:
+            global_bone_delta = (
+                self.armature.matrix_world @ root_pose_bone.matrix
+                @ self.saved_global_bone_matrix.inverted_safe()
+            )
+        motion_delta = (
+            root_delta
+            if root_delta.translation.length > 1.0e-8
+            else global_bone_delta
+        )
         bone_targets = {}
         for index, transform in enumerate(transforms):
             rigid = self.rigids[index]
@@ -859,6 +1020,16 @@ class PreviewSession:
                 Quaternion(rotation),
                 Vector((1.0, 1.0, 1.0)),
             )
+            rigid_world = motion_delta @ rigid_world
+            if int(rigid.mmd_rigid.type) == 0 and index in self.bone_offsets:
+                bone_name = rigid.mmd_rigid.bone
+                bone_pose = animation_pose.get(bone_name)
+                if bone_pose is not None:
+                    rigid_world = (
+                        self.armature.matrix_world
+                        @ bone_pose
+                        @ self.bone_offsets[index]
+                    )
             if int(rigid.mmd_rigid.type) == 0 or index not in self.bone_offsets:
                 if self.settings.preview_update_rigids:
                     scale = rigid.matrix_world.to_scale()
@@ -877,6 +1048,7 @@ class PreviewSession:
                 Quaternion(bone_rotation),
                 Vector((1.0, 1.0, 1.0)),
             )
+            bone_world = motion_delta @ bone_world
             if self.settings.preview_update_rigids:
                 scale = rigid.matrix_world.to_scale()
                 rigid.matrix_world = Matrix.LocRotScale(
@@ -898,6 +1070,7 @@ class PreviewSession:
                 (Vector(position_a) + Vector(position_b))
                 * (0.5 * self.import_scale)
             )
+            position = (motion_delta @ Vector((*position, 1.0))).to_3d()
             scale = joint.matrix_world.to_scale()
             joint.matrix_world = Matrix.LocRotScale(
                 position,
@@ -983,14 +1156,15 @@ class PreviewWorld:
         session.world = None
         session.solver = None
 
-    def reset(self):
+    def reset(self, prepared_session=None):
         bodies = []
         joints = []
         body_source_eulers = []
         joint_source_eulers = []
         for session in self.sessions:
-            session._restore_start_snapshot()
-            session.rebuild_descriptors()
+            if session is not prepared_session:
+                session._restore_start_snapshot()
+                session.rebuild_descriptors()
             session.body_offset = len(bodies)
             session.joint_offset = len(joints)
             bodies.extend(session.body_descs)
@@ -1042,6 +1216,10 @@ class PreviewWorld:
 
     def sample_time(self, wall_seconds):
         scene = self.sessions[0].scene
+        self.time_driver.max_substeps = max(
+            int(self.sessions[0].settings.preview_substeps),
+            1,
+        )
         decision = self.time_driver.sample(
             scene_seconds=_scene_time_seconds(scene),
             wall_seconds=wall_seconds,
@@ -1268,7 +1446,7 @@ def _start_preview(context, root):
         _ACTIVE_WORLDS[world_key] = world
     world.add(session)
     try:
-        world.reset()
+        world.reset(prepared_session=session)
     except Exception:
         world.remove(session)
         session.close(restore=True)

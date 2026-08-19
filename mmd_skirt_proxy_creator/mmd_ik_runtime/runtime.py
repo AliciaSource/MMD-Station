@@ -3,14 +3,31 @@ import json
 import uuid
 
 import bpy
-from mathutils import Matrix
+from bpy.props import StringProperty
 
 
 STATE_KEY = "spx_mmd_ik_runtime_state"
 RUNTIME_TAG = "spx_mmd_ik_runtime"
 MESH_SESSION_KEY = "spx_mmd_ik_session_id"
-SCHEMA = 1
-EXPORT_MATRIX_KEY = "spx_mmd_ik_export_matrix"
+OUTPUT_CONSTRAINT_NAME = ".MMD Native Output"
+SCHEMA = 2
+
+
+def register_state_property():
+    if not hasattr(bpy.types.Object, STATE_KEY):
+        setattr(
+            bpy.types.Object,
+            STATE_KEY,
+            StringProperty(
+                name="MMD IK internal state",
+                options={"HIDDEN"},
+            ),
+        )
+
+
+def unregister_state_property():
+    if hasattr(bpy.types.Object, STATE_KEY):
+        delattr(bpy.types.Object, STATE_KEY)
 
 
 class MMDIKRuntimeError(RuntimeError):
@@ -45,17 +62,54 @@ def resolve_root(context, requested=None):
     return root
 
 
-def _load_state(root):
+def _decode_state(root):
     raw = root.get(STATE_KEY, "")
     if not raw:
         return None
     try:
-        state = json.loads(str(raw))
+        return json.loads(str(raw))
     except (TypeError, ValueError) as error:
-        raise MMDIKRuntimeError("MMD IK Runtime 状态已损坏") from error
-    if state.get("schema") != SCHEMA:
-        raise MMDIKRuntimeError("MMD IK Runtime 状态版本不受支持")
-    return state
+        raise MMDIKRuntimeError("MMD IK 状态已损坏") from error
+
+
+def _remove_legacy_output(canonical):
+    for pose_bone in canonical.pose.bones:
+        for constraint in tuple(pose_bone.constraints):
+            if constraint.name == OUTPUT_CONSTRAINT_NAME:
+                pose_bone.constraints.remove(constraint)
+
+
+def _restore_constraint_mutes(canonical, state):
+    _remove_legacy_output(canonical)
+    for bone_name, constraint_name, previous in state.get("muted_constraints", []):
+        pose_bone = canonical.pose.bones.get(bone_name)
+        constraint = pose_bone.constraints.get(constraint_name) if pose_bone else None
+        if constraint is not None:
+            constraint.mute = bool(previous)
+
+
+def _load_state(root):
+    state = _decode_state(root)
+    if state is None:
+        return None
+    if state.get("schema") == SCHEMA:
+        return state
+    canonical = mmd_model_api().find_armature_object(root)
+    if canonical is None:
+        raise MMDIKRuntimeError("旧版 MMD IK 状态无法解析原骨架")
+    _restore_constraint_mutes(canonical, state)
+    runtime = bpy.data.objects.get(state.get("runtime_armature", ""))
+    if runtime is not None and runtime != canonical:
+        for mesh in mmd_model_api().iterate_mesh_objects(root):
+            for modifier in mesh.modifiers:
+                if modifier.type == "ARMATURE" and modifier.object == runtime:
+                    modifier.object = canonical
+        data = runtime.data
+        bpy.data.objects.remove(runtime, do_unlink=True)
+        if data.users == 0:
+            bpy.data.armatures.remove(data)
+    del root[STATE_KEY]
+    return None
 
 
 def _save_state(root, state):
@@ -66,14 +120,13 @@ def runtime_state(root):
     return _load_state(root)
 
 
-def runtime_armature(root, state=None):
-    state = state or _load_state(root)
+def set_action_input(root, enabled=True):
+    state = _load_state(root)
     if not state:
-        return None
-    obj = bpy.data.objects.get(state.get("runtime_armature", ""))
-    if obj is None or obj.type != "ARMATURE" or obj.get(RUNTIME_TAG) != state.get("session_id"):
-        return None
-    return obj
+        return False
+    state["action_input"] = bool(enabled)
+    _save_state(root, state)
+    return True
 
 
 def canonical_armature(root, state=None):
@@ -85,109 +138,57 @@ def canonical_armature(root, state=None):
     return mmd_model_api().find_armature_object(root)
 
 
-def _runtime_collection(scene):
-    name = "MMD IK Runtime"
-    collection = bpy.data.collections.get(name)
-    if collection is None:
-        collection = bpy.data.collections.new(name)
-        scene.collection.children.link(collection)
-    return collection
-
-
-def _remap_runtime_references(runtime, canonical):
-    for pose_bone in runtime.pose.bones:
-        for constraint in pose_bone.constraints:
-            if getattr(constraint, "target", None) == canonical:
-                constraint.target = runtime
-
-
-def _store_export_pose(runtime, canonical):
-    for source_bone in canonical.pose.bones:
-        runtime_bone = runtime.pose.bones.get(source_bone.name)
-        if runtime_bone is not None:
-            runtime_bone[EXPORT_MATRIX_KEY] = [value for row in source_bone.matrix for value in row]
-
-
-def _export_pose_matrix(runtime, bone_name):
-    bone = runtime.pose.bones.get(bone_name)
-    values = bone.get(EXPORT_MATRIX_KEY) if bone is not None else None
-    if values is None or len(values) != 16:
-        return None
-    return Matrix([values[index * 4 : index * 4 + 4] for index in range(4)])
+def runtime_armature(root, state=None):
+    return None
 
 
 def _iter_model_meshes(root):
     yield from mmd_model_api().iterate_mesh_objects(root)
 
 
-def _switch_modifiers(root, source_armature, target_armature, session_id, mark):
-    switched = []
-    for mesh in _iter_model_meshes(root):
-        for modifier in mesh.modifiers:
-            if modifier.type != "ARMATURE" or modifier.object != source_armature:
-                continue
-            modifier.object = target_armature
-            switched.append((mesh, modifier.name))
-        if mark and any(item[0] == mesh for item in switched):
-            mesh[MESH_SESSION_KEY] = session_id
-    return switched
+def _mute_constraints(canonical):
+    muted = []
+    _remove_legacy_output(canonical)
+    for pose_bone in canonical.pose.bones:
+        for constraint in pose_bone.constraints:
+            muted.append((pose_bone.name, constraint.name, bool(constraint.mute)))
+            constraint.mute = True
+    return muted
 
 
 def create_runtime(context, root):
     state = _load_state(root)
-    if state:
-        runtime = runtime_armature(root, state)
-        if runtime is None:
-            raise MMDIKRuntimeError("记录的 Runtime Armature 已丢失；请先复原运行状态")
-        count = refresh_bindings(root)
-        return runtime, count, False
-
-    canonical = mmd_model_api().find_armature_object(root)
+    canonical = canonical_armature(root, state)
     if canonical is None:
         raise MMDIKRuntimeError("MMD 模型中找不到 Armature")
-
-    session_id = uuid.uuid4().hex
-    runtime = canonical.copy()
-    runtime.data = canonical.data.copy()
-    runtime.name = f"{canonical.name}_MMD_IK_Runtime"
-    runtime.data.name = f"{canonical.data.name}_MMD_IK_Runtime"
-    runtime.parent = None
-    runtime.matrix_world = canonical.matrix_world.copy()
-    runtime[RUNTIME_TAG] = session_id
-    runtime["spx_mmd_ik_source_armature"] = canonical.name
-    _runtime_collection(context.scene).objects.link(runtime)
-    _remap_runtime_references(runtime, canonical)
-    _store_export_pose(runtime, canonical)
-
+    if state:
+        refresh_bindings(root)
+        return canonical, len(list(_iter_model_meshes(root))), False
     state = {
         "schema": SCHEMA,
-        "session_id": session_id,
+        "session_id": uuid.uuid4().hex,
         "canonical_armature": canonical.name,
-        "runtime_armature": runtime.name,
-        "canonical_hidden": bool(canonical.hide_get()),
         "enabled": True,
+        "binding_mode": "MEMORY_ONLY",
+        "action_input": False,
+        "muted_constraints": _mute_constraints(canonical),
     }
     _save_state(root, state)
-    switched = _switch_modifiers(root, canonical, runtime, session_id, True)
-    canonical.hide_set(True)
-    runtime.hide_set(False)
-    return runtime, len(switched), True
+    return canonical, len(list(_iter_model_meshes(root))), True
 
 
 def refresh_bindings(root):
     state = _load_state(root)
     if not state:
-        raise MMDIKRuntimeError("当前模型尚未创建 MMD IK Runtime")
+        raise MMDIKRuntimeError("当前模型尚未启用 MMD IK 兼容")
     canonical = canonical_armature(root, state)
-    runtime = runtime_armature(root, state)
-    if canonical is None or runtime is None:
-        raise MMDIKRuntimeError("Canonical 或 Runtime Armature 已丢失")
+    if canonical is None:
+        raise MMDIKRuntimeError("原 mmd_tools 骨架已丢失")
+    _restore_constraint_mutes(canonical, state)
     state["enabled"] = True
+    state["muted_constraints"] = _mute_constraints(canonical)
     _save_state(root, state)
-    switched = _switch_modifiers(root, canonical, runtime, state["session_id"], True)
-    canonical.hide_set(True)
-    runtime.hide_set(False)
-    return len(switched)
+    return len(list(_iter_model_meshes(root)))
 
 
 def restore_bindings(root, keep_runtime=True):
@@ -198,62 +199,34 @@ def restore_bindings(root, keep_runtime=True):
 
     stop_evaluator(root)
     canonical = canonical_armature(root, state)
-    runtime = runtime_armature(root, state)
     if canonical is None:
-        raise MMDIKRuntimeError("Canonical Armature 已丢失，无法复原")
-
-    switched = []
-    if runtime is not None:
-        switched = _switch_modifiers(root, runtime, canonical, state["session_id"], False)
-        runtime.hide_set(True)
-    for mesh in _iter_model_meshes(root):
-        if mesh.get(MESH_SESSION_KEY) == state["session_id"]:
-            del mesh[MESH_SESSION_KEY]
-    canonical.hide_set(bool(state.get("canonical_hidden", False)))
-    state["enabled"] = False
-    _save_state(root, state)
-
-    if not keep_runtime:
-        if runtime is not None:
-            runtime_data = runtime.data
-            bpy.data.objects.remove(runtime, do_unlink=True)
-            if runtime_data.users == 0:
-                bpy.data.armatures.remove(runtime_data)
+        raise MMDIKRuntimeError("原 mmd_tools 骨架已丢失，无法复原")
+    _restore_constraint_mutes(canonical, state)
+    canonical.update_tag(refresh={"OBJECT"})
+    bpy.context.view_layer.update()
+    if keep_runtime:
+        state["enabled"] = False
+        _save_state(root, state)
+    else:
         del root[STATE_KEY]
-    return len(switched)
+    return len(list(_iter_model_meshes(root)))
 
 
 def reenable_bindings(root):
-    state = _load_state(root)
-    if not state:
-        raise MMDIKRuntimeError("当前模型尚未创建 MMD IK Runtime")
     return refresh_bindings(root)
 
 
 def selected_armature(root):
-    state = _load_state(root)
-    if state and state.get("enabled"):
-        runtime = runtime_armature(root, state)
-        if runtime is not None:
-            return runtime
-    return canonical_armature(root, state)
+    return canonical_armature(root)
 
 
 def select_armature(root, armature):
-    from ..physics_preview.runtime import is_running as physics_is_running
-
-    if physics_is_running(root):
-        raise MMDIKRuntimeError("物理预览运行时不能切换 MMD IK 骨架；请先停止物理预览")
-    state = _load_state(root)
-    canonical = canonical_armature(root, state)
+    canonical = canonical_armature(root)
     if canonical is None:
         raise MMDIKRuntimeError("MMD 模型中找不到 mmd_tools 原骨架")
-    if armature == canonical:
-        return restore_bindings(root, keep_runtime=True) if state else 0
-    runtime = runtime_armature(root, state) if state else None
-    if runtime is not None and armature == runtime:
-        return reenable_bindings(root)
-    raise MMDIKRuntimeError("只能选择当前模型的 mmd_tools 原骨架或 MMD IK 兼容骨架")
+    if armature != canonical:
+        raise MMDIKRuntimeError("MMD IK 接管始终使用当前模型的 mmd_tools 原骨架")
+    return 0
 
 
 def export_switch_to_canonical(root):
@@ -261,69 +234,28 @@ def export_switch_to_canonical(root):
     if not state or not state.get("enabled"):
         return None
     canonical = canonical_armature(root, state)
-    runtime = runtime_armature(root, state)
-    if canonical is None or runtime is None:
-        raise MMDIKRuntimeError("导出保护无法解析 Canonical/Runtime Armature")
-    changed = _switch_modifiers(root, runtime, canonical, state["session_id"], False)
-    pose_position = canonical.data.pose_position
-    action = canonical.animation_data.action if canonical.animation_data is not None else None
-    scene_frame = bpy.context.scene.frame_current
-    pose_basis = {bone.name: bone.matrix_basis.copy() for bone in canonical.pose.bones}
-    constraint_influences = [
-        (constraint, constraint.influence)
-        for bone in canonical.pose.bones
-        for constraint in bone.constraints
-    ]
-    if canonical.animation_data is not None:
-        canonical.animation_data.action = None
-    canonical.data.pose_position = "POSE"
-    for constraint, _influence in constraint_influences:
-        constraint.influence = 0.0
+    if canonical is None:
+        raise MMDIKRuntimeError("导出保护无法解析原骨架")
+    from .evaluator import suspend_live
+
+    suspend_live(root)
+    _restore_constraint_mutes(canonical, state)
+    canonical.update_tag(refresh={"OBJECT"})
     bpy.context.view_layer.update()
-    for bone in canonical.pose.bones:
-        matrix = _export_pose_matrix(runtime, bone.name)
-        if matrix is not None:
-            bone.matrix = matrix
-    return {
-        "state": state,
-        "canonical": canonical,
-        "runtime": runtime,
-        "changed": [(mesh.name, modifier_name) for mesh, modifier_name in changed],
-        "pose_position": pose_position,
-        "action": action,
-        "scene_frame": scene_frame,
-        "pose_basis": pose_basis,
-        "constraint_influences": constraint_influences,
-    }
+    return {"state": state, "canonical": canonical}
 
 
 def export_restore_runtime(root, transaction):
     if not transaction:
         return 0
     state = _load_state(root)
-    if not state or state.get("session_id") != transaction["state"].get("session_id") or not state.get("enabled"):
+    if not state or state.get("session_id") != transaction["state"].get("session_id"):
         return 0
-    canonical = transaction["canonical"]
-    runtime = transaction["runtime"]
-    for constraint, influence in transaction["constraint_influences"]:
-        constraint.influence = influence
-    for bone_name, matrix_basis in transaction["pose_basis"].items():
-        bone = canonical.pose.bones.get(bone_name)
-        if bone is not None:
-            bone.matrix_basis = matrix_basis
-    if canonical.animation_data is not None:
-        canonical.animation_data.action = transaction["action"]
-    canonical.data.pose_position = transaction["pose_position"]
-    bpy.context.scene.frame_set(transaction["scene_frame"])
-    bpy.context.view_layer.update()
-    restored = 0
-    for mesh_name, modifier_name in transaction["changed"]:
-        mesh = bpy.data.objects.get(mesh_name)
-        if mesh is None:
-            continue
-        modifier = mesh.modifiers.get(modifier_name)
-        if modifier is not None and modifier.type == "ARMATURE" and modifier.object == canonical:
-            modifier.object = runtime
-            mesh[MESH_SESSION_KEY] = state["session_id"]
-            restored += 1
-    return restored
+    canonical = canonical_armature(root, state)
+    state["muted_constraints"] = _mute_constraints(canonical)
+    state["enabled"] = True
+    _save_state(root, state)
+    from .evaluator import resume_live
+
+    resume_live(root)
+    return len(list(_iter_model_meshes(root)))

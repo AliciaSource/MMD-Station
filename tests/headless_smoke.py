@@ -576,9 +576,9 @@ bpy.context.view_layer.update()
 unrelated_matrix = unrelated_rigid.matrix_world.copy()
 preview_library = SolverLibrary(target="MMD")
 pmx_preview_library = SolverLibrary(target="PMX")
-assert preview_library.dll.mmd_solver_abi_version() == ABI_VERSION
 assert library_path("MMD").name == "mmd_physics_solver_mmd.dll"
 assert library_path("PMX").name == "mmd_physics_solver.dll"
+assert preview_library.dll.mmd_solver_abi_version() == ABI_VERSION
 assert pmx_preview_library.dll.mmd_solver_abi_version() == ABI_VERSION
 settings.preview_frequency = 60
 settings.preview_substeps = 2
@@ -718,6 +718,13 @@ def assert_preview_alignment(session):
     for index, rigid in enumerate(session.rigids):
         body_position, _body_rotation = transform_to_components(body_transforms[index])
         expected_body_position = Vector(body_position) * session.import_scale
+        pose_bone = session.armature.pose.bones.get(rigid.mmd_rigid.bone)
+        if int(rigid.mmd_rigid.type) == 0 and index in session.bone_offsets and pose_bone is not None:
+            expected_body_position = (
+                session.armature.matrix_world
+                @ pose_bone.matrix
+                @ session.bone_offsets[index]
+            ).translation
         assert (rigid.matrix_world.translation - expected_body_position).length < 1.0e-6
         if session.bone_drivers.get(rigid.mmd_rigid.bone) != index:
             continue
@@ -727,6 +734,8 @@ def assert_preview_alignment(session):
         bone_position, bone_rotation = transform_to_components(bone_transforms[index])
         bone_world = session.armature.matrix_world @ pose_bone.matrix
         if int(rigid.mmd_rigid.type) == 2:
+            expected_bone_position = Vector(bone_position) * session.import_scale
+            assert (bone_world.translation - expected_bone_position).length < 1.0e-5
             expected_rotation = Quaternion(bone_rotation)
             rotation_error = bone_world.to_quaternion().rotation_difference(expected_rotation).angle
             rotation_error = min(rotation_error, abs(math.tau - rotation_error))
@@ -734,16 +743,6 @@ def assert_preview_alignment(session):
         else:
             expected_bone_position = Vector(bone_position) * session.import_scale
             assert (bone_world.translation - expected_bone_position).length < 1.0e-5
-    for pose_bone in generated_bones:
-        parent = pose_bone.parent
-        if parent is None or parent.name not in session.bone_drivers:
-            continue
-        driver = session.rigids[session.bone_drivers[pose_bone.name]]
-        parent_driver = session.rigids[session.bone_drivers[parent.name]]
-        if int(driver.mmd_rigid.type) != 2 or int(parent_driver.mmd_rigid.type) != 2:
-            continue
-        parent_tail = parent.matrix @ Vector((0.0, parent.length, 0.0))
-        assert (pose_bone.matrix.translation - parent_tail).length < 1.0e-5
     for joint, state in zip(session.joints, session.solver.joint_states()):
         position_a, _rotation_a = transform_to_components(state.frame_a)
         position_b, _rotation_b = transform_to_components(state.frame_b)
@@ -1576,6 +1575,19 @@ assert sum(
 assert any(name == "preview_frequency" for name, _index, _text in preview_probe.records)
 assert any(name == "preview_substeps" for name, _index, _text in preview_probe.records)
 assert any(name == "preview_gravity" for name, _index, _text in preview_probe.records)
+assert sum(
+    name == "preview_solver_target"
+    for name, _index, _text in preview_probe.records
+) == 1
+assert next(
+    index
+    for index, (name, _item_index, _text) in enumerate(preview_probe.records)
+    if name == "preview_solver_target"
+) < next(
+    index
+    for index, (name, _item_index, _text) in enumerate(preview_probe.records)
+    if name == "preview_frequency"
+)
 assert "surface_proxy.start_mmd_physics_preview" in preview_probe.operators
 assert "surface_proxy.renumber_mmd_physics_preview_models" in preview_probe.operators
 assert preview_probe.operators.count("surface_proxy.reset_all_mmd_physics_previews") == 1
@@ -1610,6 +1622,12 @@ try:
     ]
     assert interaction_states and not any(interaction_states)
     assert scale_states and all(scale_states)
+    target_states = [
+        enabled
+        for name, enabled in active_preview_probe.prop_states
+        if name == "preview_solver_target"
+    ]
+    assert target_states == [False]
 finally:
     preview_ui.active_session_info = original_active_session_info
     preview_ui.is_running = original_preview_is_running
