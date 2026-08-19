@@ -1,5 +1,11 @@
 # Development Log
 
+## 2026-08-19 - 冻结 V0.1.8 物理预览基线
+
+- 放弃上一轮未能消除刚体/骨骼追踪漂移的工作树；原错误工作树已完整保存在 `D:\MOD\BlenderAddonProjects\_recovery\MMD-Skirt-Proxy-Creator-error-20260819-121443`，并另存活动目录副本 `MMD-Skirt-Proxy-Creator-error-live-20260819-121804`，未删除。
+- 从 `_archive\zip-packages\MMD-Skirt-Proxy-Creator-V0.1.8.zip` 恢复插件源码、MMD IK runtime 与 PMX/MMD physics DLL；`native/` 与 `tests/` 使用干净的仓库基线补回。当前目标是先验证“无漂移但 `全ての親` 不能移动”的旧边界，确认前不修改生产代码、不递增版本、不打包、不 push。
+- 真实 Blender 4.4 Junction 仍指向本项目 `mmd_skirt_proxy_creator`；本条只记录恢复动作，未宣称视口物理行为已验收。
+
 ## 2026-08-17 - MMD 9.32 独立 DLL 与双目标预览选择器
 
 - 保留 `native/mmd_physics_solver/` 与 `mmd_physics_solver.dll` 作为既有 PMX Editor/PmxNLib 对齐实现，新增完全独立的 `native/mmd_physics_solver_mmd/` 与 `mmd_physics_solver_mmd.dll`。Blender 物理预览面板新增 `MMD 本体 / PMX Editor` 选择器，默认 `MMD 本体`；运行期间禁止切换，world cache 同时纳入对齐目标，避免两个 ABI 相同但语义不同的 DLL 共享 solver。

@@ -1,7 +1,7 @@
 bl_info = {
     "name": "MMD Skirt Proxy Creator",
     "author": "MMD Skirt Proxy Creator contributors",
-    "version": (0, 1, 7),
+    "version": (0, 1, 8),
     "blender": (4, 4, 0),
     "location": "View3D > Sidebar > MMD代理",
     "description": "Create and edit fitted skirt proxy surfaces with matching bone columns",
@@ -55,6 +55,11 @@ from .physics_preview import unregister_runtime as unregister_preview_runtime
 from .bone_physics_creator import CLASSES as BONE_PHYSICS_CREATOR_CLASSES
 from .bone_physics_creator import register_settings as register_bone_physics_creator_settings
 from .mmd_ordering import CLASSES as MMD_ORDERING_CLASSES
+from .mmd_ik_runtime import CLASSES as MMD_IK_RUNTIME_CLASSES
+from .mmd_ik_runtime import draw as draw_mmd_ik_runtime
+from .mmd_ik_runtime import register_services as register_mmd_ik_runtime_services
+from .mmd_ik_runtime import register_settings as register_mmd_ik_runtime_settings
+from .mmd_ik_runtime import unregister_services as unregister_mmd_ik_runtime_services
 
 def _armature_poll(_self, obj):
     return obj is not None and obj.type == "ARMATURE"
@@ -66,6 +71,7 @@ class SPX_Settings(PropertyGroup):
             ("PROXY", "代理创建", "创建和编辑裙面代理、骨骼、刚体与 Joint"),
             ("BROWSER", "MMD 查看器", "查看和编辑 MMD 骨骼、刚体与 Joint"),
             ("PREVIEW", "物理预览", "使用 Rust DLL 预览 MMD 物理"),
+            ("IK", "MMD IK", "创建不影响 PMX 再导出的 MMD 兼容 IK Runtime"),
         ),
         default="PROXY",
     )
@@ -1061,8 +1067,10 @@ def draw_workspace(layout, context):
         draw_physics_settings(layout, settings, context)
     elif settings.workspace_tab == "BROWSER":
         draw_browser(layout, settings)
-    else:
+    elif settings.workspace_tab == "PREVIEW":
         draw_preview(layout, settings)
+    else:
+        draw_mmd_ik_runtime(layout, settings, context)
 
 
 class SPX_PT_SurfaceProxyCreator(Panel):
@@ -1085,6 +1093,7 @@ CLASSES = (
     *BONE_PHYSICS_CREATOR_CLASSES,
     *MMD_ORDERING_CLASSES,
     *PHYSICS_PREVIEW_CLASSES,
+    *MMD_IK_RUNTIME_CLASSES,
     SPX_OT_RestoreProxyFromCheckedBones,
     SPX_OT_CreateSkirtProxy,
     SPX_PT_SurfaceProxyCreator,
@@ -1095,15 +1104,18 @@ def register():
     register_settings(SPX_Settings)
     register_preview_settings(SPX_Settings)
     register_bone_physics_creator_settings(SPX_Settings)
+    register_mmd_ik_runtime_settings(SPX_Settings)
     for cls in CLASSES:
         bpy.utils.register_class(cls)
     bpy.types.Scene.surface_proxy_creator = PointerProperty(type=SPX_Settings)
     register_sync_services()
     register_browser_auto_refresh()
     register_browser_context_menu()
+    register_mmd_ik_runtime_services()
 
 
 def unregister():
+    unregister_mmd_ik_runtime_services()
     unregister_preview_runtime()
     unregister_browser_context_menu()
     unregister_browser_auto_refresh()
