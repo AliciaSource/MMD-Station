@@ -229,6 +229,7 @@ struct BodyBinding {
     initial_body: Transform,
     initial_animation_bone: Transform,
     animation_bone: Transform,
+    bone_rotation_overridden: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -306,6 +307,7 @@ impl Solver {
                 initial_body: transform,
                 initial_animation_bone: bone_transform,
                 animation_bone: bone_transform,
+                bone_rotation_overridden: false,
             });
         }
         let mut joints = Vec::with_capacity(joint_descs.len());
@@ -387,8 +389,8 @@ impl Solver {
             .bodies
             .get(index)
             .ok_or_else(|| format!("rigid body {} is out of range", index))?;
-        let translation_only = target.rotation.array()
-            == binding.initial_animation_bone.rotation.array();
+        let translation_only =
+            target.rotation.array() == binding.initial_animation_bone.rotation.array();
         let body_target = if translation_only {
             Transform {
                 position: target.position.add(
@@ -403,12 +405,9 @@ impl Solver {
         } else {
             target.compose(binding.body_from_bone)
         };
-        if translation_only {
+        if translation_only && !binding.bone_rotation_overridden {
             self.world
-                .set_rigidbody_position(
-                    handle,
-                    body_target.position.scaled_array(self.world_scale),
-                )
+                .set_rigidbody_position(handle, body_target.position.scaled_array(self.world_scale))
                 .map_err(|error| error.to_string())
         } else {
             self.world
@@ -424,7 +423,9 @@ impl Solver {
                         ],
                     },
                 )
-                .map_err(|error| error.to_string())
+                .map_err(|error| error.to_string())?;
+            binding.bone_rotation_overridden = !translation_only;
+            Ok(())
         }
     }
 
@@ -893,6 +894,41 @@ mod tests {
         let mut output = [Transform::default()];
         solver.transforms(&mut output).unwrap();
         assert_eq!(output[0].position.array(), target.position.array());
+    }
+
+    #[test]
+    fn canceled_static_bone_rotation_restores_initial_body_rotation() {
+        let body = BodyDesc {
+            mode: 0,
+            shape: 0,
+            has_bone: 1,
+            size: Vec3 {
+                x: 0.2,
+                y: 0.2,
+                z: 0.2,
+            },
+            ..BodyDesc::default()
+        };
+        let mut solver = Solver::new_with_world_scale(&[body], &[], 1.0).unwrap();
+        solver
+            .set_bone_target(
+                0,
+                Transform {
+                    position: Vec3::default(),
+                    rotation: Quat {
+                        x: 0.0,
+                        y: 0.0,
+                        z: 0.24740396,
+                        w: 0.9689124,
+                    },
+                },
+            )
+            .unwrap();
+        solver.set_bone_target(0, Transform::default()).unwrap();
+
+        let mut output = [Transform::default()];
+        solver.transforms(&mut output).unwrap();
+        assert_eq!(output[0].rotation.array(), Quat::default().array());
     }
 
     #[test]

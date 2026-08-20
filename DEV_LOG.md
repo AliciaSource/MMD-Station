@@ -1,5 +1,12 @@
 # Development Log
 
+## 2026-08-20 - PMX DLL 静态刚体旋转取消完整复位
+
+- 修复 PMX DLL 中 0 型刚体的骨骼旋转取消路径。旧实现把“目标旋转等于启动旋转”一律当作纯平移，只调用 position-only setter；因此 `足D.L` 旋转后右键取消时，位置回到初始值，但 Bullet 中上一次写入的刚体旋转被保留。
+- `BodyBinding` 现在只记录该刚体是否曾被骨骼旋转覆盖。正常纯平移继续走原 position-only 路径，保持既有 PMX root-motion bit-exact 行为；仅在旋转目标返回启动旋转的那个状态转换中写回完整初始刚体 transform，然后清除标记。未修改 Blender adapter、MMD IK、MMD DLL 或保护骨骼逻辑。
+- 新增 Rust 回归 `canceled_static_bone_rotation_restores_initial_body_rotation`，并确认修复前失败、修复后与原 `translated_static_body_survives_the_next_step` 一起通过；VS2013 RTM LTCG release 全套 `12/12` tests 通过。真实 `07.blend` 中 `足D.L` 绑定的 `001_左足`、`002_左足2` 均先产生约 `0.5 rad` 旋转，取消后 rotation/position error 均为 `0`；`MMD_07_ROOT_MOTION_REGRESSION_OK solver=PMX ik=False` 通过。
+- 仅重建并安装 `mmd_physics_solver.dll`，SHA256 由 `A00D61A22C219EC915A564C35D6358E85F3E01962AC5E2F431EFB55B1F36E0CD` 变为 `7BDC9006186D8AE92ADD80087664521B8493C629A9ABC40EACC07A036B416CC0`。`mmd_physics_solver_mmd.dll` 未修改，SHA256 保持 `73E19B4D1D407594391B8C2010CF58B6F713779F9EF4FA739DD99E8F6E801375`。继续使用真实 Blender 4.4 源码 Junction；未递增版本、未打包、未移动基线标签、未 push。
+
 ## 2026-08-20 - 将 MMD IK 物理桥接保护骨骼从全ての親转移到操作中心
 
 - 以冻结基线 `fe7bf5d` 为开发起点，仅修改 `mmd_ik_runtime/physics_bridge.py` 中 MMD IK 求值前后的单骨骼矩阵保存/恢复对象：由 `全ての親` 改为 `操作中心`。
