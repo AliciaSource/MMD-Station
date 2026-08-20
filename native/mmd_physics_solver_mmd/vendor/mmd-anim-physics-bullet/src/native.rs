@@ -425,6 +425,23 @@ impl BulletWorld {
         })
     }
 
+    pub fn apply_world_delta(
+        &mut self,
+        first_index: usize,
+        count: usize,
+        transform: Transform,
+    ) -> Result<(), BulletError> {
+        check(unsafe {
+            ffi::mmd_anim_bullet_world_apply_world_delta(
+                self.raw.as_ptr(),
+                first_index as i32,
+                count as i32,
+                transform.position.as_ptr(),
+                transform.rotation_xyzw.as_ptr(),
+            )
+        })
+    }
+
     pub fn set_rigidbody_motion_state_rotation(
         &mut self,
         handle: RigidBodyHandle,
@@ -642,6 +659,13 @@ mod ffi {
             world: *mut World,
             index: i32,
             position: *const f32,
+        ) -> i32;
+        pub fn mmd_anim_bullet_world_apply_world_delta(
+            world: *mut World,
+            first_index: i32,
+            count: i32,
+            position: *const f32,
+            rotation_xyzw: *const f32,
         ) -> i32;
         pub fn mmd_anim_bullet_world_set_rigidbody_motion_state_rotation(
             world: *mut World,

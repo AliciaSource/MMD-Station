@@ -719,12 +719,6 @@ def assert_preview_alignment(session):
         body_position, _body_rotation = transform_to_components(body_transforms[index])
         expected_body_position = Vector(body_position) * session.import_scale
         pose_bone = session.armature.pose.bones.get(rigid.mmd_rigid.bone)
-        if int(rigid.mmd_rigid.type) == 0 and index in session.bone_offsets and pose_bone is not None:
-            expected_body_position = (
-                session.armature.matrix_world
-                @ pose_bone.matrix
-                @ session.bone_offsets[index]
-            ).translation
         assert (rigid.matrix_world.translation - expected_body_position).length < 1.0e-6
         if session.bone_drivers.get(rigid.mmd_rigid.bone) != index:
             continue

@@ -1,6 +1,6 @@
 use mmd_anim_physics_bullet::{
     BulletWorld, RigidBodyDesc as BulletBodyDesc, RigidBodyHandle, RigidBodyShape,
-    SixDofSpringJointDesc, quaternion_rotation_yaw_pitch_roll,
+    SixDofSpringJointDesc, Transform as BulletTransform, quaternion_rotation_yaw_pitch_roll,
 };
 use std::ffi::c_void;
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -490,6 +490,25 @@ impl Solver {
         }
     }
 
+    fn apply_world_delta(
+        &mut self,
+        first_index: usize,
+        count: usize,
+        delta: Transform,
+    ) -> Result<(), String> {
+        let delta = delta.mmd_basis();
+        self.world
+            .apply_world_delta(
+                first_index,
+                count,
+                BulletTransform {
+                    position: delta.position.scaled_array(self.world_scale),
+                    rotation_xyzw: delta.rotation.array(),
+                },
+            )
+            .map_err(|error| error.to_string())
+    }
+
     fn set_body_target_basis(&mut self, index: usize, target: BasisTransform) -> Result<(), String> {
         let binding = self
             .bindings
@@ -846,6 +865,23 @@ pub unsafe extern "C" fn mmd_solver_set_bone_target(
             return 0;
         };
         solver.set_bone_target(index as usize, target).is_ok() as i32
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mmd_solver_apply_world_delta(
+    handle: *mut c_void,
+    first_index: u32,
+    count: u32,
+    delta: Transform,
+) -> i32 {
+    ffi_guard(0, || {
+        let Some(solver) = (unsafe { (handle as *mut Solver).as_mut() }) else {
+            return 0;
+        };
+        solver
+            .apply_world_delta(first_index as usize, count as usize, delta)
+            .is_ok() as i32
     })
 }
 

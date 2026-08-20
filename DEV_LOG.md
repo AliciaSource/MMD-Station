@@ -1,5 +1,19 @@
 # Development Log
 
+## 2026-08-19 - 更正 Root 物理漂移根因并完成 07.blend 四组合回归
+
+- 对真实 `D:\MMD\模型\Alicia\鳴潮-達尼婭\Test\07.blend` 重新做 30 tick、`Y=-0.182507 m` Empty 与 `全ての親` 两条路径，覆盖 PMX/MMD DLL 与 `mmd_tools`/MMD IK 四种组合。四组均通过 `MMD_07_ROOT_MOTION_REGRESSION_OK`，type 0 锚点误差约 `1e-7 m`，type 1 终态误差约 `1e-6 m`，裙环终态相对误差低于 `0.003 m`，`auto_reset_count=0`。
+- 复核后否定此前“把 Root 运动剥离为固定参考系即可”的结论：共享 `physics_preview` adapter 曾每个 tick 对整套刚体执行 `apply_world_delta`，覆盖 Empty 的真实 solver 驱动，并使 `全ての親` 产生双重驱动。生产路径已移除该 world teleport，恢复当前骨骼 world target 语义。
+- MMD IK 另有独立桥接错误：Blender 刚体列表索引被直接当作 native PMX rigid index；`07.blend` 实际为 367 个 Blender 刚体、406 个 PMX 刚体，仅 200 个名称可匹配，导致物理反馈写回错误链。现在建立按 MMD rigid name 的一对一映射；集合不完整时安全关闭 IK 物理反馈，但保留 Blender 刚体物理。
+- `Session.capture_physics_bindings()` 对无源 PMX 的 `"<current model>"` 路径增加安全返回；新增 smoke 覆盖该分支。Python compile、`MMD_IK_RUNTIME_SMOKE_OK solver=MMD/PMX` 及四组合真实工程回归均通过。未修改 native DLL core；未增版本、未打包、未提交、未 push。
+
+## 2026-08-19 - V0.1.8 恢复 Root/全ての親对物理链的真实驱动
+
+- 使用真实 `D:\MMD\模型\Alicia\鳴潮-達尼婭\Test\07.blend` 与历史提交 `18c3bd0`、`7fbd045` 做差分复现。确认当前共享 adapter 在输入端用 Root/global delta 抵消 `armature.matrix_world @ pose_bone.matrix`，输出端又把同一 delta 强制乘回刚体、骨骼和 Joint；因此 type 0 anchor 没有进入 solver，动态刚体只是被显示层整体搬运，正是 Empty 无物理反馈以及跟踪刚体/物理刚体失去 Joint 交互的根因。
+- `physics_preview/runtime.py` 删除上述输入抵消和输出强制搬运，恢复与 `18c3bd0` 一致的 solver 驱动语义。MMD IK + MMD DLL 的 exact-target 分支另行加入 Armature 启动后的 world translation，避免该分支绕开普通 bone target 后再次吞掉 Empty 位移；没有修改 PMX/MMD native DLL。
+- 新增 `tests/mmd_07_root_motion_regression.py`，真实工程覆盖 `mmd_tools / MMD IK` 两种骨架与 `PMX / MMD` 两种 DLL 的四种组合。30 step Empty `Y=-0.182507 m` 后，普通 PMX/MMD 的 type 0 anchor 均得到约 `-2.281337` native 位移，`202_Skirt_C01_R01` 与相邻 Joint 均表现为物理滞后而非复制 Root delta；`全ての親` 路径同样保留刚体、Joint 与骨骼之间的自然差值，四组合 marker 全部通过且 `auto_reset_count=0`。
+- `PHYSICS_ROOT_OFFSET_REGRESSION_OK` 的 PMX/MMD 双路径、`MMD_IK_PHYSICS_RESET_REGRESSION_OK` 及 Python compile 通过。完整 `headless_smoke.py` 已越过本轮修改的物理对齐段，随后仍可能命中既有无关命名断言 `repair_pose_bone.mmd_bone.name_j == repair_pose_bone.name`，本轮未扩大范围处理。源码已由真实 Blender 4.4 的 Junction 直接使用；未增版本、未打包、未提交、未 push。
+
 ## 2026-08-18 - V0.1.8 修复 07.blend 根容器与全ての親双重平移
 
 - 在真实 `D:\MMD\模型\Alicia\鳴潮-達尼婭\Test\07.blend` 中复现：MMD/PMX 两个 DLL 的 `202_Skirt_C01_R01`（type 2）在 30 帧 `-0.182507 m` Empty 或 `全ての親` 移动后均出现约 `5–7 mm` 偏移；两者数值一致，根因在共享 adapter 的坐标时序，不是 DLL core。

@@ -269,6 +269,8 @@ class Session:
     bone_indices: dict = field(default_factory=dict)
     external_transforms: dict = field(default_factory=dict)
     physics_bind_positions: tuple = ()
+    physics_rigid_indices: tuple = ()
+    physics_feedback_complete: bool = False
     canonical_name: str = ""
     live: bool = False
     updating: bool = False
@@ -380,10 +382,38 @@ class Session:
         return self.vmd_start + int(scene.frame_current) - self.blender_start
 
     def capture_physics_bindings(self, preview_session):
+        from collections import defaultdict, deque
+
+        from ..physics_preview.runtime import _mmd_physics_name, _read_pmx_physics
+
+        self.physics_bind_positions = ()
+        self.physics_rigid_indices = ()
+        self.physics_feedback_complete = False
+        if not Path(self.pmx_path).is_file():
+            return False
+        _model_name, source_rigids, _source_joints = _read_pmx_physics(
+            self.pmx_path
+        )
+        source_indices = defaultdict(deque)
+        for index, source in enumerate(source_rigids):
+            source_indices[source[0]].append(index)
+        self.physics_rigid_indices = tuple(
+            source_indices[
+                _mmd_physics_name(rigid, "mmd_rigid")
+            ].popleft()
+            if source_indices[_mmd_physics_name(rigid, "mmd_rigid")]
+            else None
+            for rigid in preview_session.rigids
+        )
+        self.physics_feedback_complete = (
+            len(preview_session.rigids) == len(source_rigids) == self.solver.rigid_count
+            and all(index is not None for index in self.physics_rigid_indices)
+            and len(set(self.physics_rigid_indices)) == len(source_rigids)
+        )
         dll = preview_session.solver.library.dll
         if not hasattr(dll, "mmd_solver_get_basis_transforms"):
             self.physics_bind_positions = ()
-            return False
+            return any(index is not None for index in self.physics_rigid_indices)
         transforms = preview_session.solver.basis_transforms()
         start = preview_session.body_offset
         local = transforms[start : start + len(preview_session.rigids)]
@@ -391,7 +421,7 @@ class Session:
             (float(item.position.x), float(item.position.y), float(item.position.z))
             for item in local
         )
-        return len(self.physics_bind_positions) == len(preview_session.rigids)
+        return any(index is not None for index in self.physics_rigid_indices)
 
     def corrected_rigid_position(self, rigid_index, target):
         if (
@@ -744,9 +774,22 @@ def capture_physics_bindings(root, preview_session):
     return bool(session and session.capture_physics_bindings(preview_session))
 
 
+def _physics_model_translation(preview_session):
+    current = getattr(preview_session, "ik_motion_anchor", None)
+    origin = getattr(preview_session, "motion_anchor_origin", None)
+    if current is None:
+        current = preview_session.armature.matrix_world
+    if origin is None:
+        origin = preview_session.saved_armature_matrix
+    return blender_position_to_mmd(
+        current.translation - origin.translation,
+        preview_session.import_scale,
+    )
+
+
 def submit_physics_feedback(root, preview_session, transforms=None):
     session = _SESSIONS.get(root.name) if root is not None else None
-    if session is None:
+    if session is None or not session.physics_feedback_complete:
         return 0
     start = preview_session.body_offset
     dll = preview_session.solver.library.dll
@@ -755,24 +798,38 @@ def submit_physics_feedback(root, preview_session, transforms=None):
     if source is None:
         source = preview_session.solver.transforms()
     local = source[start : start + len(preview_session.rigids)]
+    model_translation = _physics_model_translation(preview_session)
     submitted = 0
     for rigid_index, (rigid, transform) in enumerate(zip(preview_session.rigids, local)):
         if int(rigid.mmd_rigid.type) == 0 or not rigid.mmd_rigid.bone:
             continue
+        native_rigid_index = (
+            session.physics_rigid_indices[rigid_index]
+            if rigid_index < len(session.physics_rigid_indices)
+            else None
+        )
+        if native_rigid_index is None:
+            continue
         if raw_basis:
+            position = (transform.position.x, transform.position.y, transform.position.z)
+            if preview_session.solver_target == "MMD":
+                position = tuple(
+                    position[index] - model_translation[index]
+                    for index in range(3)
+                )
             state = (
-                (transform.position.x, transform.position.y, transform.position.z),
+                position,
                 tuple(transform.basis_row_major),
             )
             if preview_session.solver_target == "MMD":
                 session.solver.set_external_rigid_matrix_mmd(
-                    rigid_index,
+                    native_rigid_index,
                     state[0],
                     state[1],
                 )
             else:
                 session.solver.set_external_rigid_matrix(
-                    rigid_index,
+                    native_rigid_index,
                     state[0],
                     state[1],
                 )
@@ -787,11 +844,11 @@ def submit_physics_feedback(root, preview_session, transforms=None):
                 ),
             )
             session.solver.set_external_rigid_transform(
-                rigid_index,
+                native_rigid_index,
                 state[0],
                 state[1],
             )
-        session.external_transforms[rigid_index] = state
+        session.external_transforms[native_rigid_index] = state
         submitted += 1
     if preview_session.solver_target == "MMD":
         session.solver.evaluate_after_physics()
@@ -843,6 +900,7 @@ def prepare_physics_targets(root, preview_session):
 
     dll = preview_session.solver.library.dll
     raw_targets = hasattr(dll, "mmd_solver_set_body_target_basis")
+    model_translation = _physics_model_translation(preview_session)
     submitted = 0
     for rigid_index, rigid in enumerate(preview_session.rigids):
         bone_name = rigid.mmd_rigid.bone
@@ -863,25 +921,30 @@ def prepare_physics_targets(root, preview_session):
             if delta == (0.0, 0.0, 0.0, 1.0)
             else _qmul(delta, source[3:])
         )
+        physics_position = tuple(
+            position[index] + model_translation[index]
+            for index in range(3)
+        )
         preview_session.solver.set_bone_target(
             preview_session.body_offset + rigid_index,
             Transform(
-                Vec3(position[0], position[2], position[1]),
+                Vec3(
+                    physics_position[0],
+                    physics_position[2],
+                    physics_position[1],
+                ),
                 Quat(-rotation[0], -rotation[2], -rotation[1], rotation[3]),
             ),
         )
         if int(rigid.mmd_rigid.type) == 0 and raw_targets:
             target = session.solver.rigid_target(rigid_index)
-            if preview_session.mmd_step_count >= 4:
-                matrix = session.solver.rigid_matrix(rigid_index)
-                preview_session.solver.set_body_target_basis(
-                    preview_session.body_offset + rigid_index,
-                    matrix[:3],
-                    matrix[3:],
-                )
+            corrected = session.corrected_rigid_position(rigid_index, target[:3])
             preview_session.solver.set_body_target_position(
                 preview_session.body_offset + rigid_index,
-                session.corrected_rigid_position(rigid_index, target[:3]),
+                tuple(
+                    corrected[index] + model_translation[index]
+                    for index in range(3)
+                ),
             )
         submitted += 1
     return submitted

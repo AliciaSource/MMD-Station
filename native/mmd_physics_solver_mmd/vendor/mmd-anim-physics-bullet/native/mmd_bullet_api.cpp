@@ -615,6 +615,12 @@ mmd_anim_bullet_status mmd_anim_bullet_world_set_rigidbody_transform(
 
     RigidBodyEntry &entry = world->rigidbodies[static_cast<size_t>(index)];
     entry.body->setWorldTransform(transform);
+    entry.body->setInterpolationWorldTransform(transform);
+    entry.body->activate(true);
+    if (entry.motion_state) {
+        entry.motion_state->setWorldTransform(transform);
+    }
+    world->dynamics_world->updateSingleAabb(entry.body);
     g_last_error[0] = '\0';
     return MMD_ANIM_BULLET_OK;
 }
@@ -630,12 +636,15 @@ mmd_anim_bullet_status mmd_anim_bullet_world_set_rigidbody_position(
         return fail(MMD_ANIM_BULLET_INVALID_ARGUMENT, "rigidbody index out of range");
     }
     RigidBodyEntry &entry = world->rigidbodies[static_cast<size_t>(index)];
+    btTransform transform = entry.body->getWorldTransform();
+    transform.setOrigin(btVector3(position[0], position[1], position[2]));
+    entry.body->setWorldTransform(transform);
+    entry.body->setInterpolationWorldTransform(transform);
+    entry.body->activate(true);
     if (entry.motion_state) {
-        btTransform transform;
-        entry.motion_state->getWorldTransform(transform);
-        transform.setOrigin(btVector3(position[0], position[1], position[2]));
         entry.motion_state->setWorldTransform(transform);
     }
+    world->dynamics_world->updateSingleAabb(entry.body);
     g_last_error[0] = '\0';
     return MMD_ANIM_BULLET_OK;
 }
@@ -726,6 +735,39 @@ mmd_anim_bullet_status mmd_anim_bullet_world_clear_rigidbody_velocities(
         body->setAngularVelocity(zero);
         body->setInterpolationLinearVelocity(zero);
         body->setInterpolationAngularVelocity(zero);
+    }
+    g_last_error[0] = '\0';
+    return MMD_ANIM_BULLET_OK;
+}
+
+mmd_anim_bullet_status mmd_anim_bullet_world_apply_world_delta(
+    mmd_anim_bullet_world *world,
+    int32_t first_index,
+    int32_t count,
+    const float position[3],
+    const float rotation_xyzw[4]) {
+    if (!world || !position || !rotation_xyzw) {
+        return fail(MMD_ANIM_BULLET_NULL_POINTER, "world or delta transform is null");
+    }
+    if (first_index < 0 || count < 0 ||
+        static_cast<size_t>(first_index) > world->rigidbody_count ||
+        static_cast<size_t>(count) > world->rigidbody_count - static_cast<size_t>(first_index)) {
+        return fail(MMD_ANIM_BULLET_INVALID_ARGUMENT, "world delta range is invalid");
+    }
+
+    const btTransform delta = make_transform(position, rotation_xyzw);
+    const size_t begin = static_cast<size_t>(first_index);
+    const size_t end = begin + static_cast<size_t>(count);
+    for (size_t index = begin; index < end; ++index) {
+        RigidBodyEntry &entry = world->rigidbodies[index];
+        const btTransform transform = delta * entry.body->getWorldTransform();
+        entry.body->setWorldTransform(transform);
+        entry.body->setInterpolationWorldTransform(transform);
+        entry.body->activate(true);
+        if (entry.motion_state) {
+            entry.motion_state->setWorldTransform(transform);
+        }
+        world->dynamics_world->updateSingleAabb(entry.body);
     }
     g_last_error[0] = '\0';
     return MMD_ANIM_BULLET_OK;

@@ -141,6 +141,13 @@ mmd_anim_bullet_world_set_rigidbody_position(
     int32_t index,
     const float position[3]);
 MMD_ANIM_BULLET_API mmd_anim_bullet_status
+mmd_anim_bullet_world_apply_world_delta(
+    mmd_anim_bullet_world *world,
+    int32_t first_index,
+    int32_t count,
+    const float position[3],
+    const float rotation_xyzw[4]);
+MMD_ANIM_BULLET_API mmd_anim_bullet_status
 mmd_anim_bullet_world_clear_rigidbody_velocities(mmd_anim_bullet_world *world);
 MMD_ANIM_BULLET_API mmd_anim_bullet_status
 mmd_anim_bullet_world_add_6dof_spring_joint(
