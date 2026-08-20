@@ -67,6 +67,15 @@ def _pose_bone_name(pose_bone):
             yield value
 
 
+def _transform_modal_active():
+    window = getattr(bpy.context, "window", None)
+    operators = getattr(window, "modal_operators", ()) if window else ()
+    return any(
+        str(getattr(operator, "bl_idname", "")).startswith("TRANSFORM_OT_")
+        for operator in operators
+    )
+
+
 def _bone_map(armature, solver):
     exact = {pose_bone.name: pose_bone for pose_bone in armature.pose.bones}
     aliases = {}
@@ -982,6 +991,8 @@ def _frame_change_pre(scene, _depsgraph=None):
 
 @persistent
 def _frame_change_post(scene, _depsgraph=None):
+    if _transform_modal_active():
+        return
     for root_name, session in tuple(_SESSIONS.items()):
         if not session.live or session.updating or session.suspended:
             continue
@@ -995,6 +1006,8 @@ def _frame_change_post(scene, _depsgraph=None):
 
 @persistent
 def _depsgraph_update_post(scene, _depsgraph=None):
+    if _transform_modal_active():
+        return
     stale = []
     for root_name, session in tuple(_SESSIONS.items()):
         if not session.live or session.updating or session.suspended:

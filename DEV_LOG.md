@@ -1,5 +1,12 @@
 # Development Log
 
+## 2026-08-20 - MMD IK 模态写回隔离且保持正常 mmd_tools 物理连续运行
+
+- 上一候选 `304bc4a` 错误地在共享 `physics_preview._timer_tick()` 检测到 `TRANSFORM_OT_*` 后暂停整个物理 tick；该判断不区分是否启用 MMD IK，导致正常 `mmd_tools` 骨架在 `G/R` 期间 Mesh 已移动而刚体和 Joint 停在旧 world 位置。已先恢复已验收安全基线 `93174c6`，并把失败提交保存为 `backup/failed-mmd-ik-modal-writeback-20260820`。
+- 新实现只在 evaluator 的 `frame_change_post` / `depsgraph_update_post` 暂停 MMD IK live 写回；物理桥接也只有在目标模型确实存在 native session 且 Transform modal 正在运行时，才绕过 MMD IK 专属的 `evaluate_physics_pose()`、exact target 与 `submit_physics_feedback()`，同时继续执行共享 `_ORIGINAL_PREPARE_STEP()` / `_ORIGINAL_APPLY_STEP()`。正常 `mmd_tools` 路径不再暂停共享 timer。
+- 新增 `tests/mmd_ik_transform_modal_regression.py`，按验收顺序先验证正常 `mmd_tools + MMD DLL` 在 modal 中持续 step 且 type 0 刚体保持贴合，再验证 MMD IK 无物理和 PMX 物理下的确认/分阶段取消不会写入中间 Pose。真实 `07.blend` 的 PMX/MMD × `mmd_tools`/MMD IK 四组合 Root motion 均通过，MMD IK authoring 保存/重载通过；完整 `mmd_ik_runtime_smoke.py` 超过 300 秒后终止，未将其计为通过。真实鼠标视口验收仍必须先从正常 `mmd_tools` 开始，再验证 MMD IK。
+- 未修改 PMX/MMD DLL、物理求解器或现有安全基线标签；真实 Blender 4.4 继续通过源码 Junction 使用本轮代码。未递增版本、未打包、未 push。
+
 ## 2026-08-20 - PMX DLL 静态刚体旋转取消完整复位
 
 - 修复 PMX DLL 中 0 型刚体的骨骼旋转取消路径。旧实现把“目标旋转等于启动旋转”一律当作纯平移，只调用 position-only setter；因此 `足D.L` 旋转后右键取消时，位置回到初始值，但 Bullet 中上一次写入的刚体旋转被保留。

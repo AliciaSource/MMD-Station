@@ -36,12 +36,15 @@ def install():
     def runtime_aware_prepare_step(self):
         from .evaluator import (
             _SESSIONS,
+            _transform_modal_active,
             evaluate_physics_pose,
             prepare_physics_targets,
             uses_exact_physics_targets,
         )
 
         native_session = _SESSIONS.get(self.root.name)
+        if native_session is not None and _transform_modal_active():
+            return _ORIGINAL_PREPARE_STEP(self)
         previous_suspended = (
             native_session.suspended if native_session is not None else False
         )
@@ -81,9 +84,20 @@ def install():
             transforms = self.solver.transforms()
             bone_transforms = self.solver.bone_transforms()
             joint_states = self.solver.joint_states()
-        from .evaluator import _SESSIONS, submit_physics_feedback
+        from .evaluator import (
+            _SESSIONS,
+            _transform_modal_active,
+            submit_physics_feedback,
+        )
 
         native_session = _SESSIONS.get(self.root.name)
+        if native_session is not None and _transform_modal_active():
+            return _ORIGINAL_APPLY_STEP(
+                self,
+                transforms,
+                bone_transforms,
+                joint_states,
+            )
         previous_suspended = (
             native_session.suspended if native_session is not None else False
         )
