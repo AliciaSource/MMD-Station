@@ -76,6 +76,19 @@ def _transform_modal_active():
     )
 
 
+def _transform_modal_pose_matrices(armature):
+    if not _transform_modal_active():
+        return {}
+    active = getattr(bpy.context, "object", None)
+    if active is not armature or getattr(active, "mode", "") != "POSE":
+        return {}
+    return {
+        pose_bone.name: pose_bone.matrix.copy()
+        for pose_bone in armature.pose.bones
+        if pose_bone.bone.select
+    }
+
+
 def _bone_map(armature, solver):
     exact = {pose_bone.name: pose_bone for pose_bone in armature.pose.bones}
     aliases = {}
@@ -293,6 +306,7 @@ class Session:
     action_signature: tuple = ()
 
     def _apply_output(self, runtime):
+        preserved = _transform_modal_pose_matrices(runtime)
         mapped = [(index, pose_bone) for index, pose_bone in enumerate(self.mapping) if pose_bone is not None]
         mapped.sort(key=lambda item: len(item[1].parent_recursive))
         desired = {
@@ -315,6 +329,13 @@ class Session:
                     parent_matrix_local=parent.bone.matrix_local,
                     invert=True,
                 )
+        for name, matrix in sorted(
+            preserved.items(),
+            key=lambda item: len(runtime.pose.bones[item[0]].parent_recursive),
+        ):
+            pose_bone = runtime.pose.bones.get(name)
+            if pose_bone is not None:
+                pose_bone.matrix = matrix
         runtime.update_tag(refresh={"OBJECT"})
         bpy.context.view_layer.update()
         self.output_basis = {
@@ -991,8 +1012,6 @@ def _frame_change_pre(scene, _depsgraph=None):
 
 @persistent
 def _frame_change_post(scene, _depsgraph=None):
-    if _transform_modal_active():
-        return
     for root_name, session in tuple(_SESSIONS.items()):
         if not session.live or session.updating or session.suspended:
             continue
@@ -1006,8 +1025,6 @@ def _frame_change_post(scene, _depsgraph=None):
 
 @persistent
 def _depsgraph_update_post(scene, _depsgraph=None):
-    if _transform_modal_active():
-        return
     stale = []
     for root_name, session in tuple(_SESSIONS.items()):
         if not session.live or session.updating or session.suspended:
