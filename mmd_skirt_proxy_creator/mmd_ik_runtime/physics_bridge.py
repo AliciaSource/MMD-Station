@@ -49,11 +49,13 @@ def install():
             native_session.suspended = True
         try:
             self.ik_motion_anchor = physics_runtime._model_motion_anchor(self.armature)
-            root_bone = self.armature.pose.bones.get("全ての親")
-            root_bone_matrix = root_bone.matrix.copy() if root_bone is not None else None
+            operation_center = self.armature.pose.bones.get("操作中心")
+            operation_center_matrix = (
+                operation_center.matrix.copy() if operation_center is not None else None
+            )
             native_pose_active = evaluate_physics_pose(self.root, self) is not None
-            if root_bone is not None and root_bone_matrix is not None:
-                root_bone.matrix = root_bone_matrix
+            if operation_center is not None and operation_center_matrix is not None:
+                operation_center.matrix = operation_center_matrix
                 self.armature.update_tag(refresh={"OBJECT"})
                 bpy.context.view_layer.update()
             exact_targets = uses_exact_physics_targets(self.root, self)

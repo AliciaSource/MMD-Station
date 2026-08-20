@@ -1,5 +1,11 @@
 # Development Log
 
+## 2026-08-20 - 将 MMD IK 物理桥接保护骨骼从全ての親转移到操作中心
+
+- 以冻结基线 `fe7bf5d` 为开发起点，仅修改 `mmd_ik_runtime/physics_bridge.py` 中 MMD IK 求值前后的单骨骼矩阵保存/恢复对象：由 `全ての親` 改为 `操作中心`。
+- `07.blend` 中 `操作中心` 无父子骨骼、无刚体、无 Constraint、无实际顶点权重，也未被其它骨骼引用；本轮不修改 evaluator、physics runtime 或 PMX/MMD DLL。
+- 目标是让 `全ての親` 恢复为用户输入骨骼，并把现有单骨骼保护行为转移到低影响的 `操作中心`。Python compile、目标源码断言及真实 `07.blend` 的 `MMD_07_ROOT_MOTION_REGRESSION_OK solver=MMD ik=True` 通过；真实 Blender 视口中的模态移动行为等待用户逐步验收。版本未递增、未打包、未移动基线标签、未 push。
+
 ## 2026-08-19 - 更正 Root 物理漂移根因并完成 07.blend 四组合回归
 
 - 对真实 `D:\MMD\模型\Alicia\鳴潮-達尼婭\Test\07.blend` 重新做 30 tick、`Y=-0.182507 m` Empty 与 `全ての親` 两条路径，覆盖 PMX/MMD DLL 与 `mmd_tools`/MMD IK 四种组合。四组均通过 `MMD_07_ROOT_MOTION_REGRESSION_OK`，type 0 锚点误差约 `1e-7 m`，type 1 终态误差约 `1e-6 m`，裙环终态相对误差低于 `0.003 m`，`auto_reset_count=0`。
