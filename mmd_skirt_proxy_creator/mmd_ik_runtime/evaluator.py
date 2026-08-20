@@ -204,6 +204,33 @@ def _live_input_signature(canonical, scene):
     return tuple(values)
 
 
+def _matrix_near_identity(matrix, tolerance=1.0e-6):
+    return max(
+        abs(matrix[row][column] - (1.0 if row == column else 0.0))
+        for row in range(4)
+        for column in range(4)
+    ) < tolerance
+
+
+def _cleared_pose_snapshot(canonical, output_basis):
+    changed = []
+    identity_count = 0
+    for name, output in output_basis.items():
+        pose_bone = canonical.pose.bones.get(name)
+        if pose_bone is None or pose_bone.matrix_basis == output:
+            continue
+        changed.append(name)
+        if _matrix_near_identity(pose_bone.matrix_basis):
+            identity_count += 1
+    required = max(2, math.ceil(len(output_basis) * 0.2))
+    if len(changed) < required or identity_count < math.ceil(len(changed) * 0.9):
+        return None
+    return {
+        pose_bone.name: pose_bone.matrix_basis.copy()
+        for pose_bone in canonical.pose.bones
+    }
+
+
 def _action_frame_signature(canonical, frame):
     action = canonical.animation_data.action if canonical.animation_data else None
     if action is None:
@@ -304,6 +331,30 @@ class Session:
     suspended: bool = False
     action_input: bool = False
     action_signature: tuple = ()
+
+    def _capture_external_pose(self, canonical, scene):
+        if not self.input_signature:
+            return False
+        current_frame = (int(scene.frame_current), float(scene.frame_subframe))
+        if self.input_signature[:2] != current_frame:
+            return False
+        signature = _live_input_signature(canonical, scene)
+        if signature == self.input_signature:
+            return False
+        cleared = _cleared_pose_snapshot(canonical, self.output_basis)
+        if cleared is not None:
+            self.input_basis = cleared
+        else:
+            for name, output in self.output_basis.items():
+                pose_bone = canonical.pose.bones.get(name)
+                source = self.input_basis.get(name)
+                if pose_bone is None or source is None or pose_bone.matrix_basis == output:
+                    continue
+                delta = output.inverted_safe() @ pose_bone.matrix_basis
+                self.input_basis[name] = source @ delta
+        self.pose_override = True
+        self.input_signature = signature
+        return True
 
     def _apply_output(self, runtime):
         preserved = _transform_modal_pose_matrices(runtime)
@@ -507,15 +558,8 @@ class Session:
                 }
             if self.source_vmd and new_frame:
                 self.pose_override = False
-            elif not new_frame and self.input_signature and signature != self.input_signature:
-                for name, output in self.output_basis.items():
-                    pose_bone = canonical.pose.bones.get(name)
-                    source = self.input_basis.get(name)
-                    if pose_bone is None or source is None or pose_bone.matrix_basis == output:
-                        continue
-                    delta = output.inverted_safe() @ pose_bone.matrix_basis
-                    self.input_basis[name] = source @ delta
-                self.pose_override = True
+            elif not new_frame and signature != self.input_signature:
+                self._capture_external_pose(canonical, scene)
             target = self.target_frame(scene) if self.source_vmd else float(scene.frame_current)
             if self.source_vmd and not self.pose_override and not self.action_input:
                 self.solver.end_live_input()
@@ -546,6 +590,7 @@ class Session:
             canonical = bpy.data.objects.get(self.canonical_name)
             if canonical is None:
                 raise MMDIKRuntimeError("MMD native 控制骨架已丢失")
+            self._capture_external_pose(canonical, bpy.context.scene)
             if self.source_vmd and not self.pose_override and not self.action_input:
                 self.solver.end_live_input()
             else:
@@ -568,6 +613,7 @@ class Session:
             canonical = bpy.data.objects.get(self.canonical_name)
             if canonical is None:
                 raise MMDIKRuntimeError("MMD native 控制骨架已丢失")
+            self._capture_external_pose(canonical, bpy.context.scene)
             if self.source_vmd and not self.pose_override and not self.action_input:
                 self.solver.end_live_input()
             else:
