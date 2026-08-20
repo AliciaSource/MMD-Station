@@ -153,6 +153,13 @@ class SolverLibrary:
             Transform,
         )
         dll.mmd_solver_set_bone_target.restype = ctypes.c_int32
+        dll.mmd_solver_apply_world_delta.argtypes = (
+            ctypes.c_void_p,
+            ctypes.c_uint32,
+            ctypes.c_uint32,
+            Transform,
+        )
+        dll.mmd_solver_apply_world_delta.restype = ctypes.c_int32
         if hasattr(dll, "mmd_solver_set_body_target_basis"):
             dll.mmd_solver_set_body_target_basis.argtypes = (
                 ctypes.c_void_p,
@@ -339,6 +346,16 @@ class Solver:
             transform,
         ):
             raise RuntimeError(f"设置骨骼目标 {index} 失败")
+
+    def apply_world_delta(self, first_index, count, matrix):
+        transform = matrix if isinstance(matrix, Transform) else matrix_to_transform(matrix)
+        if not self.library.dll.mmd_solver_apply_world_delta(
+            self.handle,
+            int(first_index),
+            int(count),
+            transform,
+        ):
+            raise RuntimeError("应用物理世界位移失败")
 
     def step(self, dt, substeps):
         if not self.library.dll.mmd_solver_step(self.handle, float(dt), int(substeps)):

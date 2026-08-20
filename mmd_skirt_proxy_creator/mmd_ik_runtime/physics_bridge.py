@@ -48,15 +48,18 @@ def install():
         if native_session is not None:
             native_session.suspended = True
         try:
+            self.ik_motion_anchor = physics_runtime._model_motion_anchor(self.armature)
+            root_bone = self.armature.pose.bones.get("全ての親")
+            root_bone_matrix = root_bone.matrix.copy() if root_bone is not None else None
             native_pose_active = evaluate_physics_pose(self.root, self) is not None
+            if root_bone is not None and root_bone_matrix is not None:
+                root_bone.matrix = root_bone_matrix
+                self.armature.update_tag(refresh={"OBJECT"})
+                bpy.context.view_layer.update()
             exact_targets = uses_exact_physics_targets(self.root, self)
-            solver_type = type(self.solver)
-            setter = solver_type.set_bone_target if exact_targets else None
             reset_probe = (
                 self._broad_pose_reset_detected if native_pose_active else None
             )
-            if exact_targets:
-                solver_type.set_bone_target = lambda _solver, _index, _matrix: None
             if native_pose_active:
                 self._broad_pose_reset_detected = lambda: False
             try:
@@ -64,9 +67,8 @@ def install():
             finally:
                 if native_pose_active:
                     self._broad_pose_reset_detected = reset_probe
-                if exact_targets:
-                    solver_type.set_bone_target = setter
-            prepare_physics_targets(self.root, self)
+            if not exact_targets:
+                prepare_physics_targets(self.root, self)
             return result
         finally:
             if native_session is not None:

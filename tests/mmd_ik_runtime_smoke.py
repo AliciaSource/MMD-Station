@@ -263,6 +263,25 @@ physics_runtime.stop_preview(root)
 assert not session.external_transforms
 assert is_active(root)
 
+# A live session can validly start from an exported current model rather than
+# a retained source PMX. Physics remains available, but IK feedback must stay
+# disabled because there is no stable native rigid index mapping.
+source_pmx = root.get("spx_mmd_ik_source_pmx")
+try:
+    if source_pmx is not None:
+        del root["spx_mmd_ik_source_pmx"]
+    from mmd_skirt_proxy_creator.mmd_ik_runtime.evaluator import start_live
+
+    start_live(root)
+    current_model_session = _SESSIONS[root.name]
+    assert current_model_session.pmx_path == "<current model>"
+    preview_session = physics_runtime.start_preview(bpy.context)[0]
+    assert not current_model_session.physics_feedback_complete
+    physics_runtime.stop_preview(root)
+finally:
+    if source_pmx is not None:
+        root["spx_mmd_ik_source_pmx"] = source_pmx
+
 # Export sees canonical bindings, while success and failure both restore runtime.
 with canonical_export(root):
     assert all(

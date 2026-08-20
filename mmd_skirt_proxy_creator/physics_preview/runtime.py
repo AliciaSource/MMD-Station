@@ -91,6 +91,10 @@ def _model_armature(root):
     return _model_api().find_armature_object(root)
 
 
+def _model_motion_anchor(armature):
+    return armature.matrix_world.copy()
+
+
 def _rigid_objects(root):
     return [
         obj
@@ -654,13 +658,9 @@ class PreviewSession:
         if self.armature is None:
             raise RuntimeError("所选 MMD 模型没有 Armature")
         self.armature_name = self.armature.name
+        self.motion_anchor_origin = _model_motion_anchor(self.armature)
         self.saved_root_matrix = root.matrix_world.copy()
-        root_pose_bone = self.armature.pose.bones.get("全ての親")
-        self.saved_global_bone_matrix = (
-            self.armature.matrix_world @ root_pose_bone.matrix
-            if root_pose_bone is not None
-            else None
-        )
+        self.saved_armature_matrix = self.armature.matrix_world.copy()
         self.saved_pose_basis = {
             pose_bone.name: pose_bone.matrix_basis.copy()
             for pose_bone in self.armature.pose.bones
@@ -960,20 +960,6 @@ class PreviewSession:
                 pose_bone.matrix,
             )
             bone_world = self.armature.matrix_world @ bone_pose
-            root_delta = self.root.matrix_world @ self.saved_root_matrix.inverted_safe()
-            root_pose_bone = self.armature.pose.bones.get("全ての親")
-            global_bone_delta = Matrix.Identity(4)
-            if root_pose_bone is not None and self.saved_global_bone_matrix is not None:
-                global_bone_delta = (
-                    self.armature.matrix_world @ root_pose_bone.matrix
-                    @ self.saved_global_bone_matrix.inverted_safe()
-                )
-            motion_delta = (
-                root_delta
-                if root_delta.translation.length > 1.0e-8
-                else global_bone_delta
-            )
-            bone_world = motion_delta.inverted_safe() @ bone_world
             target = _pmx_native_matrix_transform(
                 bone_world,
                 self.import_scale,
@@ -998,19 +984,6 @@ class PreviewSession:
             self.joint_offset:self.joint_offset + len(self.joints)
         ]
         armature_inverse = self.armature.matrix_world.inverted_safe()
-        root_delta = self.root.matrix_world @ self.saved_root_matrix.inverted_safe()
-        global_bone_delta = Matrix.Identity(4)
-        root_pose_bone = self.armature.pose.bones.get("全ての親")
-        if root_pose_bone is not None and self.saved_global_bone_matrix is not None:
-            global_bone_delta = (
-                self.armature.matrix_world @ root_pose_bone.matrix
-                @ self.saved_global_bone_matrix.inverted_safe()
-            )
-        motion_delta = (
-            root_delta
-            if root_delta.translation.length > 1.0e-8
-            else global_bone_delta
-        )
         bone_targets = {}
         for index, transform in enumerate(transforms):
             rigid = self.rigids[index]
@@ -1020,16 +993,6 @@ class PreviewSession:
                 Quaternion(rotation),
                 Vector((1.0, 1.0, 1.0)),
             )
-            rigid_world = motion_delta @ rigid_world
-            if int(rigid.mmd_rigid.type) == 0 and index in self.bone_offsets:
-                bone_name = rigid.mmd_rigid.bone
-                bone_pose = animation_pose.get(bone_name)
-                if bone_pose is not None:
-                    rigid_world = (
-                        self.armature.matrix_world
-                        @ bone_pose
-                        @ self.bone_offsets[index]
-                    )
             if int(rigid.mmd_rigid.type) == 0 or index not in self.bone_offsets:
                 if self.settings.preview_update_rigids:
                     scale = rigid.matrix_world.to_scale()
@@ -1048,7 +1011,6 @@ class PreviewSession:
                 Quaternion(bone_rotation),
                 Vector((1.0, 1.0, 1.0)),
             )
-            bone_world = motion_delta @ bone_world
             if self.settings.preview_update_rigids:
                 scale = rigid.matrix_world.to_scale()
                 rigid.matrix_world = Matrix.LocRotScale(
@@ -1070,7 +1032,6 @@ class PreviewSession:
                 (Vector(position_a) + Vector(position_b))
                 * (0.5 * self.import_scale)
             )
-            position = (motion_delta @ Vector((*position, 1.0))).to_3d()
             scale = joint.matrix_world.to_scale()
             joint.matrix_world = Matrix.LocRotScale(
                 position,
