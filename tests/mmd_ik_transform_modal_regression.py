@@ -126,6 +126,14 @@ try:
     )
     assert chain_change > 1.0e-3, chain_change
 
+    evaluator._transform_modal_active = lambda: False
+    evaluator._depsgraph_update_post(bpy.context.scene)
+    assert (ik_bone.matrix_basis.translation - edited.translation).length < 1.0e-6
+    assert ik_bone.matrix_basis.to_quaternion().rotation_difference(
+        edited.to_quaternion()
+    ).angle < 1.0e-6
+    evaluator._transform_modal_active = lambda: True
+
     ik_bone.matrix_basis = baseline_ik
     bpy.context.view_layer.update()
     evaluator._depsgraph_update_post(bpy.context.scene)

@@ -187,7 +187,7 @@ class SPX_OT_CreateMMDIKRuntime(_RuntimeOperator, Operator):
     bl_idname = "surface_proxy.create_mmd_ik_runtime"
     bl_label = "启用 MMD IK 兼容"
     bl_description = "让 native DLL 自动接管原 mmd_tools 骨架的最终求值，不改变 Mesh 骨架绑定"
-    bl_options = {"REGISTER", "UNDO"}
+    bl_options = {"REGISTER"}
 
     def run(self, context):
         export_hook.install()
@@ -205,7 +205,11 @@ class SPX_OT_CreateMMDIKRuntime(_RuntimeOperator, Operator):
         }
         _canonical, count, created = create_runtime(context, root)
         try:
-            matched, total, _scale = start_live(root, input_basis=input_basis)
+            matched, total, _scale = start_live(
+                root,
+                input_basis=input_basis,
+                update=False,
+            )
         except Exception:
             restore_bindings(root, keep_runtime=False)
             raise

@@ -331,6 +331,8 @@ class Session:
     suspended: bool = False
     action_input: bool = False
     action_signature: tuple = ()
+    solver_matrices: dict = field(default_factory=dict)
+    desired_pose: dict = field(default_factory=dict)
 
     def _capture_external_pose(self, canonical, scene):
         if not self.input_signature:
@@ -356,30 +358,48 @@ class Session:
         self.input_signature = signature
         return True
 
-    def _apply_output(self, runtime):
+    def _apply_output(self, runtime, update=True):
         preserved = _transform_modal_pose_matrices(runtime)
         mapped = [(index, pose_bone) for index, pose_bone in enumerate(self.mapping) if pose_bone is not None]
         mapped.sort(key=lambda item: len(item[1].parent_recursive))
-        desired = {
-            pose_bone.name: blender_pose_matrix(
-                self.solver.matrix(index), self.scale, pose_bone.bone.matrix_local
-            )
-            for index, pose_bone in mapped
-        }
+        desired = {}
+        for index, pose_bone in mapped:
+            values = self.solver.matrix(index)
+            if self.solver_matrices.get(index) != values:
+                self.solver_matrices[index] = values
+                self.desired_pose[pose_bone.name] = blender_pose_matrix(
+                    values,
+                    self.scale,
+                    pose_bone.bone.matrix_local,
+                )
+            desired[pose_bone.name] = self.desired_pose[pose_bone.name]
+        changed = set()
         for index, pose_bone in mapped:
             parent = pose_bone.parent
             if parent is None:
-                pose_bone.matrix_basis = pose_bone.bone.convert_local_to_pose(
+                needs_write = pose_bone.matrix != desired[pose_bone.name]
+            else:
+                needs_write = (
+                    parent.name in changed
+                    or pose_bone.matrix != desired[pose_bone.name]
+                )
+            if not needs_write:
+                continue
+            if parent is None:
+                basis = pose_bone.bone.convert_local_to_pose(
                     desired[pose_bone.name], pose_bone.bone.matrix_local, invert=True
                 )
             else:
-                pose_bone.matrix_basis = pose_bone.bone.convert_local_to_pose(
+                basis = pose_bone.bone.convert_local_to_pose(
                     desired[pose_bone.name],
                     pose_bone.bone.matrix_local,
                     parent_matrix=desired.get(parent.name, parent.matrix),
                     parent_matrix_local=parent.bone.matrix_local,
                     invert=True,
                 )
+            if pose_bone.matrix_basis != basis:
+                pose_bone.matrix_basis = basis
+                changed.add(pose_bone.name)
         for name, matrix in sorted(
             preserved.items(),
             key=lambda item: len(runtime.pose.bones[item[0]].parent_recursive),
@@ -388,7 +408,8 @@ class Session:
             if pose_bone is not None:
                 pose_bone.matrix = matrix
         runtime.update_tag(refresh={"OBJECT"})
-        bpy.context.view_layer.update()
+        if update:
+            bpy.context.view_layer.update()
         self.output_basis = {
             pose_bone.name: pose_bone.matrix_basis.copy()
             for _index, pose_bone in mapped
@@ -396,6 +417,17 @@ class Session:
         self.input_signature = _live_input_signature(runtime, bpy.context.scene)
         self.action_signature = _action_frame_signature(
             runtime, bpy.context.scene.frame_current
+        )
+
+    def sync_output_pose(self, canonical, scene):
+        self.output_basis = {
+            pose_bone.name: pose_bone.matrix_basis.copy()
+            for pose_bone in canonical.pose.bones
+            if pose_bone.name in self.bone_indices
+        }
+        self.input_signature = _live_input_signature(canonical, scene)
+        self.action_signature = _action_frame_signature(
+            canonical, scene.frame_current
         )
 
     def repair_current_action_keys(self, canonical, frame):
@@ -537,7 +569,7 @@ class Session:
         self.last_vmd_frame = target
         self._apply_output(runtime)
 
-    def evaluate_live(self, scene):
+    def evaluate_live(self, scene, update=True):
         if self.updating or self.suspended:
             return float(scene.frame_current)
         runtime = bpy.data.objects.get(self.runtime_name)
@@ -576,8 +608,7 @@ class Session:
                 _submit_live_pose(self, canonical)
                 self.solver.evaluate(float(target))
             self.last_vmd_frame = float(target)
-            self._apply_output(runtime)
-            bpy.context.view_layer.update()
+            self._apply_output(runtime, update=update)
         finally:
             self.updating = False
         return float(scene.frame_current)
@@ -687,7 +718,7 @@ def start(root, pmx_path, vmd_path, blender_start=1, vmd_start=0):
     return matched, solver.count, scale
 
 
-def start_live(root, input_basis=None):
+def start_live(root, input_basis=None, update=True):
     state = runtime_state(root)
     canonical = canonical_armature(root, state) if state else None
     if not state or not state.get("enabled") or canonical is None:
@@ -743,7 +774,7 @@ def start_live(root, input_basis=None):
         for alias in _pose_bone_name(pose_bone):
             session.bone_indices.setdefault(alias, index)
     _SESSIONS[root.name] = session
-    session.evaluate_live(bpy.context.scene)
+    session.evaluate_live(bpy.context.scene, update=update)
     return matched, solver.count, scale
 
 
@@ -955,7 +986,6 @@ def evaluate_physics_pose(root, preview_session, vmd_frame=None):
         session.evaluate_before_physics(vmd_frame, apply_output=True)
     else:
         session.evaluate_exact(vmd_frame, apply_output=True)
-    bpy.context.view_layer.update()
     return float(vmd_frame)
 
 
@@ -1090,7 +1120,12 @@ def _depsgraph_update_post(scene, _depsgraph=None):
         if signature == session.input_signature and not action_changed:
             continue
         try:
-            session.evaluate_live(scene)
+            from ..physics_preview.runtime import is_running
+
+            if is_running(root):
+                session._capture_external_pose(canonical, scene)
+            else:
+                session.evaluate_live(scene, update=False)
         except Exception as error:
             print(f"MMD native live evaluator stopped for {root_name}: {error}")
             stale.append(root_name)
