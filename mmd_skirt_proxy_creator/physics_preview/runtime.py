@@ -1609,20 +1609,6 @@ def _timer_tick_parallel(sessions, wall_seconds):
 
 
 def _timer_tick_session(session, wall_seconds):
-    try:
-        rebound = session._rebind_blender_data()
-        if rebound:
-            session.snapshot_reset_pending = True
-    except Exception as recovery_error:
-        traceback.print_exc()
-        session.snapshot_reset_pending = True
-        settings = bpy.context.scene.surface_proxy_creator
-        settings.preview_running = True
-        settings.preview_status = (
-            "运行中：重新绑定 Blender 数据失败，将继续重试 "
-            f"({type(recovery_error).__name__}: {recovery_error})"
-        )
-        return 1.0 / max(settings.preview_frequency, 1)
     interval = 1.0 / max(session.settings.preview_frequency, 1)
     try:
         session.world.sample_time(wall_seconds)

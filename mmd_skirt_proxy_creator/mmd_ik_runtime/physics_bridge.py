@@ -36,6 +36,7 @@ def install():
     def runtime_aware_prepare_step(self):
         from .evaluator import (
             _SESSIONS,
+            _transform_modal_pose_matrices,
             evaluate_physics_pose,
             prepare_physics_targets,
             uses_exact_physics_targets,
@@ -47,6 +48,9 @@ def install():
         )
         if native_session is not None:
             native_session.suspended = True
+        self._mmd_ik_modal_pose_matrices = _transform_modal_pose_matrices(
+            self.armature
+        )
         try:
             self.ik_motion_anchor = physics_runtime._model_motion_anchor(self.armature)
             operation_center = self.armature.pose.bones.get("操作中心")
@@ -56,8 +60,6 @@ def install():
             native_pose_active = evaluate_physics_pose(self.root, self) is not None
             if operation_center is not None and operation_center_matrix is not None:
                 operation_center.matrix = operation_center_matrix
-                self.armature.update_tag(refresh={"OBJECT"})
-                bpy.context.view_layer.update()
             exact_targets = uses_exact_physics_targets(self.root, self)
             reset_probe = (
                 self._broad_pose_reset_detected if native_pose_active else None
@@ -100,6 +102,19 @@ def install():
                 joint_states,
             )
             submit_physics_feedback(self.root, self, transforms)
+            preserved = getattr(self, "_mmd_ik_modal_pose_matrices", {})
+            for name, matrix in sorted(
+                preserved.items(),
+                key=lambda item: len(self.armature.pose.bones[item[0]].parent_recursive),
+            ):
+                pose_bone = self.armature.pose.bones.get(name)
+                if pose_bone is not None:
+                    pose_bone.matrix = matrix
+            if preserved:
+                self.armature.update_tag(refresh={"OBJECT"})
+                bpy.context.view_layer.update()
+            if native_session is not None:
+                native_session.sync_output_pose(self.armature, self.scene)
             return result
         finally:
             if native_session is not None:
