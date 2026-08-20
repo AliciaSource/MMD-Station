@@ -82,25 +82,56 @@ assert bpy.ops.surface_proxy.create_mmd_ik_runtime() == {"FINISHED"}
 
 session = evaluator._SESSIONS[root.name]
 armature = runtime._model_armature(root)
-pose_bone = armature.pose.bones["全ての親"]
-baseline_input = session.input_basis[pose_bone.name].copy()
-edited = pose_bone.matrix_basis.copy()
-edited = edited @ Matrix.Translation((0.0, 0.05, 0.0))
-edited = edited @ Matrix.Rotation(0.35, 4, "Z")
+for bone in armature.data.bones:
+    bone.select = False
+ik_bone = armature.pose.bones["足ＩＫ.L"]
+ik_bone.bone.select = True
+armature.data.bones.active = ik_bone.bone
+armature.select_set(True)
+bpy.context.view_layer.objects.active = armature
+if armature.mode != "POSE":
+    bpy.ops.object.mode_set(mode="POSE")
+baseline_input = session.input_basis[ik_bone.name].copy()
+baseline_ik = ik_bone.matrix_basis.copy()
+chain_names = ("足.L", "ひざ.L", "足首.L")
+baseline_chain = {
+    name: armature.pose.bones[name].matrix.copy()
+    for name in chain_names
+}
+edited = baseline_ik @ Matrix.Translation((0.05, 0.0, 0.0))
 
 original_modal_probe = getattr(evaluator, "_transform_modal_active", None)
 evaluator._transform_modal_active = lambda: True
 try:
-    pose_bone.matrix_basis = edited
+    ik_bone.matrix_basis = edited
     bpy.context.view_layer.update()
     evaluator._depsgraph_update_post(bpy.context.scene)
-    assert (pose_bone.matrix_basis.translation - edited.translation).length < 1.0e-7
-    assert pose_bone.matrix_basis.to_quaternion().rotation_difference(
+    assert (ik_bone.matrix_basis.translation - edited.translation).length < 1.0e-7
+    assert ik_bone.matrix_basis.to_quaternion().rotation_difference(
         edited.to_quaternion()
     ).angle < 1.0e-6
-    current_input = session.input_basis[pose_bone.name]
-    assert (current_input.translation - baseline_input.translation).length < 1.0e-7
-    assert current_input.to_quaternion().rotation_difference(
+    current_input = session.input_basis[ik_bone.name]
+    assert (current_input.translation - baseline_input.translation).length > 0.04
+    chain_change = max(
+        max(
+            (
+                armature.pose.bones[name].matrix.translation
+                - baseline_chain[name].translation
+            ).length,
+            armature.pose.bones[name].matrix.to_quaternion().rotation_difference(
+                baseline_chain[name].to_quaternion()
+            ).angle,
+        )
+        for name in chain_names
+    )
+    assert chain_change > 1.0e-3, chain_change
+
+    ik_bone.matrix_basis = baseline_ik
+    bpy.context.view_layer.update()
+    evaluator._depsgraph_update_post(bpy.context.scene)
+    canceled_input = session.input_basis[ik_bone.name]
+    assert (canceled_input.translation - baseline_input.translation).length < 1.0e-6
+    assert canceled_input.to_quaternion().rotation_difference(
         baseline_input.to_quaternion()
     ).angle < 1.0e-6
 finally:
@@ -110,11 +141,12 @@ finally:
         evaluator._transform_modal_active = original_modal_probe
 
 evaluator._depsgraph_update_post(bpy.context.scene)
-committed_input = session.input_basis[pose_bone.name]
-assert (committed_input.translation - baseline_input.translation).length > 0.04
-assert committed_input.to_quaternion().rotation_difference(
-    baseline_input.to_quaternion()
-).angle > 0.3
+
+pose_bone = armature.pose.bones["全ての親"]
+for bone in armature.data.bones:
+    bone.select = False
+pose_bone.bone.select = True
+armature.data.bones.active = pose_bone.bone
 
 settings.preview_solver_target = "PMX"
 preview_session = runtime.start_preview(bpy.context)[0]
@@ -136,10 +168,10 @@ try:
         edited.to_quaternion()
     ).angle < 1.0e-6
     current_input = session.input_basis[pose_bone.name]
-    assert (current_input.translation - baseline_input.translation).length < 1.0e-7
+    assert (current_input.translation - baseline_input.translation).length > 0.04
     assert current_input.to_quaternion().rotation_difference(
         baseline_input.to_quaternion()
-    ).angle < 1.0e-6
+    ).angle > 0.3
     partial = edited.copy()
     partial.translation = baseline_output.translation
     pose_bone.matrix_basis = partial
