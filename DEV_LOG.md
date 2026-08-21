@@ -1,5 +1,14 @@
 # Development Log
 
+## 2026-08-21 - MMD IK 首次启用与 Blender Undo/Redo 运行态重绑
+
+- 使用未保存 MMD IK 状态、未运行物理 Session 的原始 `07.blend` 重新监测用户顺序：手动启用 MMD IK、启动物理、旋转、原生“清空用户变换”、F9 切换 `仅选中`。确认此前只为 `POSE_OT_user_transforms_clear` 设置的 fast path 依赖 `window_manager.operators[-1]`；Blender 开始 Adjust Last Operation 的 Undo 时 operator 栈会变化，判断因此漏失，插件转而关闭 native IK Session，物理 Session 随后继续持有已失效 RNA wrapper，表现为物理预览消失、立即重启报错、稍后自动恢复。
+- 生命周期适配改为不再识别或替换具体 Blender operator：只要内存态 IK 或物理正在运行，所有 Blender Undo/Redo 都先暂停现有 Session，Undo/Redo 完成后按当前 RNA 名称重新绑定，并保留原 IK/physics Session、solver 与 world；只有 MMD 模型、运行状态或 PMX 来源确实不再兼容时才关闭并重建。原生“清空用户变换”、右键菜单、F9 面板及 mmd_tools 菜单均未修改。
+- 修复干净工程首次启用 MMD IK 时缺少 `spx_mmd_ik_source_pmx` 而同步导出整份 PMX 的阻塞：若 `import_folder` 中恰有一个 PMX，直接复用该导入源并缓存路径；只有无法唯一解析来源时才保留原导出 fallback。真实 `07.blend` 的精确顺序 headless 计时为启用约 `0.136 s`、随后启动物理约 `0.237 s`。
+- 启用顺序也改为对称兼容：若用户先启动物理再启用 MMD IK，只暂停并恢复现有物理 Session，不再 stop/start 整个物理 world；重新捕获 MMD physics bindings 后继续运行。回归测试同时修正多 MMD Root 工程中错误取第一个 PreviewSession 的测试缺陷。
+- 性能探针显示 C++ `mmd_bone_solver.dll` 单次 evaluate 约 `0.7-1.5 ms`，Python/Blender pose 输出写回约 `14-17 ms`；本轮异常 Undo handler 自身仅为微秒级。C++ 骨骼求解器确有每帧临时 `std::vector` 与全骨骼 pass，可作为后续稳定帧率优化项，但不是本次 Session 消失或首次 PMX 导出阻塞的根因，因此未改 C++/Rust DLL，避免把未经证据支持的 native 重构叠加到生命周期修复上。
+- `MMD_IK_CLEAR_USER_TRANSFORMS_REGRESSION_OK`、`MMD_IK_TRANSFORM_MODAL_REGRESSION_OK`、`MMD_IK_PHYSICS_FEEDBACK_REGRESSION_OK`、`MMD_IK_PHYSICS_RESET_REGRESSION_OK` 均通过；其中 clear 回归覆盖通用 Undo/Redo suspend/rebind，physics reset 回归覆盖先物理后 MMD IK 且 Session/world/solver identity 不变。当前结论仍等待用户重启 Blender 后按真实 GUI 顺序验收；未增版本、未打包、未移动安全基线、未 push。
+
 ## 2026-08-21 - 清空用户变换 Redo 属性切换保留 native Session
 
 - 用户完成上一轮 Transform modal 视口验收后，将提交 `48f7b3b` 晋升为新安全基线并标记 `baseline-20260821-mmd-ik-modal-chain-live`。本轮只在该基线上处理 MMD IK + MMD DLL 运行时切换“清空用户变换”的 `仅选中` 属性产生的停顿，不修改已验收的 modal `matrix_basis` 保护、PMX/MMD DLL 或物理核心。

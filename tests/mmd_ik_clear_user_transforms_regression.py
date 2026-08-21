@@ -26,7 +26,9 @@ from mmd_skirt_proxy_creator.physics_preview import runtime
 mmd_skirt_proxy_creator.register()
 
 root = bpy.data.objects[ROOT_NAME]
-root["spx_mmd_ik_source_pmx"] = str(Path(root["import_folder"]) / PMX_NAME)
+root.pop("spx_mmd_ik_source_pmx", None)
+expected_pmx = Path(root["import_folder"]) / PMX_NAME
+assert evaluator._resolve_live_source_path(root).resolve() == expected_pmx.resolve()
 settings = bpy.context.scene.surface_proxy_creator
 settings.mmd_ik_root = root
 assert bpy.ops.surface_proxy.create_mmd_ik_runtime() == {"FINISHED"}
@@ -113,32 +115,33 @@ for name, cleared in cleared_basis.items():
 assert maximum_input_error < 1.0e-6, maximum_input_error
 assert preview_session.consecutive_tick_failures == 0
 
-original_session = evaluator._SESSIONS[root.name]
+root_name = root.name
+original_session = evaluator._SESSIONS[root_name]
 original_solver = original_session.solver
-original_preview_session = runtime._ACTIVE_SESSIONS[root.name]
+original_preview_session = runtime._ACTIVE_SESSIONS[root_name]
 original_preview_solver = original_preview_session.solver
-original_repeat_probe = lifecycle._pose_clear_repeat_active
-lifecycle._pose_clear_repeat_active = lambda: True
-try:
-    lifecycle._undo_redo_pre(bpy.context.scene)
-    assert evaluator._SESSIONS[root.name] is original_session
-    assert original_session.suspended
-    assert runtime._POSE_CLEAR_REPEAT_SUSPENDED
-    assert bpy.ops.pose.user_transforms_clear(only_selected=False) == {"FINISHED"}
-    lifecycle._undo_redo_post(bpy.context.scene)
-    if bpy.app.timers.is_registered(lifecycle._resume_pose_clear_repeat_timer):
-        bpy.app.timers.unregister(lifecycle._resume_pose_clear_repeat_timer)
-    lifecycle._resume_pose_clear_repeat_timer()
-finally:
-    lifecycle._pose_clear_repeat_active = original_repeat_probe
 
-resumed_session = evaluator._SESSIONS[root.name]
+
+lifecycle._undo_redo_pre(bpy.context.scene)
+assert original_session.suspended
+assert runtime._RUNTIME_SUSPENDED
+assert bpy.ops.pose.user_transforms_clear(only_selected=False) == {"FINISHED"}
+lifecycle._undo_redo_post(bpy.context.scene)
+if bpy.app.timers.is_registered(lifecycle._resume_undo_redo_timer):
+    bpy.app.timers.unregister(lifecycle._resume_undo_redo_timer)
+lifecycle._resume_undo_redo_timer()
+assert evaluator._SESSIONS[root_name] is original_session
+assert original_session.solver is original_solver
+assert runtime._ACTIVE_SESSIONS[root_name] is original_preview_session
+assert original_preview_session.solver is original_preview_solver
+
+resumed_session = evaluator._SESSIONS[root_name]
 assert resumed_session is original_session
 assert resumed_session.solver is original_solver
 assert not resumed_session.suspended
-assert runtime._ACTIVE_SESSIONS[root.name] is original_preview_session
+assert runtime._ACTIVE_SESSIONS[root_name] is original_preview_session
 assert original_preview_session.solver is original_preview_solver
-assert not runtime._POSE_CLEAR_REPEAT_SUSPENDED
+assert not runtime._RUNTIME_SUSPENDED
 assert max(
     max(
         abs(value - (1.0 if row == column else 0.0))

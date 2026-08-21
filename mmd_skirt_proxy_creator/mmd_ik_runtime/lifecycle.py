@@ -5,15 +5,15 @@ from .evaluator import (
     _SESSIONS,
     detach_all_sessions,
     rebuild_enabled_sessions,
-    resume_sessions_after_pose_clear_repeat,
-    suspend_sessions_for_pose_clear_repeat,
+    resume_sessions_after_undo_redo,
+    suspend_sessions_for_undo_redo,
 )
 from .runtime import export_restore_runtime, export_switch_to_canonical
 
 
 _SAVE_TRANSACTIONS = []
 _REBUILD_TIMER_PENDING = False
-_POSE_CLEAR_REPEAT_PENDING = False
+_UNDO_REDO_RESUME_PENDING = False
 
 
 def _finish_save_transactions():
@@ -64,37 +64,28 @@ def schedule_rebuild():
     bpy.app.timers.register(_rebuild_timer, first_interval=0.1)
 
 
-def _pose_clear_repeat_active():
-    operators = getattr(bpy.context.window_manager, "operators", ())
-    return bool(
-        operators
-        and getattr(operators[-1], "bl_idname", "")
-        == "POSE_OT_user_transforms_clear"
-    )
-
-
-def _resume_pose_clear_repeat_timer():
-    global _POSE_CLEAR_REPEAT_PENDING
-    _POSE_CLEAR_REPEAT_PENDING = False
+def _resume_undo_redo_timer():
+    global _UNDO_REDO_RESUME_PENDING
+    _UNDO_REDO_RESUME_PENDING = False
     from ..physics_preview import runtime as preview_runtime
 
     try:
-        resume_sessions_after_pose_clear_repeat()
+        resume_sessions_after_undo_redo()
     except Exception as error:
-        print(f"MMD native pose-clear repeat resume failed: {error}")
+        print(f"MMD native Undo/Redo resume failed: {error}")
         detach_all_sessions()
         rebuild_enabled_sessions()
     try:
-        preview_runtime.resume_after_pose_clear_repeat()
+        preview_runtime.resume_after_undo_redo()
     except Exception as error:
-        print(f"MMD physics pose-clear repeat rebind failed: {error}")
+        print(f"MMD physics Undo/Redo rebind failed: {error}")
     return None
 
 
-def schedule_pose_clear_repeat_resume():
-    if bpy.app.timers.is_registered(_resume_pose_clear_repeat_timer):
+def schedule_undo_redo_resume():
+    if bpy.app.timers.is_registered(_resume_undo_redo_timer):
         return
-    bpy.app.timers.register(_resume_pose_clear_repeat_timer, first_interval=0.01)
+    bpy.app.timers.register(_resume_undo_redo_timer, first_interval=0.01)
 
 
 @persistent
@@ -110,23 +101,23 @@ def _load_post(_filepath):
 
 @persistent
 def _undo_redo_pre(_scene):
-    global _POSE_CLEAR_REPEAT_PENDING
+    global _UNDO_REDO_RESUME_PENDING
     from ..physics_preview import runtime as preview_runtime
 
     _SAVE_TRANSACTIONS.clear()
-    if _pose_clear_repeat_active() and (_SESSIONS or preview_runtime.is_running()):
-        _POSE_CLEAR_REPEAT_PENDING = True
-        suspend_sessions_for_pose_clear_repeat()
-        preview_runtime.suspend_for_pose_clear_repeat()
+    if _SESSIONS or preview_runtime.is_running():
+        _UNDO_REDO_RESUME_PENDING = True
+        suspend_sessions_for_undo_redo()
+        preview_runtime.suspend_for_undo_redo()
         return
-    _POSE_CLEAR_REPEAT_PENDING = False
+    _UNDO_REDO_RESUME_PENDING = False
     detach_all_sessions()
 
 
 @persistent
 def _undo_redo_post(_scene):
-    if _POSE_CLEAR_REPEAT_PENDING:
-        schedule_pose_clear_repeat_resume()
+    if _UNDO_REDO_RESUME_PENDING:
+        schedule_undo_redo_resume()
         return
     schedule_rebuild()
 
@@ -152,14 +143,14 @@ def install():
 
 
 def uninstall():
-    global _REBUILD_TIMER_PENDING, _POSE_CLEAR_REPEAT_PENDING
+    global _REBUILD_TIMER_PENDING, _UNDO_REDO_RESUME_PENDING
     _finish_save_transactions()
     for handlers, callback in _HANDLERS:
         if callback in handlers:
             handlers.remove(callback)
     if bpy.app.timers.is_registered(_rebuild_timer):
         bpy.app.timers.unregister(_rebuild_timer)
-    if bpy.app.timers.is_registered(_resume_pose_clear_repeat_timer):
-        bpy.app.timers.unregister(_resume_pose_clear_repeat_timer)
+    if bpy.app.timers.is_registered(_resume_undo_redo_timer):
+        bpy.app.timers.unregister(_resume_undo_redo_timer)
     _REBUILD_TIMER_PENDING = False
-    _POSE_CLEAR_REPEAT_PENDING = False
+    _UNDO_REDO_RESUME_PENDING = False
