@@ -109,7 +109,7 @@ def install():
             ):
                 pose_bone = self.armature.pose.bones.get(name)
                 if pose_bone is not None:
-                    pose_bone.matrix = matrix
+                    pose_bone.matrix_basis = matrix
             if preserved:
                 self.armature.update_tag(refresh={"OBJECT"})
                 bpy.context.view_layer.update()
