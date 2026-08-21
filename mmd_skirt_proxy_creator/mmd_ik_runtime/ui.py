@@ -7,6 +7,7 @@ from bpy.types import Operator
 
 from . import export_hook
 from .evaluator import is_active as evaluator_is_active
+from .evaluator import capture_physics_bindings
 from .evaluator import replay_live
 from .evaluator import start as start_evaluator
 from .evaluator import start_live
@@ -195,28 +196,34 @@ class SPX_OT_CreateMMDIKRuntime(_RuntimeOperator, Operator):
         root = _selected_root(context)
         from ..physics_preview import runtime as physics_runtime
 
-        restart_physics = physics_runtime.is_running(root)
-        if restart_physics:
-            physics_runtime.stop_preview(root, restore=True)
-        canonical = selected_armature(root)
-        input_basis = {
-            pose_bone.name: pose_bone.matrix_basis.copy()
-            for pose_bone in canonical.pose.bones
-        }
-        _canonical, count, created = create_runtime(context, root)
+        runtime_switch = physics_runtime.suspend_for_runtime_switch(root)
+        started = False
+        created = False
         try:
+            canonical = selected_armature(root)
+            input_basis = {
+                pose_bone.name: pose_bone.matrix_basis.copy()
+                for pose_bone in canonical.pose.bones
+            }
+            _canonical, count, created = create_runtime(context, root)
             matched, total, _scale = start_live(
                 root,
                 input_basis=input_basis,
                 update=False,
             )
+            started = True
         except Exception:
             restore_bindings(root, keep_runtime=False)
             raise
         finally:
-            if restart_physics:
-                physics_runtime.start_preview(context)
-                replay_live(root, context.scene)
+            if runtime_switch is not None:
+                try:
+                    preview_session, _previous_suspended = runtime_switch
+                    if started:
+                        capture_physics_bindings(root, preview_session)
+                        replay_live(root, context.scene)
+                finally:
+                    physics_runtime.resume_after_runtime_switch(runtime_switch)
         _set_armature_selector(
             context.scene.surface_proxy_creator, selected_armature(root)
         )

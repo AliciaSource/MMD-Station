@@ -27,6 +27,18 @@ from .vmd_hook import SOURCE_FRAME_KEY, SOURCE_VMD_KEY
 _SESSIONS = {}
 
 
+def _resolve_live_source_path(root):
+    source_path = Path(str(root.get("spx_mmd_ik_source_pmx", "")))
+    if source_path.is_file():
+        return source_path
+    import_folder = Path(str(root.get("import_folder", "")))
+    candidates = tuple(import_folder.glob("*.pmx")) if import_folder.is_dir() else ()
+    if len(candidates) == 1:
+        root["spx_mmd_ik_source_pmx"] = str(candidates[0])
+        return candidates[0]
+    return source_path
+
+
 def _f32(value):
     return struct.unpack("<f", struct.pack("<f", float(value)))[0]
 
@@ -724,7 +736,7 @@ def start_live(root, input_basis=None, update=True):
     if not state or not state.get("enabled") or canonical is None:
         raise MMDIKRuntimeError("请先启用 MMD IK 兼容")
     stop(root)
-    source_path = Path(str(root.get("spx_mmd_ik_source_pmx", "")))
+    source_path = _resolve_live_source_path(root)
     action = canonical.animation_data.action if canonical.animation_data else None
     source_vmd = Path(str(action.get(SOURCE_VMD_KEY, ""))) if action is not None else Path()
     has_source_vmd = bool(action is not None and source_vmd.is_file())
@@ -840,7 +852,7 @@ def detach_all_sessions():
         _SESSIONS.pop(root_name, None)
 
 
-def suspend_sessions_for_pose_clear_repeat():
+def suspend_sessions_for_undo_redo():
     for session in tuple(_SESSIONS.values()):
         if not session.live:
             continue
@@ -848,14 +860,14 @@ def suspend_sessions_for_pose_clear_repeat():
         session.restore_input(update=False)
 
 
-def resume_sessions_after_pose_clear_repeat(scene=None):
+def resume_sessions_after_undo_redo(scene=None):
     scene = scene or bpy.context.scene
     rebuild_required = False
     for root_name, session in tuple(_SESSIONS.items()):
         root = bpy.data.objects.get(root_name)
         state = runtime_state(root) if root is not None else None
         canonical = canonical_armature(root, state) if state else None
-        source_path = Path(str(root.get("spx_mmd_ik_source_pmx", ""))) if root else Path()
+        source_path = _resolve_live_source_path(root) if root else Path()
         if (
             not session.live
             or not state

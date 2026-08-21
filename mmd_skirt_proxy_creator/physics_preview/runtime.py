@@ -31,7 +31,7 @@ _ACTIVE_SESSIONS = {}
 _ACTIVE_WORLDS = {}
 _STEP_EXECUTOR = None
 _SOURCE_PHYSICS_CACHE = {}
-_POSE_CLEAR_REPEAT_SUSPENDED = False
+_RUNTIME_SUSPENDED = False
 
 
 def _uniform_world_scale(obj, tolerance=1.0e-4):
@@ -1216,21 +1216,50 @@ def is_running(root=None):
     return root.name in _ACTIVE_SESSIONS
 
 
-def suspend_for_pose_clear_repeat():
-    global _POSE_CLEAR_REPEAT_SUSPENDED
-    _POSE_CLEAR_REPEAT_SUSPENDED = bool(_ACTIVE_SESSIONS)
-    return _POSE_CLEAR_REPEAT_SUSPENDED
+def suspend_for_undo_redo():
+    global _RUNTIME_SUSPENDED
+    _RUNTIME_SUSPENDED = bool(_ACTIVE_SESSIONS)
+    return _RUNTIME_SUSPENDED
 
 
-def resume_after_pose_clear_repeat():
-    global _POSE_CLEAR_REPEAT_SUSPENDED
+def suspend_for_runtime_switch(root):
+    global _RUNTIME_SUSPENDED
+    session = _ACTIVE_SESSIONS.get(root.name) if root is not None else None
+    if session is None:
+        return None
+    previous_suspended = _RUNTIME_SUSPENDED
+    _RUNTIME_SUSPENDED = True
+    session._rebind_blender_data()
+    for name, matrix_basis in session.saved_pose_basis.items():
+        pose_bone = session.armature.pose.bones.get(name)
+        if pose_bone is not None:
+            pose_bone.matrix_basis = matrix_basis
+    session.armature.update_tag(refresh={"OBJECT"})
+    bpy.context.view_layer.update()
+    return session, previous_suspended
+
+
+def resume_after_runtime_switch(token):
+    global _RUNTIME_SUSPENDED
+    if token is None:
+        return None
+    session, previous_suspended = token
+    try:
+        session._rebind_blender_data()
+    finally:
+        _RUNTIME_SUSPENDED = previous_suspended
+    return session
+
+
+def resume_after_undo_redo():
+    global _RUNTIME_SUSPENDED
     rebound = 0
     try:
         for session in tuple(_ACTIVE_SESSIONS.values()):
             if session._rebind_blender_data():
                 rebound += 1
     finally:
-        _POSE_CLEAR_REPEAT_SUSPENDED = False
+        _RUNTIME_SUSPENDED = False
     return rebound
 
 
@@ -1532,7 +1561,7 @@ def reset_all_previews():
 def _timer_tick(_wall_seconds=None):
     if not _ACTIVE_SESSIONS:
         return None
-    if _POSE_CLEAR_REPEAT_SUSPENDED:
+    if _RUNTIME_SUSPENDED:
         return 1.0 / 60.0
     wall_seconds = time.perf_counter() if _wall_seconds is None else float(_wall_seconds)
     if len(_ACTIVE_SESSIONS) > 1:

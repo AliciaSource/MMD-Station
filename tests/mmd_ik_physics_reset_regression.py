@@ -24,13 +24,20 @@ from mmd_tools.core.pmx.importer import PMXImporter
 mmd_skirt_proxy_creator.register()
 
 
+existing_roots = {
+    obj.name for obj in bpy.data.objects if getattr(obj, "mmd_type", "") == "ROOT"
+}
 PMXImporter().execute(
     filepath=str(PMX),
     types={"ARMATURE", "PHYSICS"},
     scale=0.08,
     fix_bone_order=False,
 )
-root = next(obj for obj in bpy.data.objects if getattr(obj, "mmd_type", "") == "ROOT")
+root = next(
+    obj
+    for obj in bpy.data.objects
+    if getattr(obj, "mmd_type", "") == "ROOT" and obj.name not in existing_roots
+)
 root["spx_mmd_ik_source_pmx"] = str(PMX)
 for obj in bpy.context.selected_objects:
     obj.select_set(False)
@@ -47,8 +54,18 @@ settings.preview_update_rigids = False
 settings.mmd_ik_root = root
 root.spx_physics_preview_selected = True
 
+session = next(
+    item for item in physics_runtime.start_preview(bpy.context) if item.root == root
+)
+session_identity = id(session)
+world_identity = id(session.world)
+solver_identity = id(session.solver)
+world_solver_identity = id(session.world.solver)
 assert bpy.ops.surface_proxy.create_mmd_ik_runtime() == {"FINISHED"}
-session = physics_runtime.start_preview(bpy.context)[0]
+assert id(physics_runtime._ACTIVE_SESSIONS[root.name]) == session_identity
+assert id(session.world) == world_identity
+assert id(session.solver) == solver_identity
+assert id(session.world.solver) == world_solver_identity
 for _index in range(4):
     session.prepare_step()
     assert session.step_solver()
