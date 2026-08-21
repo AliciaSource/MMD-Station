@@ -840,6 +840,75 @@ def detach_all_sessions():
         _SESSIONS.pop(root_name, None)
 
 
+def suspend_sessions_for_pose_clear_repeat():
+    for session in tuple(_SESSIONS.values()):
+        if not session.live:
+            continue
+        session.suspended = True
+        session.restore_input(update=False)
+
+
+def resume_sessions_after_pose_clear_repeat(scene=None):
+    scene = scene or bpy.context.scene
+    rebuild_required = False
+    for root_name, session in tuple(_SESSIONS.items()):
+        root = bpy.data.objects.get(root_name)
+        state = runtime_state(root) if root is not None else None
+        canonical = canonical_armature(root, state) if state else None
+        source_path = Path(str(root.get("spx_mmd_ik_source_pmx", ""))) if root else Path()
+        if (
+            not session.live
+            or not state
+            or not state.get("enabled")
+            or canonical is None
+            or not source_path.is_file()
+            or source_path.resolve() != Path(session.pmx_path).resolve()
+        ):
+            session.solver.close()
+            _SESSIONS.pop(root_name, None)
+            rebuild_required = True
+            continue
+        refresh_bindings(root)
+        mapping = _bone_map(canonical, session.solver)
+        if not any(item is not None for item in mapping):
+            session.solver.close()
+            _SESSIONS.pop(root_name, None)
+            rebuild_required = True
+            continue
+        session.runtime_name = canonical.name
+        session.canonical_name = canonical.name
+        session.mapping = mapping
+        session.scale = _infer_scale(mapping, session.solver)
+        session.bone_indices.clear()
+        for index, pose_bone in enumerate(mapping):
+            if pose_bone is None:
+                continue
+            session.bone_indices[pose_bone.name] = index
+            for alias in _pose_bone_name(pose_bone):
+                session.bone_indices.setdefault(alias, index)
+        session.input_basis = {
+            pose_bone.name: pose_bone.matrix_basis.copy()
+            for pose_bone in canonical.pose.bones
+        }
+        session.output_basis.clear()
+        session.input_signature = ()
+        session.action_signature = ()
+        session.solver_matrices.clear()
+        session.desired_pose.clear()
+        session.external_transforms.clear()
+        session.physics_bind_positions = ()
+        session.physics_rigid_indices = ()
+        session.physics_feedback_complete = False
+        session.last_vmd_frame = None
+        session.pose_override = True
+        session.solver.reset()
+        session.solver.clear_external_transforms()
+        session.suspended = False
+        session.evaluate_live(scene, update=False)
+    if rebuild_required:
+        rebuild_enabled_sessions()
+
+
 def rebuild_enabled_sessions():
     rebuilt = []
     for root in tuple(bpy.data.objects):

@@ -20,6 +20,7 @@ mmd_tools.register()
 
 import mmd_skirt_proxy_creator
 from mmd_skirt_proxy_creator.mmd_ik_runtime import evaluator
+from mmd_skirt_proxy_creator.mmd_ik_runtime import lifecycle
 from mmd_skirt_proxy_creator.physics_preview import runtime
 
 mmd_skirt_proxy_creator.register()
@@ -110,6 +111,37 @@ for name, cleared in cleared_basis.items():
         current.to_quaternion().rotation_difference(cleared.to_quaternion()).angle,
     )
 assert maximum_input_error < 1.0e-6, maximum_input_error
+assert preview_session.consecutive_tick_failures == 0
+
+original_session = evaluator._SESSIONS[root.name]
+original_solver = original_session.solver
+original_repeat_probe = lifecycle._pose_clear_repeat_active
+lifecycle._pose_clear_repeat_active = lambda: True
+try:
+    lifecycle._undo_redo_pre(bpy.context.scene)
+    assert evaluator._SESSIONS[root.name] is original_session
+    assert original_session.suspended
+    assert bpy.ops.pose.user_transforms_clear(only_selected=False) == {"FINISHED"}
+    lifecycle._undo_redo_post(bpy.context.scene)
+    if bpy.app.timers.is_registered(lifecycle._resume_pose_clear_repeat_timer):
+        bpy.app.timers.unregister(lifecycle._resume_pose_clear_repeat_timer)
+    lifecycle._resume_pose_clear_repeat_timer()
+finally:
+    lifecycle._pose_clear_repeat_active = original_repeat_probe
+
+resumed_session = evaluator._SESSIONS[root.name]
+assert resumed_session is original_session
+assert resumed_session.solver is original_solver
+assert not resumed_session.suspended
+assert max(
+    max(
+        abs(value - (1.0 if row == column else 0.0))
+        for row, matrix_row in enumerate(matrix)
+        for column, value in enumerate(matrix_row)
+    )
+    for matrix in resumed_session.input_basis.values()
+) < 1.0e-6
+runtime._timer_tick(3.0 / 60.0)
 assert preview_session.consecutive_tick_failures == 0
 
 runtime.stop_preview(root)
