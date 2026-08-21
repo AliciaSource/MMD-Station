@@ -83,7 +83,7 @@ def _transform_modal_pose_matrices(armature):
     if active is not armature or getattr(active, "mode", "") != "POSE":
         return {}
     return {
-        pose_bone.name: pose_bone.matrix.copy()
+        pose_bone.name: pose_bone.matrix_basis.copy()
         for pose_bone in armature.pose.bones
         if pose_bone.bone.select
     }
@@ -406,7 +406,7 @@ class Session:
         ):
             pose_bone = runtime.pose.bones.get(name)
             if pose_bone is not None:
-                pose_bone.matrix = matrix
+                pose_bone.matrix_basis = matrix
         runtime.update_tag(refresh={"OBJECT"})
         if update:
             bpy.context.view_layer.update()
