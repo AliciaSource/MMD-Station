@@ -76,12 +76,18 @@ def _pose_clear_repeat_active():
 def _resume_pose_clear_repeat_timer():
     global _POSE_CLEAR_REPEAT_PENDING
     _POSE_CLEAR_REPEAT_PENDING = False
+    from ..physics_preview import runtime as preview_runtime
+
     try:
         resume_sessions_after_pose_clear_repeat()
     except Exception as error:
         print(f"MMD native pose-clear repeat resume failed: {error}")
         detach_all_sessions()
         rebuild_enabled_sessions()
+    try:
+        preview_runtime.resume_after_pose_clear_repeat()
+    except Exception as error:
+        print(f"MMD physics pose-clear repeat rebind failed: {error}")
     return None
 
 
@@ -105,10 +111,13 @@ def _load_post(_filepath):
 @persistent
 def _undo_redo_pre(_scene):
     global _POSE_CLEAR_REPEAT_PENDING
+    from ..physics_preview import runtime as preview_runtime
+
     _SAVE_TRANSACTIONS.clear()
-    if _pose_clear_repeat_active() and _SESSIONS:
+    if _pose_clear_repeat_active() and (_SESSIONS or preview_runtime.is_running()):
         _POSE_CLEAR_REPEAT_PENDING = True
         suspend_sessions_for_pose_clear_repeat()
+        preview_runtime.suspend_for_pose_clear_repeat()
         return
     _POSE_CLEAR_REPEAT_PENDING = False
     detach_all_sessions()

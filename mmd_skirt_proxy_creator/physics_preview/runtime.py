@@ -31,6 +31,7 @@ _ACTIVE_SESSIONS = {}
 _ACTIVE_WORLDS = {}
 _STEP_EXECUTOR = None
 _SOURCE_PHYSICS_CACHE = {}
+_POSE_CLEAR_REPEAT_SUSPENDED = False
 
 
 def _uniform_world_scale(obj, tolerance=1.0e-4):
@@ -1215,6 +1216,24 @@ def is_running(root=None):
     return root.name in _ACTIVE_SESSIONS
 
 
+def suspend_for_pose_clear_repeat():
+    global _POSE_CLEAR_REPEAT_SUSPENDED
+    _POSE_CLEAR_REPEAT_SUSPENDED = bool(_ACTIVE_SESSIONS)
+    return _POSE_CLEAR_REPEAT_SUSPENDED
+
+
+def resume_after_pose_clear_repeat():
+    global _POSE_CLEAR_REPEAT_SUSPENDED
+    rebound = 0
+    try:
+        for session in tuple(_ACTIVE_SESSIONS.values()):
+            if session._rebind_blender_data():
+                rebound += 1
+    finally:
+        _POSE_CLEAR_REPEAT_SUSPENDED = False
+    return rebound
+
+
 def active_session_info():
     return tuple(
         (
@@ -1513,6 +1532,8 @@ def reset_all_previews():
 def _timer_tick(_wall_seconds=None):
     if not _ACTIVE_SESSIONS:
         return None
+    if _POSE_CLEAR_REPEAT_SUSPENDED:
+        return 1.0 / 60.0
     wall_seconds = time.perf_counter() if _wall_seconds is None else float(_wall_seconds)
     if len(_ACTIVE_SESSIONS) > 1:
         return _timer_tick_parallel(tuple(_ACTIVE_SESSIONS.values()), wall_seconds)
