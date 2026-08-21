@@ -7,6 +7,8 @@
 - 对 `POSE_OT_user_transforms_clear` 的 operator repeat 增加窄 fast path：Undo/Redo 前只恢复 canonical 输入并挂起现有 live Session，不关闭 native solver；操作完成后重新按名称绑定当前 Armature/PoseBone，重新捕获最终整套 `matrix_basis`，清空旧输出/物理反馈缓存并 reset 同一个 solver。PMX 来源、模型状态或骨骼映射不再兼容时仍退回原完整关闭/重建路径；其它普通 Undo/Redo 行为保持不变。
 - 修复后的同一真实 GUI 操作中 `only_selected=False` 已生效，Undo 前后 Session 始终为 `1`，同一个 native solver 未被卸载；点击到 `undo_pre` 约 `0.049 s`，恢复周期最大单次 UI/timer 间隔约 `0.254 s`，未再出现秒级等待。该结果是自动化真实 GUI 证据，最终体感仍等待用户在当前 Junction 源码上验收。
 - `mmd_ik_clear_user_transforms_regression.py` 新增 operator-repeat 生命周期断言，要求 Session/solver identity 保持、全骨 input basis 正确清为 identity 且 MMD 物理继续运行。正常 `mmd_tools` 优先的 `MMD_IK_TRANSFORM_MODAL_REGRESSION_OK`、`MMD_IK_CLEAR_USER_TRANSFORMS_REGRESSION_OK`、`MMD_IK_PHYSICS_FEEDBACK_REGRESSION_OK`、authoring Undo/Redo + save/reload 均通过。未增版本、未打包、未 push；本轮提交仅作为待用户视口验收的候选。
+- 用户视口验收随后否定首个候选：首次取消 `仅选中` 仍长时间停顿，之后重新勾选也会再次停顿。按真实 F9 浮动面板重新复现后，属性切换完成即出现 `ReferenceError: StructRNA of type Object has been removed`；原因是 `d091006` 只保留并重绑 MMD IK Session，Undo/Redo 替换 Blender RNA 后，仍在运行的 MMD 物理预览 Session 继续持有旧 `root/settings/armature/rigids/joints` wrapper，下一次自然 timer 因此进入异常启动快照恢复。
+- pose-clear repeat fast path 现在同时暂停物理 timer，并在 IK 恢复周期内按名称重绑物理 Session 的 Blender data；只更换失效 wrapper，不重建 native physics solver，原 broad-pose reset 语义不变。修复后的真实可见 Blender 4.4 完整执行：旋转 `足D.L` → 清空 → 取消 `仅选中`并自然运行 8 秒 → 再旋转/清空 → 再次取消并运行 8 秒 → 重新勾选并运行 8 秒。三段均保持相同 IK/physics Session 与 solver identity，physics world generation 始终为 1、tick failure 为 0、状态持续为“运行中：1 个模型”，未再触发 RNA 异常恢复。最终体感仍由用户视口验收决定。
 
 ## 2026-08-20 - MMD IK 模态控制骨保护、IK 链实时求值与正常 mmd_tools 物理连续运行
 

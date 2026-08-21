@@ -115,12 +115,15 @@ assert preview_session.consecutive_tick_failures == 0
 
 original_session = evaluator._SESSIONS[root.name]
 original_solver = original_session.solver
+original_preview_session = runtime._ACTIVE_SESSIONS[root.name]
+original_preview_solver = original_preview_session.solver
 original_repeat_probe = lifecycle._pose_clear_repeat_active
 lifecycle._pose_clear_repeat_active = lambda: True
 try:
     lifecycle._undo_redo_pre(bpy.context.scene)
     assert evaluator._SESSIONS[root.name] is original_session
     assert original_session.suspended
+    assert runtime._POSE_CLEAR_REPEAT_SUSPENDED
     assert bpy.ops.pose.user_transforms_clear(only_selected=False) == {"FINISHED"}
     lifecycle._undo_redo_post(bpy.context.scene)
     if bpy.app.timers.is_registered(lifecycle._resume_pose_clear_repeat_timer):
@@ -133,6 +136,9 @@ resumed_session = evaluator._SESSIONS[root.name]
 assert resumed_session is original_session
 assert resumed_session.solver is original_solver
 assert not resumed_session.suspended
+assert runtime._ACTIVE_SESSIONS[root.name] is original_preview_session
+assert original_preview_session.solver is original_preview_solver
+assert not runtime._POSE_CLEAR_REPEAT_SUSPENDED
 assert max(
     max(
         abs(value - (1.0 if row == column else 0.0))
