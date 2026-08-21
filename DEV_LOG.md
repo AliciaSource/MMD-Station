@@ -1,5 +1,13 @@
 # Development Log
 
+## 2026-08-21 - 清空用户变换 Redo 属性切换保留 native Session
+
+- 用户完成上一轮 Transform modal 视口验收后，将提交 `48f7b3b` 晋升为新安全基线并标记 `baseline-20260821-mmd-ik-modal-chain-live`。本轮只在该基线上处理 MMD IK + MMD DLL 运行时切换“清空用户变换”的 `仅选中` 属性产生的停顿，不修改已验收的 modal `matrix_basis` 保护、PMX/MMD DLL 或物理核心。
+- 真实可见 Blender 4.4 中按用户顺序启用 MMD IK 与 MMD DLL、旋转 `足D.L`、从右键菜单执行 `Clear User Transforms`，再通过 Adjust Last Operation 把 `only_selected` 从 `True` 改为 `False`。确认 Blender 的属性切换会触发 Undo/Redo handler；旧生命周期无条件执行 `detach_all_sessions()`，把当前 native IK solver 关闭并从 PMX 重新建立 Session，实际观察到 Session 数量 `1 → 0 → 1`。全骨清姿态与物理 broad-reset 本身不是这次额外停顿的主因。
+- 对 `POSE_OT_user_transforms_clear` 的 operator repeat 增加窄 fast path：Undo/Redo 前只恢复 canonical 输入并挂起现有 live Session，不关闭 native solver；操作完成后重新按名称绑定当前 Armature/PoseBone，重新捕获最终整套 `matrix_basis`，清空旧输出/物理反馈缓存并 reset 同一个 solver。PMX 来源、模型状态或骨骼映射不再兼容时仍退回原完整关闭/重建路径；其它普通 Undo/Redo 行为保持不变。
+- 修复后的同一真实 GUI 操作中 `only_selected=False` 已生效，Undo 前后 Session 始终为 `1`，同一个 native solver 未被卸载；点击到 `undo_pre` 约 `0.049 s`，恢复周期最大单次 UI/timer 间隔约 `0.254 s`，未再出现秒级等待。该结果是自动化真实 GUI 证据，最终体感仍等待用户在当前 Junction 源码上验收。
+- `mmd_ik_clear_user_transforms_regression.py` 新增 operator-repeat 生命周期断言，要求 Session/solver identity 保持、全骨 input basis 正确清为 identity 且 MMD 物理继续运行。正常 `mmd_tools` 优先的 `MMD_IK_TRANSFORM_MODAL_REGRESSION_OK`、`MMD_IK_CLEAR_USER_TRANSFORMS_REGRESSION_OK`、`MMD_IK_PHYSICS_FEEDBACK_REGRESSION_OK`、authoring Undo/Redo + save/reload 均通过。未增版本、未打包、未 push；本轮提交仅作为待用户视口验收的候选。
+
 ## 2026-08-20 - MMD IK 模态控制骨保护、IK 链实时求值与正常 mmd_tools 物理连续运行
 
 - 上一候选 `304bc4a` 错误地在共享 `physics_preview._timer_tick()` 检测到 `TRANSFORM_OT_*` 后暂停整个物理 tick；该判断不区分是否启用 MMD IK，导致正常 `mmd_tools` 骨架在 `G/R` 期间 Mesh 已移动而刚体和 Joint 停在旧 world 位置。已先恢复已验收安全基线 `93174c6`，并把失败提交保存为 `backup/failed-mmd-ik-modal-writeback-20260820`。
