@@ -34,20 +34,23 @@ def install():
         return _ORIGINAL_SESSION_INIT(self, scene, settings, root)
 
     def runtime_aware_prepare_step(self):
+        from .evaluator import _SESSIONS
+
+        try:
+            native_session = _SESSIONS.get(self.root.name)
+        except (AttributeError, ReferenceError):
+            return _ORIGINAL_PREPARE_STEP(self)
+        if native_session is None:
+            return _ORIGINAL_PREPARE_STEP(self)
         from .evaluator import (
-            _SESSIONS,
             _transform_modal_pose_matrices,
             evaluate_physics_pose,
             prepare_physics_targets,
             uses_exact_physics_targets,
         )
 
-        native_session = _SESSIONS.get(self.root.name)
-        previous_suspended = (
-            native_session.suspended if native_session is not None else False
-        )
-        if native_session is not None:
-            native_session.suspended = True
+        previous_suspended = native_session.suspended
+        native_session.suspended = True
         self._mmd_ik_modal_pose_matrices = _transform_modal_pose_matrices(
             self.armature
         )
@@ -71,29 +74,39 @@ def install():
             finally:
                 if native_pose_active:
                     self._broad_pose_reset_detected = reset_probe
-            if not exact_targets:
+            if exact_targets:
                 prepare_physics_targets(self.root, self)
             return result
         finally:
-            if native_session is not None:
-                native_session.suspended = previous_suspended
+            native_session.suspended = previous_suspended
 
     def runtime_aware_apply_step(self, transforms=None, bone_transforms=None, joint_states=None):
+        from .evaluator import _SESSIONS
+
+        try:
+            native_session = _SESSIONS.get(self.root.name)
+        except (AttributeError, ReferenceError):
+            return _ORIGINAL_APPLY_STEP(
+                self,
+                transforms,
+                bone_transforms,
+                joint_states,
+            )
+        if native_session is None:
+            return _ORIGINAL_APPLY_STEP(
+                self,
+                transforms,
+                bone_transforms,
+                joint_states,
+            )
         if transforms is None:
             transforms = self.solver.transforms()
             bone_transforms = self.solver.bone_transforms()
             joint_states = self.solver.joint_states()
-        from .evaluator import (
-            _SESSIONS,
-            submit_physics_feedback,
-        )
+        from .evaluator import submit_physics_feedback
 
-        native_session = _SESSIONS.get(self.root.name)
-        previous_suspended = (
-            native_session.suspended if native_session is not None else False
-        )
-        if native_session is not None:
-            native_session.suspended = True
+        previous_suspended = native_session.suspended
+        native_session.suspended = True
         try:
             result = _ORIGINAL_APPLY_STEP(
                 self,
@@ -113,12 +126,10 @@ def install():
             if preserved:
                 self.armature.update_tag(refresh={"OBJECT"})
                 bpy.context.view_layer.update()
-            if native_session is not None:
-                native_session.sync_output_pose(self.armature, self.scene)
+            native_session.sync_output_pose(self.armature, self.scene)
             return result
         finally:
-            if native_session is not None:
-                native_session.suspended = previous_suspended
+            native_session.suspended = previous_suspended
 
     def runtime_aware_stop_preview(root=None, restore=True):
         roots = (

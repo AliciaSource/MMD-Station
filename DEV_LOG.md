@@ -1,5 +1,16 @@
 # Development Log
 
+## 2026-08-23 - V0.1.8 MMD DLL 刚体延迟回归与物理预览热路径重构
+
+- 使用用户工程 `D:\MMD\模型\Alicia\鳴潮-達尼婭\達尼婭\04.blend` 对当前代理做逐阶段剖析：目标 Armature 共 868 根骨骼，当前代理含 250 个刚体、374 个 Joint；修改前单 tick 平均约为 prepare `29.568 ms`、Rust/Bullet `1.044 ms`、输出复制 `0.039 ms`、apply `22.578 ms`，实际瓶颈在 Blender/Python host adapter，而不是 Rust 求解器。60 Hz timer 还会在约 `53.149 ms` 回调后固定再等 `16.667 ms`，实际周期接近 `70 ms`。
+- 确认近期 MMD IK 兼容桥接存在真实隔离回归：即使未启用 MMD IK Session，普通 `mmd_tools + MMD DLL` 仍会捕获/恢复 Transform modal 骨骼、提交 feedback 并额外执行一次 `view_layer.update()`。`physics_bridge.py` 现在没有对应 native Session 时立即委托原物理实现，兼容关闭路径不再进入任何 MMD IK pose/feedback 逻辑；测试明确断言 bridge 调用数为零。
+- 同一桥接中还发现 exact-target 条件反写：旧代码只在 `exact_targets == False` 时调用 `prepare_physics_targets()`，而该函数在非 exact 模式必定立即返回，导致真正的 `MMD IK + MMD DLL` raw body target/basis 修正从未执行。条件已改为只在 exact 模式提交；回归记录 `exact_calls=12`、每次至少提交 202 个映射目标，PMX 路径调用数保持为零。
+- 修复 MMD DLL 的同 tick 刚体延迟：物理输入先恢复动态骨骼基线并刷新 depsgraph，再采样 0 型刚体的最终 kinematic bone target，调用方即使没有预先 `view_layer.update()` 也不会提交上一 tick 的骨骼矩阵；物理写回完成后，再按最终 `Armature world × PoseBone × authored offset` 对绑定的 0 型显示刚体做一次精确同步，避免父级/约束在 apply 阶段更新后显示刚体仍落后一帧。已移除同一 0 型刚体在 apply 前后的重复对象写入。
+- 重构 `physics_preview/runtime.py` 的稳态热路径：Session 建立或 RNA 生命周期重绑时一次性缓存 rigid mode、Rigid→PoseBone、driver PoseBone、骨骼深度及 driver ancestor closure；04 当前代理实际只需处理 195 根闭包骨骼，不再每 tick 扫描全部 868 根骨骼或执行约 2509 次按名 collection lookup。启动快照、输出快照与 reset probe 改为只处理物理 driver；Undo/Redo、runtime switch 和失效 RNA 恢复仍强制完整重绑。矩阵完全相等时 reset probe 走 C 层快速判定，再对真正变化项保留原 epsilon 检查。
+- 预览运行期间暂停代理同步与 preview model-id 两个全场景 depsgraph handler；“显示刚体运动”关闭时同时停止 Joint 对象投影；生产 timer 改为扣除本次 callback 已花时间，超预算帧只保留 `1 ms` 最小调度间隔，不再额外固定空等一帧。最终同一 04 当前代理、显示刚体开启的 20 tick 均值为 prepare `14.209 ms`、Rust/Bullet `0.983 ms`、复制 `0.039 ms`、apply `17.847 ms`、合计 `33.078 ms`；稳态 host callback 约减至原来的 `62%`，预期调度周期约 `34 ms`，而 native 求解仍约 `1 ms`。
+- 回归通过：`MMD_04_RIGID_LATENCY_REGRESSION_OK type0=59 target_motion=0.00999998093-0.0100000191 authored_motion=0.0100000202 max_error=0`；`MMD_IK_TRANSFORM_MODAL_REGRESSION_OK`；`MMD_07_ROOT_MOTION_REGRESSION_OK` 的 PMX/MMD × MMD IK 关/开四组合；PMX/MMD 两套 `PHYSICS_ROOT_OFFSET_REGRESSION_OK`；`MMD_IK_PHYSICS_FEEDBACK_REGRESSION_OK exact_calls=12 exact_min=202`、`MMD_IK_PHYSICS_RESET_REGRESSION_OK`、`MMD_IK_CLEAR_USER_TRANSFORMS_REGRESSION_OK`、`MMD_TIME_DRIVER_UNIT_OK`，以及完整 `MMD_SKIRT_PROXY_CREATOR_SMOKE_OK top_range=0.235911131 rigids=48 joints=96`。完整 smoke 中的 traceback 仍为测试主动注入的异常恢复分支，不是未处理失败。
+- 本轮不修改 `mmd_physics_solver.dll`、`mmd_physics_solver_mmd.dll`、native ABI、固定频率或 substeps。版本保持 V0.1.8，不打包 ZIP、不 push；真实 Blender 4.4 继续通过现有源码 Junction 使用当前代码。用户随后在原 `04.blend` 真实视口确认刚体延迟已修复、流畅度较修改前略有改善，并批准将该状态晋升为 `baseline-20260823-mmd-preview-latency-fixed`；同时确认操作手感仍未达到优秀标准，后续性能重构须从此基线继续，不能牺牲本轮已验收的 type 0、Root/Bone 与 MMD IK 正确性。
+
 ## 2026-08-21 - MMD IK 首次启用与 Blender Undo/Redo 运行态重绑
 
 - 使用未保存 MMD IK 状态、未运行物理 Session 的原始 `07.blend` 重新监测用户顺序：手动启用 MMD IK、启动物理、旋转、原生“清空用户变换”、F9 切换 `仅选中`。确认此前只为 `POSE_OT_user_transforms_clear` 设置的 fast path 依赖 `window_manager.operators[-1]`；Blender 开始 Adjust Last Operation 的 Undo 时 operator 栈会变化，判断因此漏失，插件转而关闭 native IK Session，物理 Session 随后继续持有已失效 RNA wrapper，表现为物理预览消失、立即重启报错、稍后自动恢复。
