@@ -41,7 +41,9 @@ def install():
         except (AttributeError, ReferenceError):
             return _ORIGINAL_PREPARE_STEP(self)
         if native_session is None:
+            self.pose_input.set_native_input_active(False)
             return _ORIGINAL_PREPARE_STEP(self)
+        self.pose_input.set_native_input_active(True)
         from .evaluator import (
             _transform_modal_pose_matrices,
             evaluate_physics_pose,
@@ -80,7 +82,13 @@ def install():
         finally:
             native_session.suspended = previous_suspended
 
-    def runtime_aware_apply_step(self, transforms=None, bone_transforms=None, joint_states=None):
+    def runtime_aware_apply_step(
+        self,
+        transforms=None,
+        bone_transforms=None,
+        joint_states=None,
+        present_output=True,
+    ):
         from .evaluator import _SESSIONS
 
         try:
@@ -91,6 +99,7 @@ def install():
                 transforms,
                 bone_transforms,
                 joint_states,
+                present_output=present_output,
             )
         if native_session is None:
             return _ORIGINAL_APPLY_STEP(
@@ -98,6 +107,7 @@ def install():
                 transforms,
                 bone_transforms,
                 joint_states,
+                present_output=present_output,
             )
         if transforms is None:
             transforms = self.solver.transforms()
@@ -113,6 +123,7 @@ def install():
                 transforms,
                 bone_transforms,
                 joint_states,
+                present_output=present_output,
             )
             submit_physics_feedback(self.root, self, transforms)
             preserved = getattr(self, "_mmd_ik_modal_pose_matrices", {})

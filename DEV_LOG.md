@@ -1,5 +1,16 @@
 # Development Log
 
+## 2026-08-23 - V0.1.8 物理预览 Pose I/O 双缓冲与交互调度重构
+
+- 用户在真实 `04.blend` 视口确认上一轮刚体延迟已经修复，并批准将提交 `978339a` 标记为本地安全基线 `baseline-20260823-mmd-preview-latency-fixed`。本轮从该基线继续，只处理 `CURRENT_PROXY + MMD DLL + 未启用 MMD IK` 的操作手感；不修改已验收的 type 0、Root/Bone、MMD IK 数学或两个 native DLL。
+- 对相同 `04.blend` 的 250 个 Rigid、374 个 Joint、190 根 physics driver 做逐阶段复测：基线 tick 中位约 `38.190 ms`，prepare/output 两次 `view_layer.update()` 分别约 `12.868 / 14.282 ms`，合计约 `27.15 ms`、占总耗时约 `71%`；Rust/Bullet step 仍约 `1 ms`。历史 revision 回放还确认近期性能回归来自 Blender host adapter 的重复 rebind、全骨扫描和 MMD IK modal 写回泄漏，而不是 MMD DLL；但今日 `04.blend` 创建于 2026-08-23，不能据此反推历史同名工程当时的实际帧率。
+- 新增 `physics_preview/pose_pipeline.py:PoseInputAdapter`，把 authored Pose input、physics output、raw input signature、depsgraph self-write guard、cache invalidation 与 presentation cadence 从 `runtime.py` 的 solver/world 生命周期中分离。稳态输入不变时复用 immutable animation pose 与 native target payload，但仍逐 tick 调用 DLL `set_bone_target()`；40 tick fresh-process 对照中完整 prepare 与缓存路径的 solver + Bone output SHA256 均为 `5041a6ac6c84e3c3c8bd1511344c9694f1dbfd696554c9dc7c9cf99c221a713c`。
+- 用户通过真实 Blender 操作产生的 depsgraph evaluation 现在可直接作为本 tick input snapshot：对非 physics driver 读取已求值 Pose，对 driver 分支从保存的 authored `matrix_basis` 重建 canonical hierarchy，不再重复执行 prepare update。全 868 骨 raw `matrix_basis` 检查作为直接脚本写入的 backstop；脚本尚未求值、driver 被直接编辑、约束结构不安全、MMD IK、PMX、MODEL 或多 Session 时全部回退完整双 update 路径。Undo/Redo、RNA rebind、reset 与 runtime switch 均明确清空缓存。
+- Rust solver 继续按每次有效 tick 推进，未降低 fixed frequency 或 substeps；GUI 中阻塞式 output depsgraph evaluation 与 Rigid/Joint 调试对象投影最多 30 Hz，Bone output 仍逐 tick 写入并由 Blender 主循环合并。`PreviewDeadlineScheduler` 改用 absolute deadline，长 presentation tick 后可由短 tick 追回预算，同时将最大欠帧限制为一个 interval，避免无界 catch-up 饿死界面。headless、显式测试、MMD IK 与其它 fallback 路径仍每 tick同步 presentation。
+- `04.blend` 新回归连续三轮：静止交互模拟平均约 `10.989-11.511 ms/tick`，连续 Root Bone 输入约 `13.621-14.198 ms/tick`，20 个 solver tick 只执行 10 次阻塞 presentation；相对 `38.190 ms` 基线，host callback 平均减少约 `64-71%`。`MMD_04_PREVIEW_PIPELINE_OK cache_hits=25 fast_captures=21 presentations=10/20 type0_error=0 motion_type0_error=0`；直接未求值的 Root Bone 修改仍强制完整 prepare，既有 `MMD_04_RIGID_LATENCY_REGRESSION_OK ... max_error=0` 保持通过。
+- 回归通过：PMX/MMD 两套 `PHYSICS_ROOT_OFFSET_REGRESSION_OK`；`MMD_07_ROOT_MOTION_REGRESSION_OK` 的 PMX/MMD × MMD IK 关/开四组合；`MMD_IK_TRANSFORM_MODAL_REGRESSION_OK`、`MMD_IK_PHYSICS_FEEDBACK_REGRESSION_OK exact_calls=12 exact_min=202`、`MMD_IK_PHYSICS_RESET_REGRESSION_OK`、`MMD_IK_CLEAR_USER_TRANSFORMS_REGRESSION_OK`、`MMD_TIME_DRIVER_UNIT_OK`，以及完整 `MMD_SKIRT_PROXY_CREATOR_SMOKE_OK top_range=0.235911131 rigids=48 joints=96`。完整 smoke 的 traceback 仍是测试主动注入的恢复分支。
+- 同步更新 `physics_preview/README.md` 的模块边界。版本保持 V0.1.8，不打包 ZIP、不 push；真实 Blender 4.4 继续通过源码 Junction 使用当前候选。以上为 headless/代码端证据，最终是否达到“优秀手感”仍等待用户重启 Blender 后在原 `04.blend` 真实视口验收，验收前不移动安全基线。
+
 ## 2026-08-23 - V0.1.8 MMD DLL 刚体延迟回归与物理预览热路径重构
 
 - 使用用户工程 `D:\MMD\模型\Alicia\鳴潮-達尼婭\達尼婭\04.blend` 对当前代理做逐阶段剖析：目标 Armature 共 868 根骨骼，当前代理含 250 个刚体、374 个 Joint；修改前单 tick 平均约为 prepare `29.568 ms`、Rust/Bullet `1.044 ms`、输出复制 `0.039 ms`、apply `22.578 ms`，实际瓶颈在 Blender/Python host adapter，而不是 Rust 求解器。60 Hz timer 还会在约 `53.149 ms` 回调后固定再等 `16.667 ms`，实际周期接近 `70 ms`。
