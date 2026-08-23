@@ -9,7 +9,7 @@
 - Rust solver 继续按每次有效 tick 推进，未降低 fixed frequency 或 substeps；GUI 中阻塞式 output depsgraph evaluation 与 Rigid/Joint 调试对象投影最多 30 Hz，Bone output 仍逐 tick 写入并由 Blender 主循环合并。`PreviewDeadlineScheduler` 改用 absolute deadline，长 presentation tick 后可由短 tick 追回预算，同时将最大欠帧限制为一个 interval，避免无界 catch-up 饿死界面。headless、显式测试、MMD IK 与其它 fallback 路径仍每 tick同步 presentation。
 - `04.blend` 新回归连续三轮：静止交互模拟平均约 `10.989-11.511 ms/tick`，连续 Root Bone 输入约 `13.621-14.198 ms/tick`，20 个 solver tick 只执行 10 次阻塞 presentation；相对 `38.190 ms` 基线，host callback 平均减少约 `64-71%`。`MMD_04_PREVIEW_PIPELINE_OK cache_hits=25 fast_captures=21 presentations=10/20 type0_error=0 motion_type0_error=0`；直接未求值的 Root Bone 修改仍强制完整 prepare，既有 `MMD_04_RIGID_LATENCY_REGRESSION_OK ... max_error=0` 保持通过。
 - 回归通过：PMX/MMD 两套 `PHYSICS_ROOT_OFFSET_REGRESSION_OK`；`MMD_07_ROOT_MOTION_REGRESSION_OK` 的 PMX/MMD × MMD IK 关/开四组合；`MMD_IK_TRANSFORM_MODAL_REGRESSION_OK`、`MMD_IK_PHYSICS_FEEDBACK_REGRESSION_OK exact_calls=12 exact_min=202`、`MMD_IK_PHYSICS_RESET_REGRESSION_OK`、`MMD_IK_CLEAR_USER_TRANSFORMS_REGRESSION_OK`、`MMD_TIME_DRIVER_UNIT_OK`，以及完整 `MMD_SKIRT_PROXY_CREATOR_SMOKE_OK top_range=0.235911131 rigids=48 joints=96`。完整 smoke 的 traceback 仍是测试主动注入的恢复分支。
-- 同步更新 `physics_preview/README.md` 的模块边界。版本保持 V0.1.8，不打包 ZIP、不 push；真实 Blender 4.4 继续通过源码 Junction 使用当前候选。以上为 headless/代码端证据，最终是否达到“优秀手感”仍等待用户重启 Blender 后在原 `04.blend` 真实视口验收，验收前不移动安全基线。
+- 同步更新 `physics_preview/README.md` 的模块边界。版本保持 V0.1.8，不打包 ZIP、不 push；真实 Blender 4.4 继续通过源码 Junction 使用。用户随后在原 `04.blend` 真实视口确认本轮未观察到 bug，并批准将提交 `292dcb3` 晋升为本地安全基线 `baseline-20260823-mmd-preview-pose-pipeline`。用户同时确认实际操作仍约十几 FPS、尚未达到目标手感；后续 60 FPS 量级优化必须从该基线继续，不能牺牲已验收的 type 0、Root/Bone、MMD IK 与重置正确性。
 
 ## 2026-08-23 - V0.1.8 MMD DLL 刚体延迟回归与物理预览热路径重构
 
