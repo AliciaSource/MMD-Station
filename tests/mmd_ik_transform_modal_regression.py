@@ -40,6 +40,29 @@ normal_root_bone = normal_armature.pose.bones["全ての親"]
 normal_baseline = normal_root_bone.matrix_basis.copy()
 normal_preview = runtime.start_preview(bpy.context)[0]
 runtime._timer_tick(0.0)
+bridge_calls = []
+original_modal_capture = evaluator._transform_modal_pose_matrices
+original_feedback_submit = evaluator.submit_physics_feedback
+
+
+def track_modal_capture(armature):
+    bridge_calls.append("modal_capture")
+    return original_modal_capture(armature)
+
+
+def track_feedback_submit(root, preview_session, transforms=None):
+    bridge_calls.append("feedback_submit")
+    return original_feedback_submit(root, preview_session, transforms)
+
+
+evaluator._transform_modal_pose_matrices = track_modal_capture
+evaluator.submit_physics_feedback = track_feedback_submit
+try:
+    runtime._timer_tick(0.5 / 60.0)
+finally:
+    evaluator._transform_modal_pose_matrices = original_modal_capture
+    evaluator.submit_physics_feedback = original_feedback_submit
+assert not bridge_calls, bridge_calls
 normal_step_count = normal_preview.mmd_step_count
 original_modal_probe = getattr(evaluator, "_transform_modal_active", None)
 evaluator._transform_modal_active = lambda: True

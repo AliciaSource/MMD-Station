@@ -654,6 +654,8 @@ def _sync_on_proxy_mode_exit():
 def _depsgraph_proxy_update(_scene, depsgraph):
     global _TIMER_PENDING
     settings = getattr(bpy.context.scene, "surface_proxy_creator", None)
+    if settings is not None and getattr(settings, "preview_running", False):
+        return
     updated_ids = {update.id for update in depsgraph.updates}
     for obj in bpy.data.objects:
         if obj.type != "MESH":
