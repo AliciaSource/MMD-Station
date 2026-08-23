@@ -4,12 +4,15 @@
 
 - `ffi.py`：稳定 C ABI 和 DLL 生命周期；
 - `runtime.py`：从 Blender 当前 MMD 模型提取刚体/Joint，按 MMD 时间语义驱动固定子步求解并非破坏性地回写 Pose Bone；
-- `time_driver.py`：把 Blender timeline 或暂停交互的单调时钟转换为 Bullet `frameSeconds`；
+- `pose_pipeline.py`：隔离 authored Pose 输入、physics output、dirty state 与 Blender depsgraph 投影；
+- `time_driver.py`：把 Blender timeline 或暂停交互的单调时钟转换为 Bullet `frameSeconds`，并按绝对 deadline 调度 GUI timer；
 - `ui.py`：启动、停止、重置和少量运行参数；
 - `bin/win_amd64/mmd_physics_solver.dll`：Rust `cdylib`，内部静态链接 Bullet；
 - `native/mmd_physics_solver/`：DLL 源码和可重复构建入口。
 
 `mmd_tools` 在这里仅提供导入模型后已经存在的 RNA 数据字段；求解循环不使用其 Blender Rigid Body World、烘焙或预览实现。
+
+`CURRENT_PROXY + MMD DLL + 单 Session + 未启用 MMD IK` 使用双缓冲热路径：静止 authored input 复用不可变的 Pose/target payload；Blender 已完成外部求值且物理 driver 分支不存在不安全约束时，由 `PoseInputAdapter` 从本次输入重建 canonical Pose，不重复执行 prepare depsgraph evaluation。直接脚本写入但尚未求值、MMD IK、PMX、MODEL、多 Session 或不安全约束结构全部自动回退到完整 prepare/apply 路径。Rust solver 仍逐 tick 推进；GUI 中阻塞式 depsgraph presentation 与 Rigid/Joint 调试对象投影最多 30 Hz，Bone output 仍逐 tick 写入并交给 Blender 主循环合并求值。
 
 启动预览会在修改连接状态和创建 solver 之前建立唯一的启动快照：整个 MMD Armature 的全部 Pose Bone、模型全部刚体对象矩阵和全部 Joint 对象矩阵。对象身份以 Blender 数据名称保存，矩阵是与 RNA 生命周期无关的普通副本；停止时还会恢复动态骨骼连接状态。
 

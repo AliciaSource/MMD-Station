@@ -61,6 +61,27 @@ def read_test_vmd_frames(path):
 
 time_driver = load_time_driver_module()
 PreviewTimeDriver = time_driver.PreviewTimeDriver
+PreviewDeadlineScheduler = time_driver.PreviewDeadlineScheduler
+
+deadline = PreviewDeadlineScheduler(minimum_delay=0.001)
+first_delay = deadline.next_delay(
+    started=0.0,
+    finished=0.020,
+    interval=1.0 / 60.0,
+)
+assert first_delay == 0.001
+second_started = 0.021
+second_finished = 0.025
+second_delay = deadline.next_delay(
+    started=second_started,
+    finished=second_finished,
+    interval=1.0 / 60.0,
+)
+assert abs(second_finished + second_delay - 2.0 / 60.0) < 1.0e-12
+deadline.next_delay(started=0.2, finished=0.3, interval=1.0 / 60.0)
+assert deadline.deadline == 0.3
+deadline.reset()
+assert deadline.deadline is None
 
 with tempfile.TemporaryDirectory(prefix="mmd-time-driver-") as temporary_directory:
     vmd_path = pathlib.Path(temporary_directory) / "time_driver_fixture.vmd"

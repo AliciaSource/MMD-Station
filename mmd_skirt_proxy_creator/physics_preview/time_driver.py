@@ -7,6 +7,34 @@ class StepDecision(NamedTuple):
     source: str
 
 
+class PreviewDeadlineScheduler:
+    def __init__(self, minimum_delay=0.001, max_lag_intervals=1.0):
+        if minimum_delay <= 0.0:
+            raise ValueError("minimum_delay must be positive")
+        if max_lag_intervals < 0.0:
+            raise ValueError("max_lag_intervals must be non-negative")
+        self.minimum_delay = float(minimum_delay)
+        self.max_lag_intervals = float(max_lag_intervals)
+        self.deadline = None
+
+    def reset(self):
+        self.deadline = None
+
+    def next_delay(self, started, finished, interval):
+        started = float(started)
+        finished = float(finished)
+        interval = float(interval)
+        if interval <= 0.0:
+            raise ValueError("interval must be positive")
+        if self.deadline is None:
+            self.deadline = started
+        self.deadline += interval
+        maximum_lag = interval * self.max_lag_intervals
+        if finished - self.deadline > maximum_lag:
+            self.deadline = finished
+        return max(self.deadline - finished, self.minimum_delay)
+
+
 class PreviewTimeDriver:
     def __init__(self, fixed_hz=60, max_substeps=10):
         if fixed_hz <= 0:

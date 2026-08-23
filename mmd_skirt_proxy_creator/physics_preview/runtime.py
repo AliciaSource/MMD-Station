@@ -22,7 +22,8 @@ from .ffi import (
     pmx_euler_to_blender_quaternion,
     transform_to_components,
 )
-from .time_driver import PreviewTimeDriver
+from .pose_pipeline import PoseInputAdapter
+from .time_driver import PreviewDeadlineScheduler, PreviewTimeDriver
 
 
 SHAPES = {"SPHERE": 0, "BOX": 1, "CAPSULE": 2}
@@ -33,6 +34,17 @@ _STEP_EXECUTOR = None
 _SOURCE_PHYSICS_CACHE = {}
 _RUNTIME_SUSPENDED = False
 _MIN_TIMER_DELAY = 0.001
+_VIEW_LAYER_UPDATE_DEPTH = 0
+_TIMER_DEADLINE = PreviewDeadlineScheduler(minimum_delay=_MIN_TIMER_DELAY)
+
+
+def _update_view_layer():
+    global _VIEW_LAYER_UPDATE_DEPTH
+    _VIEW_LAYER_UPDATE_DEPTH += 1
+    try:
+        bpy.context.view_layer.update()
+    finally:
+        _VIEW_LAYER_UPDATE_DEPTH -= 1
 
 
 def _uniform_world_scale(obj, tolerance=1.0e-4):
@@ -660,6 +672,7 @@ class PreviewSession:
         self.settings = settings
         self.root = root
         self.root_name = root.name
+        self.preview_scope = settings.preview_scope
         self.solver_target = settings.preview_solver_target
         self.library = default_library(self.solver_target)
         self.import_scale = _model_import_scale(root)
@@ -730,7 +743,7 @@ class PreviewSession:
                 self.armature,
                 {name: False for name in self.saved_bone_connections},
             )
-            bpy.context.view_layer.update()
+            _update_view_layer()
             body_indices = {obj: index for index, obj in enumerate(self.rigids)}
             joint_descs = []
             joint_source_eulers = []
@@ -783,7 +796,7 @@ class PreviewSession:
                 if pose_bone is not None:
                     pose_bone.matrix_basis = matrix_basis
             _set_bone_connections(self.armature, self.saved_bone_connections)
-            bpy.context.view_layer.update()
+            _update_view_layer()
             raise
         self.bone_offsets = {}
         self.bone_drivers = {}
@@ -810,6 +823,7 @@ class PreviewSession:
         self.solver = None
         self.body_offset = 0
         self.joint_offset = 0
+        self.pose_input = PoseInputAdapter(self)
 
     def _refresh_hotpath_bindings(self):
         pose_bones = self.armature.pose.bones
@@ -837,6 +851,8 @@ class PreviewSession:
         self.ordered_pose_bones = tuple(
             sorted(required_pose_bones.values(), key=_bone_depth)
         )
+        if hasattr(self, "pose_input"):
+            self.pose_input.refresh_bindings()
 
     def _capture_driver_basis(self):
         return {
@@ -844,6 +860,37 @@ class PreviewSession:
             for name, pose_bone in self.driver_pose_bones.items()
             if pose_bone is not None
         }
+
+    def _optimized_input_enabled(self):
+        return (
+            self.preview_scope == "CURRENT_PROXY"
+            and self.solver_target == "MMD"
+            and self.mmd_step_count >= 4
+            and not self.pose_input.native_input_active
+            and len(_ACTIVE_SESSIONS) == 1
+            and _ACTIVE_SESSIONS.get(self.root_name) is self
+            and self.world is not None
+            and len(self.world.sessions) == 1
+        )
+
+    def _submit_pose_targets(self, pose_matrices=None):
+        targets = []
+        for index, pose_bone in enumerate(self.rigid_pose_bones):
+            if pose_bone is None or index not in self.bone_offsets:
+                continue
+            bone_pose = (
+                pose_matrices[pose_bone.name]
+                if pose_matrices is not None
+                else pose_bone.matrix
+            )
+            target = _pmx_native_matrix_transform(
+                self.armature.matrix_world @ bone_pose,
+                self.import_scale,
+                library=self.library,
+            )
+            self.solver.set_bone_target(self.body_offset + index, target)
+            targets.append((index, Transform.from_buffer_copy(target)))
+        return tuple(targets)
 
     def _rebind_blender_data(self, force=False):
         if not force:
@@ -882,6 +929,7 @@ class PreviewSession:
         self.joints = joints
         if changed:
             self._refresh_hotpath_bindings()
+            self.pose_input.invalidate()
         if not self.closed:
             self.settings.preview_running = True
         return changed
@@ -953,6 +1001,7 @@ class PreviewSession:
 
     def _restore_start_snapshot(self):
         self._rebind_blender_data(force=True)
+        self.pose_input.invalidate()
         root_delta = self.root.matrix_world @ self.saved_root_matrix.inverted_safe()
         for name, matrix_basis in self.saved_pose_basis.items():
             pose_bone = self.armature.pose.bones.get(name)
@@ -966,7 +1015,7 @@ class PreviewSession:
             joint = bpy.data.objects.get(name)
             if joint is not None:
                 joint.matrix_world = root_delta @ matrix_world
-        bpy.context.view_layer.update()
+        _update_view_layer()
 
     def reset_solver(self):
         if self.closed:
@@ -987,41 +1036,54 @@ class PreviewSession:
             self.settings.preview_status = (
                 f"运行中：已自动重置物理 {self.auto_reset_count} 次"
             )
+        optimized_input = self._optimized_input_enabled()
+        if not optimized_input:
+            self.pose_input.invalidate()
+        else:
+            raw_changed, driver_changed = self.pose_input.raw_input_changes()
+            if (
+                self.pose_input.cached_animation_pose is not None
+                and not raw_changed
+                and not self.pose_input.external_input_evaluated
+            ):
+                self.pose_input.reuse_prepared_input()
+                return
+            if (
+                self.pose_input.cached_animation_pose is not None
+                and self.pose_input.external_input_evaluated
+                and self.pose_input.fast_external_input_safe
+                and not driver_changed
+            ):
+                self.pose_input.capture_evaluated_input()
+                return
         for name, matrix_basis in self.saved_basis.items():
             pose_bone = self.driver_pose_bones.get(name)
             if pose_bone is not None:
                 pose_bone.matrix_basis = matrix_basis
-        bpy.context.view_layer.update()
-        kinematic_bone_poses = {}
-        if self.solver_target == "MMD" and self.mmd_step_count >= 4:
-            for index, pose_bone in enumerate(self.rigid_pose_bones):
-                if self.rigid_modes[index] != 0:
-                    continue
-                if pose_bone is not None and index in self.bone_offsets:
-                    kinematic_bone_poses[index] = pose_bone.matrix.copy()
-        self.pending_animation_pose = {
+        _update_view_layer()
+        self.pose_input.input_evaluation_count += 1
+        animation_pose = {
             pose_bone.name: pose_bone.matrix.copy()
             for pose_bone in self.ordered_pose_bones
         }
-        for index, pose_bone in enumerate(self.rigid_pose_bones):
-            if pose_bone is None or index not in self.bone_offsets:
-                continue
-            bone_pose = kinematic_bone_poses.get(
-                index,
-                pose_bone.matrix,
-            )
-            bone_world = self.armature.matrix_world @ bone_pose
-            target = _pmx_native_matrix_transform(
-                bone_world,
-                self.import_scale,
-                library=self.library,
-            )
-            self.solver.set_bone_target(self.body_offset + index, target)
+        targets = self._submit_pose_targets()
+        if optimized_input:
+            self.pose_input.cache_prepared_input(animation_pose, targets)
+            self.pending_animation_pose = self.pose_input.cached_animation_pose
+        else:
+            self.pending_animation_pose = animation_pose
+            self.pose_input.external_input_evaluated = False
 
     def step_solver(self):
         return self.world.step()
 
-    def apply_step(self, transforms=None, bone_transforms=None, joint_states=None):
+    def apply_step(
+        self,
+        transforms=None,
+        bone_transforms=None,
+        joint_states=None,
+        present_output=True,
+    ):
         animation_pose = self.pending_animation_pose
         if transforms is None:
             transforms = self.solver.transforms()
@@ -1037,17 +1099,22 @@ class PreviewSession:
         armature_inverse = self.armature.matrix_world.inverted_safe()
         bone_targets = {}
         type_zero_displays = []
+        update_debug = bool(
+            present_output and self.settings.preview_update_rigids
+        )
         for index, transform in enumerate(transforms):
             rigid = self.rigids[index]
             rigid_mode = self.rigid_modes[index]
-            position, rotation = transform_to_components(transform)
-            rigid_world = Matrix.LocRotScale(
-                Vector(position) * self.import_scale,
-                Quaternion(rotation),
-                Vector((1.0, 1.0, 1.0)),
-            )
+            rigid_world = None
+            if update_debug:
+                position, rotation = transform_to_components(transform)
+                rigid_world = Matrix.LocRotScale(
+                    Vector(position) * self.import_scale,
+                    Quaternion(rotation),
+                    Vector((1.0, 1.0, 1.0)),
+                )
             if rigid_mode == 0 or index not in self.bone_offsets:
-                if self.settings.preview_update_rigids:
+                if update_debug:
                     if rigid_mode == 0 and index in self.bone_offsets:
                         pose_bone = self.rigid_pose_bones[index]
                         if pose_bone is not None:
@@ -1069,7 +1136,7 @@ class PreviewSession:
                 Quaternion(bone_rotation),
                 Vector((1.0, 1.0, 1.0)),
             )
-            if self.settings.preview_update_rigids:
+            if update_debug:
                 scale = rigid.matrix_world.to_scale()
                 rigid.matrix_world = Matrix.LocRotScale(
                     rigid_world.translation,
@@ -1083,7 +1150,7 @@ class PreviewSession:
                 rigid_mode,
                 bone_world,
             )
-        if self.settings.preview_update_rigids:
+        if update_debug:
             for joint, state in zip(self.joints, joint_states):
                 position_a, rotation_a = transform_to_components(state.frame_a)
                 position_b, _rotation_b = transform_to_components(state.frame_b)
@@ -1130,29 +1197,40 @@ class PreviewSession:
                 parent_matrix_local=parent.bone.matrix_local,
                 invert=True,
             )
-        bpy.context.view_layer.update()
-        for index, rigid, pose_bone in type_zero_displays:
-            rigid_world = (
-                self.armature.matrix_world
-                @ pose_bone.matrix
-                @ self.bone_offsets[index]
-            )
-            scale = rigid.matrix_world.to_scale()
-            rigid.matrix_world = Matrix.LocRotScale(
-                rigid_world.translation,
-                rigid_world.to_quaternion(),
-                scale,
-            )
+        if present_output:
+            _update_view_layer()
+            for index, rigid, pose_bone in type_zero_displays:
+                rigid_world = (
+                    self.armature.matrix_world
+                    @ pose_bone.matrix
+                    @ self.bone_offsets[index]
+                )
+                scale = rigid.matrix_world.to_scale()
+                rigid.matrix_world = Matrix.LocRotScale(
+                    rigid_world.translation,
+                    rigid_world.to_quaternion(),
+                    scale,
+                )
+        self.pose_input.mark_output(present_output)
         self.last_output_basis = self._capture_driver_basis()
         self.last_frame = (self.scene.frame_current, self.scene.frame_subframe)
         if self.solver_target == "MMD":
             self.mmd_step_count += 1
         self.pending_animation_pose = None
 
-    def tick(self):
+    def tick(self, interactive=False):
+        interactive = bool(
+            interactive or getattr(self, "_interactive_timer_tick", False)
+        )
         self.prepare_step()
         if self.step_solver():
-            self.apply_step(*self.world.outputs())
+            self.apply_step(
+                *self.world.outputs(),
+                present_output=self.pose_input.presentation_due(
+                    interactive,
+                    self._optimized_input_enabled(),
+                ),
+            )
 
     def close(self, restore=True):
         if self.closed:
@@ -1161,7 +1239,7 @@ class PreviewSession:
         if restore and self.armature is not None:
             self._restore_start_snapshot()
             _set_bone_connections(self.armature, self.saved_bone_connections)
-            bpy.context.view_layer.update()
+            _update_view_layer()
 
 
 class PreviewWorld:
@@ -1224,6 +1302,7 @@ class PreviewWorld:
                 session.scene.frame_subframe,
             )
             session.mmd_step_count = 0
+            session.pose_input.invalidate()
         if old_solver is not None:
             old_solver.close()
         self.time_driver.reset()
@@ -1295,12 +1374,13 @@ def suspend_for_runtime_switch(root):
     previous_suspended = _RUNTIME_SUSPENDED
     _RUNTIME_SUSPENDED = True
     session._rebind_blender_data(force=True)
+    session.pose_input.invalidate()
     for name, matrix_basis in session.saved_pose_basis.items():
         pose_bone = session.armature.pose.bones.get(name)
         if pose_bone is not None:
             pose_bone.matrix_basis = matrix_basis
     session.armature.update_tag(refresh={"OBJECT"})
-    bpy.context.view_layer.update()
+    _update_view_layer()
     return session, previous_suspended
 
 
@@ -1311,6 +1391,7 @@ def resume_after_runtime_switch(token):
     session, previous_suspended = token
     try:
         session._rebind_blender_data(force=True)
+        session.pose_input.invalidate()
     finally:
         _RUNTIME_SUSPENDED = previous_suspended
     return session
@@ -1323,6 +1404,7 @@ def resume_after_undo_redo():
         for session in tuple(_ACTIVE_SESSIONS.values()):
             if session._rebind_blender_data(force=True):
                 rebound += 1
+            session.pose_input.invalidate()
     finally:
         _RUNTIME_SUSPENDED = False
     return rebound
@@ -1457,6 +1539,26 @@ def _ensure_preview_model_ids_after_load(_dummy):
 @persistent
 def _ensure_preview_model_ids_after_update(scene, _depsgraph):
     if is_running():
+        if _VIEW_LAYER_UPDATE_DEPTH:
+            return
+        updated_ids = {
+            getattr(update.id, "original", update.id)
+            for update in _depsgraph.updates
+        }
+        for session in tuple(_ACTIVE_SESSIONS.values()):
+            if session.scene is not scene:
+                continue
+            if not any(
+                item in updated_ids
+                for item in (session.root, session.armature, session.armature.data)
+            ):
+                continue
+            if session.pose_input.deferred_output_pending:
+                session.pose_input.deferred_output_pending = False
+                raw_changed, _driver_changed = session.pose_input.raw_input_changes()
+                if not raw_changed:
+                    continue
+            session.pose_input.external_input_evaluated = True
         return
     try:
         ensure_preview_model_ids(scene)
@@ -1534,6 +1636,7 @@ def _start_preview(context, root):
     settings.preview_running = True
     settings.preview_status = f"运行中：{len(_ACTIVE_SESSIONS)} 个模型"
     if not bpy.app.timers.is_registered(_timer_tick):
+        _TIMER_DEADLINE.reset()
         bpy.app.timers.register(_timer_tick, first_interval=0.0)
     return session
 
@@ -1601,6 +1704,8 @@ def stop_preview(root=None, restore=True):
             )
     if not _ACTIVE_SESSIONS and bpy.app.timers.is_registered(_timer_tick):
         bpy.app.timers.unregister(_timer_tick)
+    if not _ACTIVE_SESSIONS:
+        _TIMER_DEADLINE.reset()
     if not _ACTIVE_SESSIONS and _STEP_EXECUTOR is not None:
         _STEP_EXECUTOR.shutdown(wait=True)
         _STEP_EXECUTOR = None
@@ -1627,8 +1732,10 @@ def reset_all_previews():
 
 def _timer_tick(_wall_seconds=None):
     if not _ACTIVE_SESSIONS:
+        _TIMER_DEADLINE.reset()
         return None
     if _RUNTIME_SUSPENDED:
+        _TIMER_DEADLINE.reset()
         return 1.0 / 60.0
     started = time.perf_counter()
     wall_seconds = started if _wall_seconds is None else float(_wall_seconds)
@@ -1636,12 +1743,23 @@ def _timer_tick(_wall_seconds=None):
         interval = _timer_tick_parallel(tuple(_ACTIVE_SESSIONS.values()), wall_seconds)
     else:
         intervals = []
+        interactive = _wall_seconds is None and not bpy.app.background
         for session in list(_ACTIVE_SESSIONS.values()):
-            intervals.append(_timer_tick_session(session, wall_seconds))
+            intervals.append(
+                _timer_tick_session(
+                    session,
+                    wall_seconds,
+                    interactive=interactive,
+                )
+            )
         interval = min(intervals)
     if _wall_seconds is not None:
         return interval
-    return max(interval - (time.perf_counter() - started), _MIN_TIMER_DELAY)
+    return _TIMER_DEADLINE.next_delay(
+        started,
+        time.perf_counter(),
+        interval,
+    )
 
 
 def _step_executor():
@@ -1730,7 +1848,7 @@ def _timer_tick_parallel(sessions, wall_seconds):
     return min(intervals.values())
 
 
-def _timer_tick_session(session, wall_seconds):
+def _timer_tick_session(session, wall_seconds, interactive=False):
     interval = 1.0 / max(session.settings.preview_frequency, 1)
     try:
         session.world.sample_time(wall_seconds)
@@ -1749,7 +1867,11 @@ def _timer_tick_session(session, wall_seconds):
             )
             return interval
     try:
-        session.tick()
+        session._interactive_timer_tick = interactive
+        try:
+            session.tick()
+        finally:
+            session._interactive_timer_tick = False
         session.consecutive_tick_failures = 0
     except Exception as error:
         return _recover_tick_failure(session, error, interval)
