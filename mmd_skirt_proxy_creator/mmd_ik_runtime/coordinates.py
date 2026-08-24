@@ -26,8 +26,11 @@ def blender_position_to_mmd(position, scale):
 
 
 def mmd_row_rotation_to_blender(matrix):
-    axis = MMD_TO_BLENDER_AXIS
-    return _multiply3(_multiply3(axis, _transpose3(matrix)), axis)
+    return (
+        (matrix[0][0] + 0.0, matrix[2][0] + 0.0, matrix[1][0] + 0.0),
+        (matrix[0][2] + 0.0, matrix[2][2] + 0.0, matrix[1][2] + 0.0),
+        (matrix[0][1] + 0.0, matrix[2][1] + 0.0, matrix[1][1] + 0.0),
+    )
 
 
 def blender_rotation_to_mmd_rows(matrix):

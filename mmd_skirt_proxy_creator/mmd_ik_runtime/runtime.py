@@ -94,16 +94,26 @@ def _load_state(root):
         return None
     if state.get("schema") == SCHEMA:
         return state
+    if state.get("schema") != 1:
+        raise MMDIKRuntimeError("不支持的 MMD IK 状态版本")
     canonical = mmd_model_api().find_armature_object(root)
     if canonical is None:
         raise MMDIKRuntimeError("旧版 MMD IK 状态无法解析原骨架")
     _restore_constraint_mutes(canonical, state)
     runtime = bpy.data.objects.get(state.get("runtime_armature", ""))
     if runtime is not None and runtime != canonical:
-        for mesh in mmd_model_api().iterate_mesh_objects(root):
-            for modifier in mesh.modifiers:
-                if modifier.type == "ARMATURE" and modifier.object == runtime:
-                    modifier.object = canonical
+        runtime_modifiers = tuple(
+            modifier
+            for mesh in mmd_model_api().iterate_mesh_objects(root)
+            for modifier in mesh.modifiers
+            if modifier.type == "ARMATURE" and modifier.object is runtime
+        )
+        if not runtime_modifiers:
+            raise MMDIKRuntimeError(
+                "旧版 MMD IK Runtime Armature 身份无法验证"
+            )
+        for modifier in runtime_modifiers:
+            modifier.object = canonical
         data = runtime.data
         bpy.data.objects.remove(runtime, do_unlink=True)
         if data.users == 0:
@@ -130,12 +140,13 @@ def set_action_input(root, enabled=True):
 
 
 def canonical_armature(root, state=None):
+    model_armature = mmd_model_api().find_armature_object(root)
     state = state or _load_state(root)
     if state:
         obj = bpy.data.objects.get(state.get("canonical_armature", ""))
-        if obj is not None and obj.type == "ARMATURE":
+        if obj is model_armature:
             return obj
-    return mmd_model_api().find_armature_object(root)
+    return model_armature
 
 
 def runtime_armature(root, state=None):
@@ -252,6 +263,11 @@ def export_restore_runtime(root, transaction):
     if not state or state.get("session_id") != transaction["state"].get("session_id"):
         return 0
     canonical = canonical_armature(root, state)
+    if canonical is not transaction.get("canonical"):
+        from .evaluator import discard_session
+
+        discard_session(root=root)
+        return 0
     state["muted_constraints"] = _mute_constraints(canonical)
     state["enabled"] = True
     _save_state(root, state)
