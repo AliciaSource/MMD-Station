@@ -22,16 +22,6 @@ from .ffi import (
     pmx_euler_to_blender_quaternion,
     transform_to_components,
 )
-from .debug_batch import (
-    PreviewDebugBatch,
-    cleanup_debug_batch,
-    cleanup_stale_debug_batches,
-)
-from .display_rig import (
-    PreviewDisplayRig,
-    cleanup_display_rig,
-    cleanup_stale_display_rigs,
-)
 from .pose_pipeline import PoseInputAdapter
 from .time_driver import PreviewDeadlineScheduler, PreviewTimeDriver
 
@@ -46,90 +36,15 @@ _RUNTIME_SUSPENDED = False
 _MIN_TIMER_DELAY = 0.001
 _VIEW_LAYER_UPDATE_DEPTH = 0
 _TIMER_DEADLINE = PreviewDeadlineScheduler(minimum_delay=_MIN_TIMER_DELAY)
-_DISPLAY_RIG_SAVE_SUSPENSION = None
 
 
-class PreviewSessionInvalidError(RuntimeError):
-    pass
-
-
-def _live_object(reference):
-    if reference is None:
-        return None
-    try:
-        return (
-            reference
-            if bpy.data.objects.get(reference.name) is reference
-            else None
-        )
-    except (AttributeError, ReferenceError, TypeError):
-        return None
-
-
-def _live_scene(reference):
-    if reference is None:
-        return None
-    try:
-        return (
-            reference
-            if bpy.data.scenes.get(reference.name) is reference
-            else None
-        )
-    except (AttributeError, ReferenceError, TypeError):
-        return None
-
-
-def _owner_view_layer(scene, preferred_name="", required_object=None):
-    candidates = []
-    if preferred_name:
-        preferred = scene.view_layers.get(preferred_name)
-        if preferred is not None:
-            candidates.append(preferred)
-    context_scene = getattr(bpy.context, "scene", None)
-    context_view_layer = getattr(bpy.context, "view_layer", None)
-    if context_scene is scene and context_view_layer is not None:
-        candidate = scene.view_layers.get(context_view_layer.name)
-        if candidate is not None and candidate not in candidates:
-            candidates.append(candidate)
-    candidates.extend(
-        view_layer
-        for view_layer in scene.view_layers
-        if view_layer not in candidates
-    )
-    for view_layer in candidates:
-        if (
-            required_object is None
-            or view_layer.objects.get(required_object.name) is required_object
-        ):
-            return view_layer
-        with bpy.context.temp_override(scene=scene, view_layer=view_layer):
-            view_layer.update()
-        if view_layer.objects.get(required_object.name) is required_object:
-            return view_layer
-    raise PreviewSessionInvalidError("物理预览对象在所属 Scene 的所有 View Layer 中均不可用")
-
-
-def _update_view_layer(scene, view_layer):
+def _update_view_layer():
     global _VIEW_LAYER_UPDATE_DEPTH
     _VIEW_LAYER_UPDATE_DEPTH += 1
     try:
-        with bpy.context.temp_override(scene=scene, view_layer=view_layer):
-            view_layer.update()
+        bpy.context.view_layer.update()
     finally:
         _VIEW_LAYER_UPDATE_DEPTH -= 1
-
-
-def _tag_view3d_redraw():
-    window_manager = getattr(bpy.context, "window_manager", None)
-    if window_manager is None:
-        return
-    for window in window_manager.windows:
-        screen = window.screen
-        if screen is None:
-            continue
-        for area in screen.areas:
-            if area.type == "VIEW_3D":
-                area.tag_redraw()
 
 
 def _uniform_world_scale(obj, tolerance=1.0e-4):
@@ -223,128 +138,33 @@ def _proxy_physics_objects(proxy, objects):
     }
 
 
-def _restore_view_layer_context(
-    view_layer,
-    active,
-    selected,
-    mode,
-    active_bone_name,
-):
-    current = view_layer.objects.active
-    if current is not None and current.mode != "OBJECT":
-        try:
-            bpy.ops.object.mode_set(mode="OBJECT")
-        except RuntimeError:
-            pass
-    for obj in tuple(view_layer.objects):
-        try:
-            if obj.select_get():
-                obj.select_set(False)
-        except ReferenceError:
-            continue
-    for obj in selected:
-        try:
-            if view_layer.objects.get(obj.name) is obj:
-                obj.select_set(True)
-        except ReferenceError:
-            continue
+def _set_bone_connections(armature, values):
+    if not values:
+        return
+    view_layer = bpy.context.view_layer
+    previous_active = view_layer.objects.active
+    previous_mode = previous_active.mode if previous_active is not None else "OBJECT"
+    previous_selection = list(bpy.context.selected_objects)
+    if previous_active is not None and previous_mode != "OBJECT":
+        bpy.ops.object.mode_set(mode="OBJECT")
+    for obj in previous_selection:
+        obj.select_set(False)
+    armature.select_set(True)
+    view_layer.objects.active = armature
+    bpy.ops.object.mode_set(mode="EDIT")
     try:
-        active_available = (
-            active is not None
-            and view_layer.objects.get(active.name) is active
-        )
-    except ReferenceError:
-        active_available = False
-    view_layer.objects.active = active if active_available else None
-    if active_available and mode != "OBJECT":
-        try:
-            bpy.ops.object.mode_set(mode=mode)
-        except RuntimeError:
-            pass
-    if (
-        active_available
-        and active.type == "ARMATURE"
-        and active_bone_name
-        and active_bone_name in active.data.bones
-    ):
-        active.data.bones.active = active.data.bones[active_bone_name]
-
-
-def _set_bone_connections(scene, view_layer, armature, values):
-    if not values:
-        return
-    with bpy.context.temp_override(scene=scene, view_layer=view_layer):
-        previous_active = view_layer.objects.active
-        previous_mode = (
-            previous_active.mode if previous_active is not None else "OBJECT"
-        )
-        previous_selection = tuple(
-            obj for obj in view_layer.objects if obj.select_get()
-        )
-        previous_active_bone = None
-        if previous_active is not None and previous_active.type == "ARMATURE":
-            active_bone = previous_active.data.bones.active
-            previous_active_bone = (
-                active_bone.name if active_bone is not None else None
-            )
-        previous_hide_select = armature.hide_select
-        previous_hidden = armature.hide_get(view_layer=view_layer)
-        try:
-            if previous_active is not None and previous_mode != "OBJECT":
-                bpy.ops.object.mode_set(mode="OBJECT")
-            for obj in previous_selection:
-                obj.select_set(False)
-            armature.hide_select = False
-            armature.hide_set(False, view_layer=view_layer)
-            armature.select_set(True)
-            view_layer.objects.active = armature
-            bpy.ops.object.mode_set(mode="EDIT")
-            for name, use_connect in values.items():
-                edit_bone = armature.data.edit_bones.get(name)
-                if edit_bone is not None and edit_bone.parent is not None:
-                    edit_bone.use_connect = use_connect
-            bpy.ops.object.mode_set(mode="OBJECT")
-        finally:
-            try:
-                if armature.mode != "OBJECT":
-                    bpy.ops.object.mode_set(mode="OBJECT")
-            except (ReferenceError, RuntimeError):
-                pass
-            try:
-                armature.select_set(False)
-            except (ReferenceError, RuntimeError):
-                pass
-            try:
-                armature.hide_select = previous_hide_select
-            except (AttributeError, ReferenceError):
-                pass
-            try:
-                armature.hide_set(previous_hidden, view_layer=view_layer)
-            except (ReferenceError, RuntimeError):
-                pass
-            _restore_view_layer_context(
-                view_layer,
-                previous_active,
-                previous_selection,
-                previous_mode,
-                previous_active_bone,
-            )
-
-
-def _set_session_bone_connections(session, values):
-    if not values:
-        return
-    setter = getattr(session, "set_bone_connections", None)
-    if callable(setter):
-        setter(values)
-        return
-    scene = session.scene
-    view_layer = _owner_view_layer(
-        scene,
-        getattr(session, "view_layer_name", ""),
-        required_object=session.armature,
-    )
-    _set_bone_connections(scene, view_layer, session.armature, values)
+        for name, use_connect in values.items():
+            edit_bone = armature.data.edit_bones.get(name)
+            if edit_bone is not None and edit_bone.parent is not None:
+                edit_bone.use_connect = use_connect
+    finally:
+        bpy.ops.object.mode_set(mode="OBJECT")
+        armature.select_set(False)
+        for obj in previous_selection:
+            obj.select_set(True)
+        view_layer.objects.active = previous_active
+        if previous_active is not None and previous_mode != "OBJECT":
+            bpy.ops.object.mode_set(mode=previous_mode)
 
 
 def _unanchored_dynamic_components(rigids, joints):
@@ -849,14 +669,9 @@ def _joint_desc(obj, body_indices, import_scale=1.0, library=None):
 class PreviewSession:
     def __init__(self, scene, settings, root):
         self.scene = scene
-        self.scene_name = scene.name
         self.settings = settings
         self.root = root
         self.root_name = root.name
-        try:
-            self.root_preview_id = int(root.get("spx_mmd_preview_id", 0))
-        except (TypeError, ValueError):
-            self.root_preview_id = 0
         self.preview_scope = settings.preview_scope
         self.solver_target = settings.preview_solver_target
         self.library = default_library(self.solver_target)
@@ -866,18 +681,6 @@ class PreviewSession:
         if self.armature is None:
             raise RuntimeError("所选 MMD 模型没有 Armature")
         self.armature_name = self.armature.name
-        context_scene = getattr(bpy.context, "scene", None)
-        context_view_layer = getattr(bpy.context, "view_layer", None)
-        preferred_view_layer = (
-            context_view_layer.name
-            if context_scene is scene and context_view_layer is not None
-            else ""
-        )
-        self.view_layer_name = _owner_view_layer(
-            scene,
-            preferred_view_layer,
-            required_object=self.armature,
-        ).name
         self.motion_anchor_origin = _model_motion_anchor(self.armature)
         self.saved_root_matrix = root.matrix_world.copy()
         self.saved_armature_matrix = self.armature.matrix_world.copy()
@@ -890,20 +693,8 @@ class PreviewSession:
         self.saved_rigid_matrices = {
             rigid.name: rigid.matrix_world.copy() for rigid in all_rigids
         }
-        self.saved_rigid_objects = {
-            rigid.name: rigid for rigid in all_rigids
-        }
         self.saved_joint_matrices = {
             joint.name: joint.matrix_world.copy() for joint in all_joints
-        }
-        self.saved_joint_objects = {
-            joint.name: joint for joint in all_joints
-        }
-        self.rigid_debug_scales = {
-            rigid: rigid.matrix_world.to_scale().copy() for rigid in all_rigids
-        }
-        self.joint_debug_scales = {
-            joint: joint.matrix_world.to_scale().copy() for joint in all_joints
         }
         if settings.preview_scope == "CURRENT_PROXY":
             proxy = settings.physics_proxy
@@ -949,12 +740,10 @@ class PreviewSession:
         )
         try:
             _set_bone_connections(
-                self.scene,
-                self.owner_view_layer(required_object=self.armature),
                 self.armature,
                 {name: False for name in self.saved_bone_connections},
             )
-            self.update_view_layer()
+            _update_view_layer()
             body_indices = {obj: index for index, obj in enumerate(self.rigids)}
             joint_descs = []
             joint_source_eulers = []
@@ -1006,8 +795,8 @@ class PreviewSession:
                 pose_bone = self.armature.pose.bones.get(name)
                 if pose_bone is not None:
                     pose_bone.matrix_basis = matrix_basis
-            self.set_bone_connections(self.saved_bone_connections)
-            self.update_view_layer()
+            _set_bone_connections(self.armature, self.saved_bone_connections)
+            _update_view_layer()
             raise
         self.bone_offsets = {}
         self.bone_drivers = {}
@@ -1034,52 +823,9 @@ class PreviewSession:
         self.solver = None
         self.body_offset = 0
         self.joint_offset = 0
-        self.display_rig = None
-        self.debug_batch = None
-        self.debug_batch_unavailable = False
-        self._debug_batch_exit_pending = False
-        self._debug_batch_validation_pending = False
-        self._debug_batch_validation_depth = 0
-        self._debug_batch_usable_cache = False
-        self._debug_rigid_matrices = {}
-        self._debug_joint_matrices = {}
-        self.display_rig_unavailable = False
-        self._display_rig_validation_depth = 0
-        self._display_rig_valid_cache = False
-        self.isolated_output_was_active = False
-        self._native_pose_provider_compatible = False
-        self._mmd_ik_direct_pose_active = False
-        self._direct_pose_bones_cache = ()
-        self.canonical_output_dirty = False
         self.pose_input = PoseInputAdapter(self)
-        self._scene_object_count = len(scene.objects)
-        self._binding_ids = frozenset((*self.rigids, *self.joints))
-        self._binding_names_dirty = False
-
-    def owner_view_layer(self, required_object=None):
-        view_layer = _owner_view_layer(
-            self.scene,
-            getattr(self, "view_layer_name", ""),
-            required_object=required_object,
-        )
-        self.view_layer_name = view_layer.name
-        return view_layer
-
-    def update_view_layer(self):
-        _update_view_layer(self.scene, self.owner_view_layer())
-
-    def set_bone_connections(self, values):
-        _set_bone_connections(
-            self.scene,
-            self.owner_view_layer(required_object=self.armature),
-            self.armature,
-            values,
-        )
 
     def _refresh_hotpath_bindings(self):
-        self._direct_pose_bones_cache = ()
-        self._pose_target_batch_solver = None
-        self._pose_target_batches = {}
         pose_bones = self.armature.pose.bones
         self.rigid_modes = tuple(int(rigid.mmd_rigid.type) for rigid in self.rigids)
         self.rigid_pose_bones = tuple(
@@ -1115,358 +861,22 @@ class PreviewSession:
             if pose_bone is not None
         }
 
-    def _isolated_runtime_compatible(self):
+    def _optimized_input_enabled(self):
         return (
             self.preview_scope == "CURRENT_PROXY"
-            and (
-                not self.pose_input.native_input_active
-                or self._native_pose_provider_compatible
-            )
+            and self.solver_target == "MMD"
+            and self.mmd_step_count >= 4
+            and not self.pose_input.native_input_active
             and len(_ACTIVE_SESSIONS) == 1
             and _ACTIVE_SESSIONS.get(self.root_name) is self
             and self.world is not None
             and len(self.world.sessions) == 1
         )
 
-    def _optimized_input_enabled(self):
-        return bool(
-            self._isolated_runtime_compatible()
-            and (self.solver_target != "MMD" or self.mmd_step_count >= 4)
-        )
-
-    @property
-    def isolated_output_active(self):
-        display_rig = self.display_rig
-        if display_rig is None:
-            return False
-        if self._display_rig_validation_depth:
-            return self._display_rig_valid_cache
-        return display_rig.valid
-
-    @property
-    def presentation_armature(self):
-        if self.isolated_output_active:
-            return self.display_rig.armature
-        return self.armature
-
-    def _display_rig_runtime_allowed(self, interactive, compatible):
-        return bool(
-            interactive
-            and compatible
-            and (
-                not bpy.app.background
-                or getattr(self, "_force_display_rig_for_tests", False)
-            )
-        )
-
-    def _activate_debug_batch(self):
-        if self.debug_batch is not None:
-            return self.debug_batch.usable
-        if self.armature.mode != "POSE" or self.debug_batch_unavailable:
-            return False
-        try:
-            batch = PreviewDebugBatch.create(self)
-        except Exception:
-            self.debug_batch_unavailable = True
-            traceback.print_exc()
-            return False
-        if batch is None:
-            self.debug_batch_unavailable = True
-            return False
-        try:
-            self.debug_batch = batch
-            self.debug_batch_unavailable = False
-            self._debug_batch_validation_pending = False
-            self._debug_rigid_matrices = {
-                rigid: rigid.matrix_world.copy()
-                for rigid in batch.source_rigids
-            }
-            self._debug_joint_matrices = {
-                joint: joint.matrix_world.copy()
-                for joint in batch.source_joints
-            }
-            batch.update_all(
-                self._debug_rigid_matrices,
-                self._debug_joint_matrices,
-                visible=bool(self.settings.preview_update_rigids),
-            )
-            self._debug_batch_usable_cache = True
-        except Exception:
-            traceback.print_exc()
-            self._deactivate_debug_batch()
-            return False
-        return True
-
-    def _sync_debug_batch_mode(self):
-        if self.armature.mode != "POSE":
-            if self.debug_batch is None:
-                self._debug_batch_exit_pending = False
-                return False
-            self._debug_batch_exit_pending = True
-            self.pose_input.force_debug_update = True
-            return False
-        self._debug_batch_exit_pending = False
-        if (
-            self.display_rig is not None
-            and self.debug_batch is None
-            and not self.debug_batch_unavailable
-        ):
-            return self._activate_debug_batch()
-        return False
-
-    def _deactivate_debug_batch(self):
-        batch = self.debug_batch
-        if batch is None:
-            self._debug_batch_exit_pending = False
-            return False
-        try:
-            for source, matrix in self._debug_rigid_matrices.items():
-                if _live_object(source) is source:
-                    source.matrix_world = matrix
-            for source, matrix in self._debug_joint_matrices.items():
-                if _live_object(source) is source:
-                    source.matrix_world = matrix
-            batch.close()
-        except Exception:
-            traceback.print_exc()
-            try:
-                cleanup_debug_batch(batch.owner_token)
-            except Exception:
-                traceback.print_exc()
-        finally:
-            self.debug_batch = None
-            self._debug_batch_exit_pending = False
-            self._debug_batch_validation_pending = False
-            self._debug_batch_usable_cache = False
-            self._debug_rigid_matrices = {}
-            self._debug_joint_matrices = {}
-        return True
-
-    def debug_matrix_world(self, obj):
-        if self.debug_batch is not None and self.debug_batch.usable:
-            if obj in self._debug_rigid_matrices:
-                return self._debug_rigid_matrices[obj]
-            if obj in self._debug_joint_matrices:
-                return self._debug_joint_matrices[obj]
-        return obj.matrix_world
-
-    def _sync_debug_batch_visibility(self):
-        batch = self.debug_batch
-        if batch is None or not self._debug_batch_is_usable():
-            return False
-        visible = bool(self.settings.preview_update_rigids)
-        batch.set_visible(
-            visible,
-            validated=bool(self._debug_batch_validation_depth),
-        )
-        return visible
-
-    def _debug_batch_is_usable(self):
-        batch = self.debug_batch
-        if batch is None:
-            return False
-        if self._debug_batch_validation_depth:
-            return self._debug_batch_usable_cache
-        return batch.usable
-
-    def _refresh_debug_batch_usable_cache(self):
-        batch = self.debug_batch
-        if batch is None:
-            self._debug_batch_usable_cache = False
-        elif self._debug_batch_validation_pending:
-            self._debug_batch_usable_cache = bool(batch.usable)
-        return self._debug_batch_usable_cache
-
-    def _activate_display_rig(self):
-        if self.isolated_output_active or self.display_rig_unavailable:
-            return False
-        try:
-            plan = PreviewDisplayRig.plan(self)
-        except Exception:
-            self.display_rig_unavailable = True
-            traceback.print_exc()
-            return False
-        if plan is None:
-            self.display_rig_unavailable = True
-            return False
-        previous_basis = self._capture_driver_basis()
-        previous_connections = {
-            name: self.armature.data.bones[name].use_connect
-            for name in self.saved_bone_connections
-            if name in self.armature.data.bones
-        }
-        previous_output_dirty = self.canonical_output_dirty
-        for name, matrix_basis in self.saved_basis.items():
-            pose_bone = self.driver_pose_bones.get(name)
-            if pose_bone is not None:
-                pose_bone.matrix_basis = matrix_basis
-        self.canonical_output_dirty = False
-        self.set_bone_connections(self.saved_bone_connections)
-        self.armature.update_tag(refresh={"OBJECT"})
-        self.update_view_layer()
-        self.pose_input.invalidate()
-        display_rig = None
-        try:
-            display_rig = PreviewDisplayRig.create(self, plan)
-            if display_rig is None:
-                raise RuntimeError("DisplayRig plan could not be materialized")
-            display_rig.apply_input_pose()
-        except Exception:
-            self.display_rig_unavailable = True
-            if display_rig is not None:
-                try:
-                    display_rig.close()
-                except Exception:
-                    traceback.print_exc()
-                    cleanup_display_rig(display_rig.owner_token)
-            for name, matrix_basis in previous_basis.items():
-                pose_bone = self.driver_pose_bones.get(name)
-                if pose_bone is not None:
-                    pose_bone.matrix_basis = matrix_basis
-            self.set_bone_connections(previous_connections)
-            self.canonical_output_dirty = previous_output_dirty
-            self.armature.update_tag(refresh={"OBJECT"})
-            self.update_view_layer()
-            self.pose_input.invalidate()
-            traceback.print_exc()
-            return True
-        self.display_rig = display_rig
-        self.debug_batch_unavailable = False
-        self._activate_debug_batch()
-        self._display_rig_valid_cache = True
-        self._direct_pose_bones_cache = ()
-        self.isolated_output_was_active = True
-        self.pose_input.refresh_watch_bindings()
-        self.pose_input.invalidate()
-        self.update_view_layer()
-        self.last_output_basis = self._capture_driver_basis()
-        return True
-
-    def _deactivate_display_rig(
-        self,
-        allow_retry=True,
-        restore_source_connections=False,
-    ):
-        debug_changed = self._deactivate_debug_batch()
-        self.debug_batch_unavailable = False
-        display_rig = self.display_rig
-        if display_rig is None:
-            if restore_source_connections:
-                self.set_bone_connections(self.saved_bone_connections)
-                self.armature.update_tag(refresh={"OBJECT"})
-                self.update_view_layer()
-            if allow_retry:
-                self.display_rig_unavailable = False
-            return bool(restore_source_connections or debug_changed)
-        try:
-            display_rig.close()
-        except Exception:
-            traceback.print_exc()
-            cleanup_display_rig(display_rig.owner_token)
-        finally:
-            self.display_rig = None
-            self._display_rig_valid_cache = False
-            self._direct_pose_bones_cache = ()
-        self.pose_input.refresh_watch_bindings()
-        connection_values = (
-            self.saved_bone_connections
-            if restore_source_connections
-            else {name: False for name in self.saved_bone_connections}
-        )
-        self.set_bone_connections(connection_values)
-        self.display_rig_unavailable = not allow_retry
-        self.canonical_output_dirty = False
-        self.last_output_basis = self._capture_driver_basis()
-        self.pose_input.invalidate()
-        self.armature.update_tag(refresh={"OBJECT"})
-        self.update_view_layer()
-        return True
-
-    def _update_display_rig_state(self, interactive, compatible):
-        debug_batch = self.debug_batch
-        if debug_batch is not None:
-            if not self._debug_batch_is_usable():
-                self._deactivate_display_rig()
-                return True
-            if self._debug_batch_validation_pending:
-                valid = debug_batch.valid
-                if not valid:
-                    self._deactivate_display_rig()
-                    return True
-                self._debug_batch_validation_pending = False
-        if self.display_rig is not None and not self.isolated_output_active:
-            self._deactivate_display_rig(allow_retry=False)
-            return True
-        if self.isolated_output_active and not compatible:
-            self._deactivate_display_rig()
-            return True
-        if self._display_rig_runtime_allowed(interactive, compatible):
-            return self._activate_display_rig()
-        return False
-
-    def _pose_target_pmx_euler_batch(self, excluded_indices):
-        if self._pose_target_batch_solver is not self.solver:
-            self._pose_target_batch_solver = self.solver
-            self._pose_target_batches.clear()
-        exclusion_key = frozenset(excluded_indices)
-        cached = self._pose_target_batches.get(exclusion_key)
-        if cached is not None:
-            return cached
-        bindings = tuple(
-            (index, pose_bone)
-            for index, pose_bone in enumerate(self.rigid_pose_bones)
-            if (
-                pose_bone is not None
-                and index in self.bone_offsets
-                and index not in exclusion_key
-            )
-        )
-        batch = self.solver.bone_target_pmx_euler_batch(
-            self.body_offset + index for index, _pose_bone in bindings
-        )
-        cached = bindings, batch
-        self._pose_target_batches[exclusion_key] = cached
-        return cached
-
-    def _submit_pose_targets(
-        self,
-        pose_matrices=None,
-        excluded_indices=(),
-        capture_targets=True,
-    ):
-        if not capture_targets:
-            bindings, batch = self._pose_target_pmx_euler_batch(excluded_indices)
-            export_scale = 1.0 / self.import_scale
-            armature_world = self.armature.matrix_world
-            positions = batch.positions
-            pmx_eulers = batch.pmx_eulers
-            for slot, (_index, pose_bone) in enumerate(bindings):
-                bone_pose = (
-                    pose_matrices[pose_bone.name]
-                    if pose_matrices is not None
-                    else pose_bone.matrix
-                )
-                position, rotation, _object_scale = (
-                    armature_world @ bone_pose
-                ).decompose()
-                euler = rotation.to_euler("YXZ")
-                base = slot * 3
-                positions[base] = float(position.x) * export_scale
-                positions[base + 1] = float(position.y) * export_scale
-                positions[base + 2] = float(position.z) * export_scale
-                pmx_eulers[base] = -float(euler.x)
-                pmx_eulers[base + 1] = -float(euler.z)
-                pmx_eulers[base + 2] = -float(euler.y)
-            batch.submit()
-            return ()
-        targets = [] if capture_targets else None
-        submissions = []
+    def _submit_pose_targets(self, pose_matrices=None):
+        targets = []
         for index, pose_bone in enumerate(self.rigid_pose_bones):
-            if (
-                pose_bone is None
-                or index not in self.bone_offsets
-                or index in excluded_indices
-            ):
+            if pose_bone is None or index not in self.bone_offsets:
                 continue
             bone_pose = (
                 pose_matrices[pose_bone.name]
@@ -1478,269 +888,45 @@ class PreviewSession:
                 self.import_scale,
                 library=self.library,
             )
-            submissions.append((self.body_offset + index, target))
-            if capture_targets:
-                targets.append((index, Transform.from_buffer_copy(target)))
-        self.solver.set_bone_targets(submissions)
-        return tuple(targets) if capture_targets else ()
+            self.solver.set_bone_target(self.body_offset + index, target)
+            targets.append((index, Transform.from_buffer_copy(target)))
+        return tuple(targets)
 
-    def _migrate_snapshot_names(
-        self,
-        matrices,
-        objects,
-        replacements,
-        authoritative_objects,
-    ):
-        authoritative = frozenset(authoritative_objects)
-        authoritative_by_name = {
-            obj.name: obj for obj in authoritative
-        }
-        renames = []
-        for old_name, reference in tuple(objects.items()):
-            current = replacements.get(old_name)
-            if current not in authoritative:
-                current = _live_object(reference)
-            if current not in authoritative:
-                current = authoritative_by_name.get(old_name)
-            if current is None:
-                continue
-            new_name = current.name
-            collision = objects.get(new_name)
-            if new_name != old_name and collision is not None and collision is not current:
-                raise PreviewSessionInvalidError(
-                    f"启动快照名称迁移发生冲突：{new_name}"
-                )
-            renames.append((old_name, new_name, current))
-        for old_name, new_name, current in renames:
-            matrix = matrices.pop(old_name, None)
-            objects.pop(old_name, None)
-            if matrix is not None:
-                matrices[new_name] = matrix
-            objects[new_name] = current
-
-    def _migrate_cached_names(
-        self,
-        root,
-        armature,
-        rigids,
-        joints,
-        all_rigids=(),
-        all_joints=(),
-        migrate_members=False,
-    ):
-        new_root_name = root.name
-        new_armature_name = armature.name
-        collision = _ACTIVE_SESSIONS.get(new_root_name)
-        if collision is not None and collision is not self:
-            raise PreviewSessionInvalidError(
-                f"物理预览 Session 名称迁移发生冲突：{new_root_name}"
-            )
-        try:
-            from ..mmd_ik_runtime.evaluator import refresh_session_bindings
-
-            refresh_session_bindings(root, armature)
-        except ImportError:
-            pass
-
-        if migrate_members:
-            rigid_replacements = dict(zip(self.rigid_names, rigids))
-            joint_replacements = dict(zip(self.joint_names, joints))
-            self._migrate_snapshot_names(
-                self.saved_rigid_matrices,
-                self.saved_rigid_objects,
-                rigid_replacements,
-                all_rigids,
-            )
-            self._migrate_snapshot_names(
-                self.saved_joint_matrices,
-                self.saved_joint_objects,
-                joint_replacements,
-                all_joints,
-            )
-        was_registered = any(
-            session is self for session in _ACTIVE_SESSIONS.values()
-        )
-        for key, session in tuple(_ACTIVE_SESSIONS.items()):
-            if session is self and key != new_root_name:
-                _ACTIVE_SESSIONS.pop(key, None)
-        if was_registered:
-            _ACTIVE_SESSIONS[new_root_name] = self
-        self.root_name = new_root_name
-        self.armature_name = new_armature_name
-        if migrate_members:
-            self.rigid_names = [rigid.name for rigid in rigids]
-            self.joint_names = [joint.name for joint in joints]
-        display_rig = self.display_rig
-        if display_rig is not None:
-            display_rig.source_armature_name = new_armature_name
-
-    def _resolve_bound_object(
-        self,
-        reference,
-        stored_name,
-        scene,
-        label,
-        authoritative_objects,
-    ):
-        authoritative = frozenset(authoritative_objects)
-        current = _live_object(reference)
-        if current not in authoritative:
-            candidates = tuple(
-                obj for obj in authoritative if obj.name == stored_name
-            )
-            current = candidates[0] if len(candidates) == 1 else None
-        if current is None:
-            raise PreviewSessionInvalidError(f"启动快照中的{label}已不存在")
-        if scene.objects.get(current.name) is not current:
-            raise PreviewSessionInvalidError(f"启动快照中的{label}已脱离原场景")
-        return current
-
-    def _resolve_root_object(self, scene, allow_recreated=False):
-        def identity_matches(item):
-            if item is None or getattr(item, "mmd_type", "") != "ROOT":
-                return False
+    def _rebind_blender_data(self, force=False):
+        if not force:
             try:
-                preview_id = int(item.get("spx_mmd_preview_id", 0))
-            except (TypeError, ValueError):
-                return False
-            return self.root_preview_id <= 0 or preview_id == self.root_preview_id
-
-        current = _live_object(getattr(self, "root", None))
-        if not identity_matches(current):
-            current = None
-        if current is None and not allow_recreated:
-            raise PreviewSessionInvalidError("启动快照中的MMD Root已不存在")
-        if current is None:
-            current = bpy.data.objects.get(self.root_name)
-        if not identity_matches(current):
-            current = None
-        if current is None and self.root_preview_id > 0:
-            candidates = tuple(
-                obj
-                for obj in scene.objects
                 if (
-                    getattr(obj, "mmd_type", "") == "ROOT"
-                    and int(obj.get("spx_mmd_preview_id", 0))
-                    == self.root_preview_id
-                )
-            )
-            if len(candidates) == 1:
-                current = candidates[0]
-        if current is None:
-            raise PreviewSessionInvalidError("启动快照中的MMD Root已不存在")
-        if scene.objects.get(current.name) is not current:
-            raise PreviewSessionInvalidError("启动快照中的MMD Root已脱离原场景")
-        if tuple(current.users_scene) != (scene,):
-            raise PreviewSessionInvalidError(
-                "Preview root must belong only to its owner scene"
-            )
-        return current
-
-    def _resolve_armature_object(self, root, scene):
-        current = _model_armature(root)
-        if current is None:
-            raise PreviewSessionInvalidError("启动快照中的Armature已不存在")
-        if scene.objects.get(current.name) is not current:
-            raise PreviewSessionInvalidError("启动快照中的Armature已脱离原场景")
-        if tuple(current.users_scene) != (scene,):
-            raise PreviewSessionInvalidError(
-                "Preview armature must belong only to its owner scene"
-            )
-        return current
-
-    def _binding_names_changed(self, updated_ids=None):
-        if len(self.rigids) != len(self.rigid_names):
-            return True
-        if len(self.joints) != len(self.joint_names):
-            return True
-        try:
-            return any(
-                (updated_ids is None or obj in updated_ids) and obj.name != name
-                for obj, name in zip(self.rigids, self.rigid_names)
-            ) or any(
-                (updated_ids is None or obj in updated_ids) and obj.name != name
-                for obj, name in zip(self.joints, self.joint_names)
-            )
-        except ReferenceError:
-            return True
-
-    def _rebind_blender_data(self, force=False, allow_recreated=False):
-        scene = _live_scene(getattr(self, "scene", None))
-        if scene is None:
-            scene = bpy.data.scenes.get(self.scene_name)
-        if scene is None:
-            raise PreviewSessionInvalidError("启动快照对应的场景已不存在")
-        root = self._resolve_root_object(
-            scene,
-            allow_recreated=allow_recreated,
-        )
-        armature = self._resolve_armature_object(root, scene)
-        full_rebind = bool(
-            force
-            or getattr(self, "_binding_names_dirty", False)
-            or len(scene.objects) != getattr(self, "_scene_object_count", -1)
-        )
-        if full_rebind and self.debug_batch is not None:
-            self._debug_batch_validation_pending = True
-        if full_rebind:
-            all_rigids = tuple(_rigid_objects(root))
-            all_joints = tuple(_joint_objects(root))
-            rigids = [
-                self._resolve_bound_object(
-                    reference,
-                    name,
-                    scene,
-                    "刚体",
-                    all_rigids,
-                )
-                for reference, name in zip(self.rigids, self.rigid_names)
-            ]
-            joints = [
-                self._resolve_bound_object(
-                    reference,
-                    name,
-                    scene,
-                    "Joint",
-                    all_joints,
-                )
-                for reference, name in zip(self.joints, self.joint_names)
-            ]
-        else:
-            all_rigids = ()
-            all_joints = ()
-            rigids = self.rigids
-            joints = self.joints
-        changed = bool(
-            self.scene is not scene
-            or self.root is not root
+                    self.root.name == self.root_name
+                    and self.armature.name == self.armature_name
+                ):
+                    return False
+            except (AttributeError, ReferenceError):
+                pass
+        scene = bpy.context.scene
+        root = bpy.data.objects.get(self.root_name)
+        armature = bpy.data.objects.get(self.armature_name)
+        rigids = [bpy.data.objects.get(name) for name in self.rigid_names]
+        joints = [bpy.data.objects.get(name) for name in self.joint_names]
+        if root is None or armature is None:
+            raise RuntimeError("启动快照对应的 MMD 模型或 Armature 已不存在")
+        if any(rigid is None for rigid in rigids):
+            raise RuntimeError("启动快照中的刚体已不存在")
+        if any(joint is None for joint in joints):
+            raise RuntimeError("启动快照中的 Joint 已不存在")
+        changed = (
+            self.root is not root
             or self.armature is not armature
+            or len(self.rigids) != len(rigids)
+            or len(self.joints) != len(joints)
             or any(old is not current for old, current in zip(self.rigids, rigids))
             or any(old is not current for old, current in zip(self.joints, joints))
         )
-        self._migrate_cached_names(
-            root,
-            armature,
-            rigids,
-            joints,
-            all_rigids=all_rigids,
-            all_joints=all_joints,
-            migrate_members=full_rebind,
-        )
         self.scene = scene
-        self.scene_name = scene.name
-        self.view_layer_name = _owner_view_layer(
-            scene,
-            getattr(self, "view_layer_name", ""),
-            required_object=armature,
-        ).name
         self.settings = scene.surface_proxy_creator
         self.root = root
         self.armature = armature
         self.rigids = rigids
         self.joints = joints
-        self._scene_object_count = len(scene.objects)
-        self._binding_ids = frozenset((*rigids, *joints))
-        self._binding_names_dirty = False
         if changed:
             self._refresh_hotpath_bindings()
             self.pose_input.invalidate()
@@ -1792,8 +978,6 @@ class PreviewSession:
             _apply_source_joint_values(self.joint_descs, source_joint_items)
 
     def _broad_pose_reset_detected(self):
-        if self.isolated_output_active:
-            return False
         driver_names = self.driver_pose_bones
         current_frame = (self.scene.frame_current, self.scene.frame_subframe)
         if (
@@ -1818,134 +1002,20 @@ class PreviewSession:
     def _restore_start_snapshot(self):
         self._rebind_blender_data(force=True)
         self.pose_input.invalidate()
-        if self.isolated_output_was_active:
-            for name, matrix_basis in self.saved_basis.items():
-                pose_bone = self.armature.pose.bones.get(name)
-                if pose_bone is not None:
-                    pose_bone.matrix_basis = matrix_basis
-            self.canonical_output_dirty = False
-            self._restore_debug_snapshot()
-            return
+        root_delta = self.root.matrix_world @ self.saved_root_matrix.inverted_safe()
         for name, matrix_basis in self.saved_pose_basis.items():
             pose_bone = self.armature.pose.bones.get(name)
             if pose_bone is not None:
                 pose_bone.matrix_basis = matrix_basis
-        self.canonical_output_dirty = False
-        self._restore_debug_snapshot()
-
-    def _restore_authored_driver_pose(self):
-        for name, matrix_basis in self.saved_basis.items():
-            pose_bone = self.armature.pose.bones.get(name)
-            if pose_bone is not None:
-                pose_bone.matrix_basis = matrix_basis
-        self.canonical_output_dirty = False
-        self.last_output_basis = self._capture_driver_basis()
-
-    def _restore_debug_snapshot(self):
-        root_delta = self.root.matrix_world @ self.saved_root_matrix.inverted_safe()
-        authoritative_rigids = frozenset(_rigid_objects(self.root))
-        authoritative_joints = frozenset(_joint_objects(self.root))
-        batch = self.debug_batch
-        if batch is not None and batch.valid:
-            self._debug_rigid_matrices = {
-                rigid: root_delta @ self.saved_rigid_matrices[name]
-                for name, rigid in self.saved_rigid_objects.items()
-                if _live_object(rigid) in authoritative_rigids
-            }
-            self._debug_joint_matrices = {
-                joint: root_delta @ self.saved_joint_matrices[name]
-                for name, joint in self.saved_joint_objects.items()
-                if _live_object(joint) in authoritative_joints
-            }
-            batch.update_all(
-                self._debug_rigid_matrices,
-                self._debug_joint_matrices,
-                visible=bool(self.settings.preview_update_rigids),
-            )
-            self.update_view_layer()
-            return
         for name, matrix_world in self.saved_rigid_matrices.items():
-            rigid = _live_object(self.saved_rigid_objects.get(name))
-            if rigid in authoritative_rigids:
+            rigid = bpy.data.objects.get(name)
+            if rigid is not None:
                 rigid.matrix_world = root_delta @ matrix_world
         for name, matrix_world in self.saved_joint_matrices.items():
-            joint = _live_object(self.saved_joint_objects.get(name))
-            if joint in authoritative_joints:
-                joint.matrix_world = root_delta @ matrix_world
-        self.update_view_layer()
-
-    def _capture_debug_state(self):
-        authoritative_rigids = frozenset(_rigid_objects(self.root))
-        authoritative_joints = frozenset(_joint_objects(self.root))
-        batch = self.debug_batch
-        if batch is not None and batch.valid:
-            active_rigids = frozenset(self.rigids)
-            active_joints = frozenset(self.joints)
-            rigid_matrices = {
-                rigid.name: (
-                    matrix if rigid in active_rigids else rigid.matrix_world
-                ).copy()
-                for rigid, matrix in self._debug_rigid_matrices.items()
-                if _live_object(rigid) in authoritative_rigids
-            }
-            joint_matrices = {
-                joint.name: (
-                    matrix if joint in active_joints else joint.matrix_world
-                ).copy()
-                for joint, matrix in self._debug_joint_matrices.items()
-                if _live_object(joint) in authoritative_joints
-            }
-            return rigid_matrices, joint_matrices
-        rigid_matrices = {}
-        for name in self.saved_rigid_matrices:
-            rigid = _live_object(self.saved_rigid_objects.get(name))
-            if rigid in authoritative_rigids:
-                rigid_matrices[rigid.name] = rigid.matrix_world.copy()
-        joint_matrices = {}
-        for name in self.saved_joint_matrices:
-            joint = _live_object(self.saved_joint_objects.get(name))
-            if joint in authoritative_joints:
-                joint_matrices[joint.name] = joint.matrix_world.copy()
-        return rigid_matrices, joint_matrices
-
-    def _restore_debug_state(self, state):
-        rigid_matrices, joint_matrices = state
-        authoritative_rigids = {
-            rigid.name: rigid for rigid in _rigid_objects(self.root)
-        }
-        authoritative_joints = {
-            joint.name: joint for joint in _joint_objects(self.root)
-        }
-        batch = self.debug_batch
-        if batch is not None and batch.valid:
-            authoritative_rigid_objects = frozenset(authoritative_rigids.values())
-            authoritative_joint_objects = frozenset(authoritative_joints.values())
-            self._debug_rigid_matrices = {
-                rigid: rigid_matrices.get(rigid.name, matrix).copy()
-                for rigid, matrix in self._debug_rigid_matrices.items()
-                if _live_object(rigid) in authoritative_rigid_objects
-            }
-            self._debug_joint_matrices = {
-                joint: joint_matrices.get(joint.name, matrix).copy()
-                for joint, matrix in self._debug_joint_matrices.items()
-                if _live_object(joint) in authoritative_joint_objects
-            }
-            batch.update_all(
-                self._debug_rigid_matrices,
-                self._debug_joint_matrices,
-                visible=bool(self.settings.preview_update_rigids),
-            )
-            self.update_view_layer()
-            return
-        for name, matrix_world in rigid_matrices.items():
-            rigid = authoritative_rigids.get(name)
-            if rigid is not None:
-                rigid.matrix_world = matrix_world
-        for name, matrix_world in joint_matrices.items():
-            joint = authoritative_joints.get(name)
+            joint = bpy.data.objects.get(name)
             if joint is not None:
-                joint.matrix_world = matrix_world
-        self.update_view_layer()
+                joint.matrix_world = root_delta @ matrix_world
+        _update_view_layer()
 
     def reset_solver(self):
         if self.closed:
@@ -1990,13 +1060,11 @@ class PreviewSession:
             pose_bone = self.driver_pose_bones.get(name)
             if pose_bone is not None:
                 pose_bone.matrix_basis = matrix_basis
-        self.canonical_output_dirty = False
-        self.update_view_layer()
-        self.pose_input.acknowledge_synchronous_evaluation()
+        _update_view_layer()
         self.pose_input.input_evaluation_count += 1
         animation_pose = {
             pose_bone.name: pose_bone.matrix.copy()
-            for pose_bone in self.pose_input.ordered_input_pose_bones
+            for pose_bone in self.ordered_pose_bones
         }
         targets = self._submit_pose_targets()
         if optimized_input:
@@ -2005,46 +1073,6 @@ class PreviewSession:
         else:
             self.pending_animation_pose = animation_pose
             self.pose_input.external_input_evaluated = False
-
-    def direct_input_pose_bones(self):
-        if self._direct_pose_bones_cache:
-            return self._direct_pose_bones_cache
-        pose_bones = {
-            pose_bone.name: pose_bone
-            for pose_bone in self.pose_input.ordered_input_pose_bones
-        }
-        if self.isolated_output_active:
-            pose_bones.update(
-                (pose_bone.name, pose_bone)
-                for pose_bone in self.display_rig.source_pose_bones
-            )
-        self._direct_pose_bones_cache = tuple(
-            sorted(pose_bones.values(), key=_bone_depth)
-        )
-        return self._direct_pose_bones_cache
-
-    def prepare_step_from_pose(
-        self,
-        pose_matrices,
-        *,
-        submit_targets=True,
-        excluded_target_indices=(),
-    ):
-        if self._rebind_blender_data():
-            return False
-        animation_pose = pose_matrices
-        self.canonical_output_dirty = False
-        if submit_targets:
-            self._submit_pose_targets(
-                pose_matrices,
-                excluded_indices=excluded_target_indices,
-                capture_targets=False,
-            )
-        if self.isolated_output_active:
-            self.display_rig.input_pose = pose_matrices
-        self.pending_animation_pose = animation_pose
-        self.pose_input.input_evaluation_count += 1
-        return True
 
     def step_solver(self):
         return self.world.step()
@@ -2057,79 +1085,28 @@ class PreviewSession:
         present_output=True,
     ):
         animation_pose = self.pending_animation_pose
-        if not present_output:
-            self.pose_input.mark_output(False)
-            self.last_frame = (self.scene.frame_current, self.scene.frame_subframe)
-            if self.solver_target == "MMD":
-                self.mmd_step_count += 1
-            self.pending_animation_pose = None
-            return
-        asynchronous = bool(
-            present_output and getattr(self, "_asynchronous_presentation", False)
-        )
-        deferred_evaluation = bool(
-            present_output and getattr(self, "_defer_presentation_update", False)
-        )
-        slow_debug_requested = bool(
-            getattr(self, "_debug_presentation", True)
-        )
-        kinematic_debug_requested = bool(
-            getattr(self, "_kinematic_debug_presentation", True)
-        )
-        if bone_transforms is None:
-            bone_transforms = self.solver.bone_transforms()
-        if slow_debug_requested and transforms is None:
+        if transforms is None:
             transforms = self.solver.transforms()
-        if slow_debug_requested and joint_states is None:
+            bone_transforms = self.solver.bone_transforms()
             joint_states = self.solver.joint_states()
+        transforms = transforms[self.body_offset:self.body_offset + len(self.rigids)]
         bone_transforms = bone_transforms[
             self.body_offset:self.body_offset + len(self.rigids)
         ]
-        if transforms is not None:
-            transforms = transforms[
-                self.body_offset:self.body_offset + len(self.rigids)
-            ]
-        if joint_states is not None:
-            joint_states = joint_states[
-                self.joint_offset:self.joint_offset + len(self.joints)
-            ]
+        joint_states = joint_states[
+            self.joint_offset:self.joint_offset + len(self.joints)
+        ]
         armature_inverse = self.armature.matrix_world.inverted_safe()
         bone_targets = {}
         type_zero_displays = []
-        show_rigids = bool(
-            present_output
-            and (
-                self.settings.preview_update_rigids
-                or self._debug_batch_exit_pending
-            )
+        update_debug = bool(
+            present_output and self.settings.preview_update_rigids
         )
-        update_slow_debug = bool(show_rigids and slow_debug_requested)
-        update_kinematic_debug = bool(
-            show_rigids and kinematic_debug_requested
-        )
-        debug_batch = (
-            self.debug_batch
-            if self._debug_batch_is_usable()
-            else None
-        )
-        kinematic_debug_updates = {}
-        slow_rigid_debug_updates = {}
-        joint_debug_updates = {}
-        for index, bone_transform in enumerate(bone_transforms):
-            transform = transforms[index] if transforms is not None else None
+        for index, transform in enumerate(transforms):
             rigid = self.rigids[index]
             rigid_mode = self.rigid_modes[index]
-            pose_bone = self.rigid_pose_bones[index]
-            if (
-                rigid_mode == 0
-                and index in self.bone_offsets
-                and pose_bone is not None
-            ):
-                if update_kinematic_debug:
-                    type_zero_displays.append((index, rigid, pose_bone))
-                continue
             rigid_world = None
-            if update_slow_debug:
+            if update_debug:
                 position, rotation = transform_to_components(transform)
                 rigid_world = Matrix.LocRotScale(
                     Vector(position) * self.import_scale,
@@ -2137,363 +1114,132 @@ class PreviewSession:
                     Vector((1.0, 1.0, 1.0)),
                 )
             if rigid_mode == 0 or index not in self.bone_offsets:
-                if update_slow_debug:
-                    scale = self.rigid_debug_scales.get(rigid)
-                    if scale is None:
-                        scale = rigid.matrix_world.to_scale()
-                    debug_matrix = Matrix.LocRotScale(
+                if update_debug:
+                    if rigid_mode == 0 and index in self.bone_offsets:
+                        pose_bone = self.rigid_pose_bones[index]
+                        if pose_bone is not None:
+                            type_zero_displays.append((index, rigid, pose_bone))
+                            continue
+                    scale = rigid.matrix_world.to_scale()
+                    rigid.matrix_world = Matrix.LocRotScale(
                         rigid_world.translation,
                         rigid_world.to_quaternion(),
                         scale,
                     )
-                    if debug_batch is None:
-                        rigid.matrix_world = debug_matrix
-                    else:
-                        slow_rigid_debug_updates[rigid] = debug_matrix
                 continue
+            pose_bone = self.rigid_pose_bones[index]
             if pose_bone is None:
                 continue
-            is_driver = self.bone_drivers.get(pose_bone.name) == index
-            if not update_slow_debug and not is_driver:
-                continue
-            bone_position, bone_rotation = transform_to_components(bone_transform)
+            bone_position, bone_rotation = transform_to_components(bone_transforms[index])
             bone_world = Matrix.LocRotScale(
                 Vector(bone_position) * self.import_scale,
                 Quaternion(bone_rotation),
                 Vector((1.0, 1.0, 1.0)),
             )
-            if update_slow_debug:
-                scale = self.rigid_debug_scales.get(rigid)
-                if scale is None:
-                    scale = rigid.matrix_world.to_scale()
-                debug_matrix = Matrix.LocRotScale(
+            if update_debug:
+                scale = rigid.matrix_world.to_scale()
+                rigid.matrix_world = Matrix.LocRotScale(
                     rigid_world.translation,
                     rigid_world.to_quaternion(),
                     scale,
                 )
-                if debug_batch is None:
-                    rigid.matrix_world = debug_matrix
-                else:
-                    slow_rigid_debug_updates[rigid] = debug_matrix
-            if not is_driver:
+            if self.bone_drivers.get(pose_bone.name) != index:
                 continue
             bone_targets[pose_bone.name] = (
                 self.driver_depths[pose_bone.name],
                 rigid_mode,
                 bone_world,
             )
-        if update_slow_debug:
-            for joint, state in zip(self.joints, joint_states or ()):
+        if update_debug:
+            for joint, state in zip(self.joints, joint_states):
                 position_a, rotation_a = transform_to_components(state.frame_a)
                 position_b, _rotation_b = transform_to_components(state.frame_b)
                 position = (
                     (Vector(position_a) + Vector(position_b))
                     * (0.5 * self.import_scale)
                 )
-                scale = self.joint_debug_scales.get(joint)
-                if scale is None:
-                    scale = joint.matrix_world.to_scale()
-                debug_matrix = Matrix.LocRotScale(
+                scale = joint.matrix_world.to_scale()
+                joint.matrix_world = Matrix.LocRotScale(
                     position,
                     Quaternion(rotation_a),
                     scale,
                 )
-                if debug_batch is None:
-                    joint.matrix_world = debug_matrix
-                else:
-                    joint_debug_updates[joint] = debug_matrix
         physics_targets = {
             name: (value[1], armature_inverse @ value[2])
             for name, value in bone_targets.items()
         }
-        if self.isolated_output_active:
-            resolved_bones = self.display_rig.source_pose_bones
-            direct_bones = self.direct_input_pose_bones()
-            if type_zero_displays and all(
-                pose_bone.name in animation_pose for pose_bone in direct_bones
-            ):
-                resolved_bones = direct_bones
-            pose_targets = _resolve_hierarchical_bone_targets(
-                self.armature,
-                self.display_rig.input_pose,
-                physics_targets,
-                ordered_bones=resolved_bones,
-            )
-            self.display_rig.apply_resolved_pose(pose_targets)
-        else:
-            pose_targets = _resolve_hierarchical_bone_targets(
-                self.armature,
-                animation_pose,
-                physics_targets,
-                ordered_bones=self.ordered_pose_bones,
-            )
-            for bone_name, (_depth, _mode, _bone_world) in sorted(
-                bone_targets.items(),
-                key=lambda item: item[1][0],
-            ):
-                pose_bone = self.armature.pose.bones.get(bone_name)
-                if pose_bone is None:
-                    continue
-                parent = pose_bone.parent
-                if parent is None:
-                    matrix_basis = pose_bone.bone.convert_local_to_pose(
-                        pose_targets[bone_name],
-                        pose_bone.bone.matrix_local,
-                        invert=True,
-                    )
-                else:
-                    parent_matrix = pose_targets[parent.name]
-                    matrix_basis = pose_bone.bone.convert_local_to_pose(
-                        pose_targets[bone_name],
-                        pose_bone.bone.matrix_local,
-                        parent_matrix=parent_matrix,
-                        parent_matrix_local=parent.bone.matrix_local,
-                        invert=True,
-                    )
-                pose_bone.matrix_basis = matrix_basis
-                self.last_output_basis[bone_name] = pose_bone.matrix_basis.copy()
-            self.canonical_output_dirty = bool(bone_targets)
-        debug_pose_targets = pose_targets
-        if type_zero_displays and any(
-            pose_bone.name not in debug_pose_targets
-            for _index, _rigid, pose_bone in type_zero_displays
-        ):
-            debug_pose_targets = _resolve_hierarchical_bone_targets(
-                self.armature,
-                animation_pose,
-                physics_targets,
-                ordered_bones=self.pose_input.ordered_input_pose_bones,
-            )
-        kinematic_debug_updated = bool(
-            update_kinematic_debug and type_zero_displays
+        pose_targets = _resolve_hierarchical_bone_targets(
+            self.armature,
+            animation_pose,
+            physics_targets,
+            ordered_bones=self.ordered_pose_bones,
         )
-        if present_output:
-            if not (asynchronous or deferred_evaluation):
-                self.update_view_layer()
-            for index, rigid, pose_bone in type_zero_displays:
-                bone_pose = (
-                    debug_pose_targets[pose_bone.name]
-                    if self.isolated_output_active
-                    else pose_bone.matrix
+        for bone_name, (_depth, _mode, _bone_world) in sorted(
+            bone_targets.items(),
+            key=lambda item: item[1][0],
+        ):
+            pose_bone = self.armature.pose.bones.get(bone_name)
+            if pose_bone is None:
+                continue
+            parent = pose_bone.parent
+            if parent is None:
+                pose_bone.matrix_basis = pose_bone.bone.convert_local_to_pose(
+                    pose_targets[bone_name],
+                    pose_bone.bone.matrix_local,
+                    invert=True,
                 )
+                continue
+            parent_matrix = pose_targets[parent.name]
+            pose_bone.matrix_basis = pose_bone.bone.convert_local_to_pose(
+                pose_targets[bone_name],
+                pose_bone.bone.matrix_local,
+                parent_matrix=parent_matrix,
+                parent_matrix_local=parent.bone.matrix_local,
+                invert=True,
+            )
+        if present_output:
+            _update_view_layer()
+            for index, rigid, pose_bone in type_zero_displays:
                 rigid_world = (
                     self.armature.matrix_world
-                    @ bone_pose
+                    @ pose_bone.matrix
                     @ self.bone_offsets[index]
                 )
-                scale = self.rigid_debug_scales.get(rigid)
-                if scale is None:
-                    scale = rigid.matrix_world.to_scale()
-                debug_matrix = Matrix.LocRotScale(
+                scale = rigid.matrix_world.to_scale()
+                rigid.matrix_world = Matrix.LocRotScale(
                     rigid_world.translation,
                     rigid_world.to_quaternion(),
                     scale,
                 )
-                if debug_batch is None:
-                    rigid.matrix_world = debug_matrix
-                else:
-                    kinematic_debug_updates[rigid] = debug_matrix
-            if debug_batch is not None:
-                if kinematic_debug_updated:
-                    self._debug_rigid_matrices.update(kinematic_debug_updates)
-                    debug_batch.update_kinematic(
-                        self._debug_rigid_matrices,
-                        visible=show_rigids,
-                        validated=bool(self._debug_batch_validation_depth),
-                    )
-                if update_slow_debug:
-                    self._debug_rigid_matrices.update(slow_rigid_debug_updates)
-                    self._debug_joint_matrices.update(joint_debug_updates)
-                    debug_batch.update_slow(
-                        self._debug_rigid_matrices,
-                        self._debug_joint_matrices,
-                        visible=show_rigids,
-                        validated=bool(self._debug_batch_validation_depth),
-                    )
-                if not (kinematic_debug_updated or update_slow_debug):
-                    debug_batch.set_visible(
-                        show_rigids,
-                        validated=bool(self._debug_batch_validation_depth),
-                    )
-            if asynchronous:
-                _tag_view3d_redraw()
-        self.pose_input.mark_output(
-            present_output,
-            asynchronous=asynchronous,
-            debug_updated=update_slow_debug,
-            kinematic_debug_updated=kinematic_debug_updated,
-        )
+        self.pose_input.mark_output(present_output)
+        self.last_output_basis = self._capture_driver_basis()
         self.last_frame = (self.scene.frame_current, self.scene.frame_subframe)
         if self.solver_target == "MMD":
             self.mmd_step_count += 1
         self.pending_animation_pose = None
 
-    def _finish_solver_only_step(self):
-        self.pose_input.mark_output(False)
-        if self.solver_target == "MMD":
-            self.mmd_step_count += 1
-        self.pending_animation_pose = None
-
-    def _finish_debug_batch_mode_exit(self, refresh_output=False):
-        if not self._debug_batch_exit_pending:
-            return False
-        refresh_error = None
-        refresh_traceback = None
-        try:
-            if refresh_output:
-                previous_asynchronous = getattr(
-                    self,
-                    "_asynchronous_presentation",
-                    False,
-                )
-                previous_debug = getattr(self, "_debug_presentation", True)
-                previous_kinematic = getattr(
-                    self,
-                    "_kinematic_debug_presentation",
-                    True,
-                )
-                previous_mmd_step_count = self.mmd_step_count
-                try:
-                    self._asynchronous_presentation = False
-                    self._debug_presentation = True
-                    self._kinematic_debug_presentation = True
-                    self.apply_step(
-                        *self.world.outputs(
-                            include_debug=True,
-                            include_transforms=True,
-                            include_joint_states=True,
-                        ),
-                        present_output=True,
-                    )
-                finally:
-                    self._asynchronous_presentation = previous_asynchronous
-                    self._debug_presentation = previous_debug
-                    self._kinematic_debug_presentation = previous_kinematic
-                    self.mmd_step_count = previous_mmd_step_count
-        except Exception as error:
-            refresh_error = error
-            refresh_traceback = error.__traceback__
-        cleanup_errors = []
-        try:
-            self._deactivate_debug_batch()
-        except Exception as error:
-            cleanup_errors.append((error, error.__traceback__))
-        try:
-            self.update_view_layer()
-        except Exception as error:
-            cleanup_errors.append((error, error.__traceback__))
-        primary_error = refresh_error
-        primary_traceback = refresh_traceback
-        if primary_error is None and cleanup_errors:
-            primary_error, primary_traceback = cleanup_errors.pop(0)
-        if primary_error is not None:
-            for secondary_error, _secondary_traceback in cleanup_errors:
-                primary_error.add_note(
-                    "Debug batch mode-exit cleanup also failed: "
-                    f"{secondary_error!r}"
-                )
-            raise primary_error.with_traceback(primary_traceback)
-        return True
-
     def tick(self, interactive=False):
-        self._sync_debug_batch_mode()
-        display_rig = self.display_rig
-        self._display_rig_valid_cache = bool(
-            display_rig is not None and display_rig.valid
+        interactive = bool(
+            interactive or getattr(self, "_interactive_timer_tick", False)
         )
-        self._display_rig_validation_depth += 1
-        try:
-            self._refresh_debug_batch_usable_cache()
-            self._debug_batch_validation_depth += 1
-            try:
-                interactive = bool(
-                    interactive or getattr(self, "_interactive_timer_tick", False)
-                )
-                self.prepare_step()
-                optimized = self._optimized_input_enabled()
-                compatible = self._isolated_runtime_compatible()
-                if self._update_display_rig_state(interactive, compatible):
-                    self.prepare_step()
-                    optimized = self._optimized_input_enabled()
-                if not self.step_solver():
-                    self._finish_debug_batch_mode_exit(refresh_output=True)
-                    return
-                plan = self.pose_input.presentation_plan(
+        self.prepare_step()
+        if self.step_solver():
+            self.apply_step(
+                *self.world.outputs(),
+                present_output=self.pose_input.presentation_due(
                     interactive,
-                    optimized,
-                )
-                if self._debug_batch_exit_pending:
-                    plan = plan._replace(
-                        write_output=True,
-                        update_debug=True,
-                        update_kinematic_debug=True,
-                    )
-                self._sync_debug_batch_visibility()
-                if not plan.write_output:
-                    self._finish_solver_only_step()
-                    self._finish_debug_batch_mode_exit(refresh_output=True)
-                    return
-                self._asynchronous_presentation = plan.asynchronous
-                self._debug_presentation = plan.update_debug
-                self._kinematic_debug_presentation = plan.update_kinematic_debug
-                try:
-                    self.apply_step(
-                        *self.world.outputs(
-                            include_debug=plan.update_debug,
-                            include_transforms=(
-                                plan.update_debug
-                                or self.pose_input.native_input_active
-                            ),
-                        ),
-                        present_output=True,
-                    )
-                    self._finish_debug_batch_mode_exit()
-                finally:
-                    self._asynchronous_presentation = False
-                    self._debug_presentation = True
-                    self._kinematic_debug_presentation = True
-            except Exception:
-                if self._debug_batch_exit_pending:
-                    try:
-                        self._finish_debug_batch_mode_exit()
-                    except Exception:
-                        traceback.print_exc()
-                raise
-            finally:
-                self._debug_batch_validation_depth -= 1
-        finally:
-            self._display_rig_validation_depth -= 1
+                    self._optimized_input_enabled(),
+                ),
+            )
 
     def close(self, restore=True):
         if self.closed:
             return
-        terminal_invalid = False
-        try:
-            self._rebind_blender_data(force=True)
-        except PreviewSessionInvalidError:
-            terminal_invalid = True
-            restore = False
-        display_rig = self.display_rig
-        try:
-            self._deactivate_display_rig(allow_retry=False)
-        except (AttributeError, ReferenceError, PreviewSessionInvalidError):
-            if not terminal_invalid:
-                raise
-            if display_rig is not None:
-                try:
-                    display_rig.close()
-                except Exception:
-                    traceback.print_exc()
-            self.display_rig = None
-            self._display_rig_valid_cache = False
-            self._deactivate_debug_batch()
-            if display_rig is not None:
-                cleanup_display_rig(display_rig.owner_token)
+        self.closed = True
         if restore and self.armature is not None:
             self._restore_start_snapshot()
-            self.set_bone_connections(self.saved_bone_connections)
-            self.update_view_layer()
-        self.closed = True
+            _set_bone_connections(self.armature, self.saved_bone_connections)
+            _update_view_layer()
 
 
 class PreviewWorld:
@@ -2518,28 +1264,25 @@ class PreviewWorld:
         session.world = None
         session.solver = None
 
-    def reset(self, prepared_session=None, *, restore_snapshots=True):
+    def reset(self, prepared_session=None):
         bodies = []
         joints = []
         body_source_eulers = []
         joint_source_eulers = []
-        session_layouts = []
         for session in self.sessions:
             if session is not prepared_session:
-                if restore_snapshots:
-                    session._restore_start_snapshot()
+                session._restore_start_snapshot()
                 session.rebuild_descriptors()
-            body_offset = len(bodies)
-            joint_offset = len(joints)
+            session.body_offset = len(bodies)
+            session.joint_offset = len(joints)
             bodies.extend(session.body_descs)
             body_source_eulers.extend(session.body_source_eulers)
             for desc in session.joint_descs:
                 adjusted = JointDesc.from_buffer_copy(desc)
-                adjusted.body_a += body_offset
-                adjusted.body_b += body_offset
+                adjusted.body_a += session.body_offset
+                adjusted.body_b += session.body_offset
                 joints.append(adjusted)
             joint_source_eulers.extend(session.joint_source_eulers)
-            session_layouts.append((session, body_offset, joint_offset))
         solver = Solver(
             bodies,
             joints,
@@ -2548,49 +1291,16 @@ class PreviewWorld:
             body_source_eulers=body_source_eulers,
             joint_source_eulers=joint_source_eulers,
         )
-        session_states = []
-        try:
-            solver.set_gravity(self.sessions[0].settings.preview_gravity)
-            display_pose_reset = False
-            for session, body_offset, joint_offset in session_layouts:
-                session_states.append(
-                    (
-                        session,
-                        body_offset,
-                        joint_offset,
-                        session._capture_driver_basis(),
-                        (
-                            session.scene.frame_current,
-                            session.scene.frame_subframe,
-                        ),
-                    )
-                )
-                if session.isolated_output_active:
-                    session.display_rig.capture_input_pose()
-                    session.display_rig.apply_input_pose()
-                    display_pose_reset = True
-            if display_pose_reset:
-                self.sessions[0].update_view_layer()
-        except Exception:
-            try:
-                solver.close()
-            except Exception:
-                traceback.print_exc()
-            raise
+        solver.set_gravity(self.sessions[0].settings.preview_gravity)
         old_solver = self.solver
         self.solver = solver
-        for (
-            session,
-            body_offset,
-            joint_offset,
-            last_output_basis,
-            last_frame,
-        ) in session_states:
-            session.body_offset = body_offset
-            session.joint_offset = joint_offset
+        for session in self.sessions:
             session.solver = solver
-            session.last_output_basis = last_output_basis
-            session.last_frame = last_frame
+            session.last_output_basis = session._capture_driver_basis()
+            session.last_frame = (
+                session.scene.frame_current,
+                session.scene.frame_subframe,
+            )
             session.mmd_step_count = 0
             session.pose_input.invalidate()
         if old_solver is not None:
@@ -2631,21 +1341,11 @@ class PreviewWorld:
         self.pending_step_seconds = decision.step_seconds
         return decision
 
-    def outputs(
-        self,
-        include_debug=True,
-        *,
-        include_transforms=None,
-        include_joint_states=None,
-    ):
-        if include_transforms is None:
-            include_transforms = include_debug
-        if include_joint_states is None:
-            include_joint_states = include_debug
+    def outputs(self):
         return (
-            self.solver.transforms() if include_transforms else None,
+            self.solver.transforms(),
             self.solver.bone_transforms(),
-            self.solver.joint_states() if include_joint_states else None,
+            self.solver.joint_states(),
         )
 
     def close(self):
@@ -2654,197 +1354,33 @@ class PreviewWorld:
             self.solver = None
 
 
-def _session_for_root(root):
-    if root is None:
-        return None
-    try:
-        session = _ACTIVE_SESSIONS.get(root.name)
-    except (AttributeError, ReferenceError, TypeError):
-        session = None
-    if (
-        session is not None
-        and _live_object(getattr(session, "root", None)) is root
-    ):
-        return session
-    return next(
-        (
-            candidate
-            for candidate in _ACTIVE_SESSIONS.values()
-            if _live_object(getattr(candidate, "root", None)) is root
-        ),
-        None,
-    )
-
-
-def _remove_session_keys(session):
-    for key, candidate in tuple(_ACTIVE_SESSIONS.items()):
-        if candidate is session:
-            _ACTIVE_SESSIONS.pop(key, None)
-
-
-def _shutdown_idle_runtime():
-    global _STEP_EXECUTOR
-    if _ACTIVE_SESSIONS:
-        return
-    if bpy.app.timers.is_registered(_timer_tick):
-        try:
-            bpy.app.timers.unregister(_timer_tick)
-        except (RuntimeError, ValueError):
-            pass
-    _TIMER_DEADLINE.reset()
-    if _STEP_EXECUTOR is not None:
-        _STEP_EXECUTOR.shutdown(wait=True)
-        _STEP_EXECUTOR = None
-
-
 def is_running(root=None):
     if root is None:
         return bool(_ACTIVE_SESSIONS)
-    return _session_for_root(root) is not None
-
-
-def _discard_unbound_session(session):
-    _remove_session_keys(session)
-    world = session.world
-    display_rig = getattr(session, "display_rig", None)
-    try:
-        session.close(restore=False)
-    except Exception:
-        traceback.print_exc()
-        remaining_display_rig = getattr(session, "display_rig", None)
-        if remaining_display_rig is not None:
-            display_rig = remaining_display_rig
-            try:
-                remaining_display_rig.close()
-            except Exception:
-                traceback.print_exc()
-        debug_batch = getattr(session, "debug_batch", None)
-        if debug_batch is not None:
-            try:
-                debug_batch.close()
-            except Exception:
-                traceback.print_exc()
-                try:
-                    cleanup_debug_batch(debug_batch.owner_token)
-                except Exception:
-                    traceback.print_exc()
-        if display_rig is not None:
-            cleanup_display_rig(display_rig.owner_token)
-    if world is not None and session in world.sessions:
-        world.remove(session)
-    session.display_rig = None
-    session._display_rig_valid_cache = False
-    session.closed = True
-    return world
-
-
-def _discard_terminal_session(
-    session,
-    error,
-    *,
-    rebuild_world=True,
-    restore_snapshots=True,
-):
-    try:
-        from ..mmd_ik_runtime.evaluator import discard_session
-
-        discard_session(
-            root=getattr(session, "root", None),
-            previous_root_name=getattr(session, "root_name", None),
-        )
-    except ImportError:
-        pass
-    except Exception:
-        traceback.print_exc()
-    world = _discard_unbound_session(session)
-    if world is not None and rebuild_world:
-        if world.sessions:
-            try:
-                world.reset(restore_snapshots=restore_snapshots)
-            except Exception:
-                traceback.print_exc()
-                for remaining in world.sessions:
-                    remaining.snapshot_reset_pending = True
-        else:
-            try:
-                world.close()
-            finally:
-                _ACTIVE_WORLDS.pop(world.key, None)
-    try:
-        settings = session.settings
-        settings.preview_running = bool(_ACTIVE_SESSIONS)
-        settings.preview_status = (
-            f"运行中：{len(_ACTIVE_SESSIONS)} 个模型"
-            if _ACTIVE_SESSIONS
-            else f"已停止：{error}"
-        )
-    except (AttributeError, ReferenceError):
-        pass
-    _shutdown_idle_runtime()
-    return world
+    return root.name in _ACTIVE_SESSIONS
 
 
 def suspend_for_undo_redo():
     global _RUNTIME_SUSPENDED
     _RUNTIME_SUSPENDED = bool(_ACTIVE_SESSIONS)
-    errors = []
-    failed_sessions = []
-    for session in tuple(dict.fromkeys(_ACTIVE_SESSIONS.values())):
-        try:
-            session._deactivate_display_rig(restore_source_connections=True)
-        except Exception as error:
-            errors.append(error)
-            failed_sessions.append((session, error))
-    affected_worlds = []
-    for session, error in failed_sessions:
-        world = session.world
-        if world is not None and world not in affected_worlds:
-            affected_worlds.append(world)
-        try:
-            _discard_terminal_session(
-                session,
-                error,
-                rebuild_world=False,
-            )
-        except Exception as cleanup_error:
-            errors.append(cleanup_error)
-            traceback.print_exc()
-    for world in affected_worlds:
-        if world.sessions:
-            try:
-                world.reset(restore_snapshots=False)
-            except Exception as cleanup_error:
-                errors.append(cleanup_error)
-                traceback.print_exc()
-                for remaining in world.sessions:
-                    remaining.snapshot_reset_pending = True
-        else:
-            try:
-                world.close()
-            except Exception as cleanup_error:
-                errors.append(cleanup_error)
-                traceback.print_exc()
-            finally:
-                _ACTIVE_WORLDS.pop(world.key, None)
-    _RUNTIME_SUSPENDED = bool(_ACTIVE_SESSIONS)
-    if errors:
-        raise errors[0]
     return _RUNTIME_SUSPENDED
 
 
 def suspend_for_runtime_switch(root):
     global _RUNTIME_SUSPENDED
-    session = _session_for_root(root)
+    session = _ACTIVE_SESSIONS.get(root.name) if root is not None else None
     if session is None:
         return None
     previous_suspended = _RUNTIME_SUSPENDED
     _RUNTIME_SUSPENDED = True
     session._rebind_blender_data(force=True)
-    session._deactivate_display_rig()
     session.pose_input.invalidate()
-    session._restore_authored_driver_pose()
+    for name, matrix_basis in session.saved_pose_basis.items():
+        pose_bone = session.armature.pose.bones.get(name)
+        if pose_bone is not None:
+            pose_bone.matrix_basis = matrix_basis
     session.armature.update_tag(refresh={"OBJECT"})
-    session.update_view_layer()
+    _update_view_layer()
     return session, previous_suspended
 
 
@@ -2862,70 +1398,13 @@ def resume_after_runtime_switch(token):
 
 
 def resume_after_undo_redo():
-    global _RUNTIME_SUSPENDED, _STEP_EXECUTOR
+    global _RUNTIME_SUSPENDED
     rebound = 0
-    failed_sessions = []
-    affected_worlds = list(
-        dict.fromkeys(
-            session.world
-            for session in _ACTIVE_SESSIONS.values()
-            if session.world is not None
-        )
-    )
     try:
-        cleanup_stale_display_rigs()
         for session in tuple(_ACTIVE_SESSIONS.values()):
-            try:
-                if session._rebind_blender_data(
-                    force=True,
-                    allow_recreated=True,
-                ):
-                    rebound += 1
-                _set_session_bone_connections(
-                    session,
-                    {name: False for name in session.saved_bone_connections}
-                )
-                session.display_rig_unavailable = False
-                session.pose_input.invalidate()
-            except Exception:
-                traceback.print_exc()
-                failed_sessions.append(session)
-        for session in failed_sessions:
-            world = _discard_unbound_session(session)
-            if world is not None and world not in affected_worlds:
-                affected_worlds.append(world)
-        for world in affected_worlds:
-            if world.sessions:
-                try:
-                    world.reset(restore_snapshots=False)
-                except Exception:
-                    traceback.print_exc()
-                    for session in world.sessions:
-                        session.snapshot_reset_pending = True
-                else:
-                    for session in world.sessions:
-                        session.snapshot_reset_pending = False
-            else:
-                world.close()
-                _ACTIVE_WORLDS.pop(world.key, None)
-        running = bool(_ACTIVE_SESSIONS)
-        for session in (*_ACTIVE_SESSIONS.values(), *failed_sessions):
-            try:
-                session.settings.preview_running = running
-                session.settings.preview_status = (
-                    f"运行中：{len(_ACTIVE_SESSIONS)} 个模型"
-                    if running
-                    else "已停止"
-                )
-            except (AttributeError, ReferenceError):
-                pass
-        if not running and bpy.app.timers.is_registered(_timer_tick):
-            bpy.app.timers.unregister(_timer_tick)
-        if not running:
-            _TIMER_DEADLINE.reset()
-            if _STEP_EXECUTOR is not None:
-                _STEP_EXECUTOR.shutdown(wait=True)
-                _STEP_EXECUTOR = None
+            if session._rebind_blender_data(force=True):
+                rebound += 1
+            session.pose_input.invalidate()
     finally:
         _RUNTIME_SUSPENDED = False
     return rebound
@@ -3050,83 +1529,11 @@ def renumber_preview_models(scene):
 
 @persistent
 def _ensure_preview_model_ids_after_load(_dummy):
-    cleanup_stale_display_rigs()
-    cleanup_stale_debug_batches()
     for scene in bpy.data.scenes:
         try:
             ensure_preview_model_ids(scene)
         except (AttributeError, RuntimeError):
             pass
-
-
-@persistent
-def _stop_preview_before_load(_filepath):
-    global _DISPLAY_RIG_SAVE_SUSPENSION, _RUNTIME_SUSPENDED
-    try:
-        _resume_display_rigs_after_save(_filepath)
-        stop_preview(restore=True)
-    finally:
-        _DISPLAY_RIG_SAVE_SUSPENSION = None
-        _RUNTIME_SUSPENDED = False
-        _TIMER_DEADLINE.reset()
-
-
-@persistent
-def _suspend_display_rigs_for_save(_filepath):
-    global _DISPLAY_RIG_SAVE_SUSPENSION, _RUNTIME_SUSPENDED
-    _resume_display_rigs_after_save(_filepath)
-    sessions = tuple(_ACTIVE_SESSIONS.values())
-    if not sessions:
-        return
-    previous_suspended = _RUNTIME_SUSPENDED
-    session_states = []
-    _DISPLAY_RIG_SAVE_SUSPENSION = (previous_suspended, session_states)
-    _RUNTIME_SUSPENDED = True
-    try:
-        for session in sessions:
-            session._rebind_blender_data(force=True)
-            debug_state = session._capture_debug_state()
-            session_states.append((session, session.root, debug_state))
-            session._deactivate_display_rig(restore_source_connections=True)
-            session._restore_authored_driver_pose()
-            _set_session_bone_connections(
-                session,
-                session.saved_bone_connections,
-            )
-            session._restore_debug_snapshot()
-    except Exception:
-        _resume_display_rigs_after_save(_filepath)
-        raise
-
-
-@persistent
-def _resume_display_rigs_after_save(_filepath):
-    global _DISPLAY_RIG_SAVE_SUSPENSION, _RUNTIME_SUSPENDED
-    suspension = _DISPLAY_RIG_SAVE_SUSPENSION
-    _DISPLAY_RIG_SAVE_SUSPENSION = None
-    if suspension is None:
-        return
-    previous_suspended, session_states = suspension
-    try:
-        for session, root, debug_state in session_states:
-            if (
-                not any(candidate is session for candidate in _ACTIVE_SESSIONS.values())
-                or _live_object(getattr(session, "root", None)) is not root
-            ):
-                continue
-            try:
-                session._restore_debug_state(debug_state)
-                _set_session_bone_connections(
-                    session,
-                    {name: False for name in session.saved_bone_connections}
-                )
-                session.display_rig_unavailable = False
-                session.pose_input.invalidate()
-            except Exception:
-                session.snapshot_reset_pending = True
-                traceback.print_exc()
-    finally:
-        _RUNTIME_SUSPENDED = previous_suspended
 
 
 @persistent
@@ -3141,57 +1548,17 @@ def _ensure_preview_model_ids_after_update(scene, _depsgraph):
         for session in tuple(_ACTIVE_SESSIONS.values()):
             if session.scene is not scene:
                 continue
-            session._display_rig_validation_depth += 1
-            try:
-                root = _live_object(getattr(session, "root", None))
-                armature = _live_object(getattr(session, "armature", None))
-                if root is None or armature is None:
+            if not any(
+                item in updated_ids
+                for item in (session.root, session.armature, session.armature.data)
+            ):
+                continue
+            if session.pose_input.deferred_output_pending:
+                session.pose_input.deferred_output_pending = False
+                raw_changed, _driver_changed = session.pose_input.raw_input_changes()
+                if not raw_changed:
                     continue
-                binding_updates = getattr(
-                    session, "_binding_ids", frozenset()
-                ).intersection(updated_ids)
-                if binding_updates:
-                    if session._binding_names_changed(binding_updates):
-                        session._binding_names_dirty = True
-                        session._debug_batch_validation_pending = True
-                    else:
-                        try:
-                            if any(not obj.hide_viewport for obj in binding_updates):
-                                session._debug_batch_validation_pending = True
-                        except ReferenceError:
-                            session._debug_batch_validation_pending = True
-                debug_batch = session.debug_batch
-                if (
-                    debug_batch is not None
-                    and debug_batch.note_depsgraph_updates(updated_ids)
-                ):
-                    session._debug_batch_validation_pending = True
-                observed_ids = [
-                    root,
-                    armature,
-                    armature.data,
-                ]
-                display_rig = session.display_rig
-                if (
-                    display_rig is not None
-                    and session._display_rig_valid_cache
-                ):
-                    try:
-                        observed_ids.extend(display_rig.observed_ids)
-                    except (AttributeError, ReferenceError):
-                        pass
-                if not any(item in updated_ids for item in observed_ids):
-                    continue
-                pose_input = getattr(session, "pose_input", None)
-                if pose_input is None:
-                    continue
-                if pose_input.acknowledge_self_write():
-                    raw_changed, _driver_changed = pose_input.raw_input_changes()
-                    if not raw_changed:
-                        continue
-                pose_input.external_input_evaluated = True
-            finally:
-                session._display_rig_validation_depth -= 1
+            session.pose_input.external_input_evaluated = True
         return
     try:
         ensure_preview_model_ids(scene)
@@ -3204,8 +1571,6 @@ def _ensure_preview_model_ids_deferred():
         scenes = tuple(bpy.data.scenes)
     except AttributeError:
         return 0.1
-    cleanup_stale_display_rigs()
-    cleanup_stale_debug_batches()
     for scene in scenes:
         try:
             ensure_preview_model_ids(scene)
@@ -3215,41 +1580,21 @@ def _ensure_preview_model_ids_deferred():
 
 
 def register_model_id_service():
-    if _stop_preview_before_load not in bpy.app.handlers.load_pre:
-        bpy.app.handlers.load_pre.append(_stop_preview_before_load)
     if _ensure_preview_model_ids_after_load not in bpy.app.handlers.load_post:
         bpy.app.handlers.load_post.append(_ensure_preview_model_ids_after_load)
     if _ensure_preview_model_ids_after_update not in bpy.app.handlers.depsgraph_update_post:
         bpy.app.handlers.depsgraph_update_post.append(_ensure_preview_model_ids_after_update)
-    if _suspend_display_rigs_for_save not in bpy.app.handlers.save_pre:
-        bpy.app.handlers.save_pre.append(_suspend_display_rigs_for_save)
-    if _resume_display_rigs_after_save not in bpy.app.handlers.save_post:
-        bpy.app.handlers.save_post.append(_resume_display_rigs_after_save)
-    if _resume_display_rigs_after_save not in bpy.app.handlers.save_post_fail:
-        bpy.app.handlers.save_post_fail.append(_resume_display_rigs_after_save)
     if not bpy.app.timers.is_registered(_ensure_preview_model_ids_deferred):
         bpy.app.timers.register(_ensure_preview_model_ids_deferred, first_interval=0.0)
 
 
 def unregister_model_id_service():
-    global _DISPLAY_RIG_SAVE_SUSPENSION
-    _resume_display_rigs_after_save("")
-    _DISPLAY_RIG_SAVE_SUSPENSION = None
     if bpy.app.timers.is_registered(_ensure_preview_model_ids_deferred):
         bpy.app.timers.unregister(_ensure_preview_model_ids_deferred)
     if _ensure_preview_model_ids_after_load in bpy.app.handlers.load_post:
         bpy.app.handlers.load_post.remove(_ensure_preview_model_ids_after_load)
-    if _stop_preview_before_load in bpy.app.handlers.load_pre:
-        bpy.app.handlers.load_pre.remove(_stop_preview_before_load)
     if _ensure_preview_model_ids_after_update in bpy.app.handlers.depsgraph_update_post:
         bpy.app.handlers.depsgraph_update_post.remove(_ensure_preview_model_ids_after_update)
-    if _suspend_display_rigs_for_save in bpy.app.handlers.save_pre:
-        bpy.app.handlers.save_pre.remove(_suspend_display_rigs_for_save)
-    if _resume_display_rigs_after_save in bpy.app.handlers.save_post:
-        bpy.app.handlers.save_post.remove(_resume_display_rigs_after_save)
-    if _resume_display_rigs_after_save in bpy.app.handlers.save_post_fail:
-        bpy.app.handlers.save_post_fail.remove(_resume_display_rigs_after_save)
-    cleanup_stale_debug_batches()
 
 
 def model_scale_info(root):
@@ -3259,14 +1604,11 @@ def model_scale_info(root):
 
 def _start_preview(context, root):
     settings = context.scene.surface_proxy_creator
-    for active_session in tuple(_ACTIVE_SESSIONS.values()):
-        active_session._deactivate_display_rig()
     stop_preview(root=root, restore=True)
     session = PreviewSession(context.scene, settings, root)
     interaction_group = root.spx_mmd_interaction_group_id
     world_key = (
         "group",
-        int(session.scene.as_pointer()),
         session.solver_target,
         session.import_scale,
         interaction_group,
@@ -3283,52 +1625,12 @@ def _start_preview(context, root):
     world.add(session)
     try:
         world.reset(prepared_session=session)
-    except Exception as start_error:
-        cleanup_errors = []
-        try:
-            if session in world.sessions:
-                world.remove(session)
-        except Exception as cleanup_error:
-            cleanup_errors.append(cleanup_error)
-        try:
-            session.close(restore=True)
-        except Exception as cleanup_error:
-            cleanup_errors.append(cleanup_error)
-        if world.sessions:
-            try:
-                world.reset(restore_snapshots=False)
-            except Exception as cleanup_error:
-                cleanup_errors.append(cleanup_error)
-                for remaining in tuple(world.sessions):
-                    try:
-                        _discard_terminal_session(
-                            remaining,
-                            cleanup_error,
-                            rebuild_world=False,
-                        )
-                    except Exception as discard_error:
-                        cleanup_errors.append(discard_error)
-                try:
-                    world.close()
-                except Exception as close_error:
-                    cleanup_errors.append(close_error)
-                finally:
-                    _ACTIVE_WORLDS.pop(world_key, None)
-        else:
-            try:
-                world.close()
-            except Exception as cleanup_error:
-                cleanup_errors.append(cleanup_error)
-            finally:
-                _ACTIVE_WORLDS.pop(world_key, None)
-        for cleanup_error in cleanup_errors:
-            try:
-                start_error.add_note(
-                    "Preview start rollback failed: "
-                    f"{type(cleanup_error).__name__}: {cleanup_error}"
-                )
-            except AttributeError:
-                pass
+    except Exception:
+        world.remove(session)
+        session.close(restore=True)
+        if not world.sessions:
+            world.close()
+            _ACTIVE_WORLDS.pop(world_key, None)
         raise
     _ACTIVE_SESSIONS[root.name] = session
     settings.preview_running = True
@@ -3371,82 +1673,46 @@ def start_preview(context):
 
 
 def stop_preview(root=None, restore=True):
-    errors = []
+    global _STEP_EXECUTOR
     if root is None:
-        sessions = list(dict.fromkeys(_ACTIVE_SESSIONS.values()))
+        sessions = list(_ACTIVE_SESSIONS.values())
         _ACTIVE_SESSIONS.clear()
-        worlds = list(dict.fromkeys(_ACTIVE_WORLDS.values()))
+        worlds = list(_ACTIVE_WORLDS.values())
         _ACTIVE_WORLDS.clear()
-    else:
-        session = _session_for_root(root)
-        if session is not None:
-            _remove_session_keys(session)
-        sessions = [session] if session is not None else []
-        worlds = []
-    try:
-        for session in sessions:
-            world = session.world
-            try:
-                try:
-                    session.close(restore=restore)
-                except PreviewSessionInvalidError:
-                    session.close(restore=False)
-            except Exception as error:
-                errors.append(error)
-                if not session.closed:
-                    try:
-                        session.close(restore=False)
-                    except Exception as cleanup_error:
-                        errors.append(cleanup_error)
-            finally:
-                if world is not None and session in world.sessions:
-                    try:
-                        world.remove(session)
-                    except Exception as error:
-                        errors.append(error)
-                if root is not None and world is not None:
-                    try:
-                        if world.sessions:
-                            world.reset()
-                        else:
-                            try:
-                                world.close()
-                            finally:
-                                _ACTIVE_WORLDS.pop(world.key, None)
-                    except Exception as error:
-                        errors.append(error)
-                try:
-                    if session.settings is not None:
-                        session.settings.preview_running = bool(_ACTIVE_SESSIONS)
-                        session.settings.preview_status = (
-                            f"运行中：{len(_ACTIVE_SESSIONS)} 个模型"
-                            if _ACTIVE_SESSIONS
-                            else "已停止"
-                        )
-                except (AttributeError, ReferenceError):
-                    pass
         for world in worlds:
-            try:
+            world.close()
+    else:
+        session = _ACTIVE_SESSIONS.pop(root.name, None)
+        sessions = [session] if session is not None else []
+    for session in sessions:
+        world = session.world
+        if world is not None:
+            world.remove(session)
+        session.close(restore=restore)
+        if root is not None and world is not None:
+            if world.sessions:
+                world.reset()
+            else:
                 world.close()
-            except Exception as error:
-                errors.append(error)
-            finally:
-                for session in tuple(world.sessions):
-                    try:
-                        world.remove(session)
-                    except Exception as error:
-                        errors.append(error)
-    finally:
-        try:
-            _shutdown_idle_runtime()
-        except Exception as error:
-            errors.append(error)
-    if errors:
-        raise errors[0]
+                _ACTIVE_WORLDS.pop(world.key, None)
+        if session.settings is not None:
+            session.settings.preview_running = bool(_ACTIVE_SESSIONS)
+            session.settings.preview_status = (
+                f"运行中：{len(_ACTIVE_SESSIONS)} 个模型"
+                if _ACTIVE_SESSIONS
+                else "已停止"
+            )
+    if not _ACTIVE_SESSIONS and bpy.app.timers.is_registered(_timer_tick):
+        bpy.app.timers.unregister(_timer_tick)
+    if not _ACTIVE_SESSIONS:
+        _TIMER_DEADLINE.reset()
+    if not _ACTIVE_SESSIONS and _STEP_EXECUTOR is not None:
+        _STEP_EXECUTOR.shutdown(wait=True)
+        _STEP_EXECUTOR = None
 
 
 def reset_preview(root):
-    session = _session_for_root(root)
+    session = _ACTIVE_SESSIONS.get(root.name) if root is not None else None
     if session is None:
         raise RuntimeError("物理预览尚未启动")
     session.world.reset()
@@ -3506,25 +1772,7 @@ def _step_executor():
     return _STEP_EXECUTOR
 
 
-def _set_preview_status(session, status):
-    try:
-        session.settings.preview_status = status
-    except (AttributeError, ReferenceError):
-        pass
-
-
 def _recover_tick_failure(session, error, interval):
-    invalid_error = error if isinstance(error, PreviewSessionInvalidError) else None
-    if invalid_error is None:
-        try:
-            session._rebind_blender_data(force=True)
-        except PreviewSessionInvalidError as binding_error:
-            invalid_error = binding_error
-        except Exception:
-            pass
-    if invalid_error is not None:
-        _discard_terminal_session(session, invalid_error)
-        return interval
     traceback.print_exception(type(error), error, error.__traceback__)
     session.consecutive_tick_failures += 1
     session.snapshot_reset_pending = True
@@ -3532,39 +1780,24 @@ def _recover_tick_failure(session, error, interval):
         session.reset_solver()
         session.snapshot_reset_pending = False
         session.auto_reset_count += 1
-        _set_preview_status(
-            session,
+        session.settings.preview_status = (
             "运行中：异常后已恢复启动快照 "
-            f"({type(error).__name__}: {error})",
+            f"({type(error).__name__}: {error})"
         )
     except Exception as recovery_error:
         traceback.print_exc()
-        _set_preview_status(
-            session,
+        session.settings.preview_status = (
             "运行中：启动快照恢复失败，将继续重试 "
-            f"({type(recovery_error).__name__}: {recovery_error})",
+            f"({type(recovery_error).__name__}: {recovery_error})"
         )
     return interval
 
 
 def _timer_tick_parallel(sessions, wall_seconds):
-    intervals = {}
-    runnable_sessions = []
-    for session in sessions:
-        try:
-            intervals[session] = 1.0 / max(
-                session.settings.preview_frequency,
-                1,
-            )
-        except Exception as error:
-            interval = 1.0 / 60.0
-            intervals[session] = interval
-            _recover_tick_failure(session, error, interval)
-            continue
-        runnable_sessions.append(session)
-    sessions = tuple(runnable_sessions)
-    if not sessions:
-        return min(intervals.values(), default=1.0 / 60.0)
+    intervals = {
+        session: 1.0 / max(session.settings.preview_frequency, 1)
+        for session in sessions
+    }
     prepared = []
     for world in tuple(dict.fromkeys(session.world for session in sessions)):
         try:
@@ -3577,7 +1810,6 @@ def _timer_tick_parallel(sessions, wall_seconds):
         generations = {world: world.generation for world in _ACTIVE_WORLDS.values()}
         for session in sessions:
             try:
-                session._deactivate_display_rig()
                 if session.snapshot_reset_pending:
                     session.reset_solver()
                     session.snapshot_reset_pending = False
@@ -3606,30 +1838,18 @@ def _timer_tick_parallel(sessions, wall_seconds):
     for world in stepped_worlds:
         try:
             outputs = world.outputs()
+            for session in prepared:
+                if session.world is world:
+                    session.apply_step(*outputs)
+                    session.consecutive_tick_failures = 0
         except Exception as error:
-            session = next(
-                item for item in prepared if item.world is world
-            )
+            session = world.sessions[0]
             _recover_tick_failure(session, error, intervals[session])
-            continue
-        for session in prepared:
-            if session.world is not world:
-                continue
-            try:
-                session.apply_step(*outputs)
-                session.consecutive_tick_failures = 0
-            except Exception as error:
-                _recover_tick_failure(session, error, intervals[session])
-                break
     return min(intervals.values())
 
 
 def _timer_tick_session(session, wall_seconds, interactive=False):
-    interval = 1.0 / 60.0
-    try:
-        interval = 1.0 / max(session.settings.preview_frequency, 1)
-    except Exception as error:
-        return _recover_tick_failure(session, error, interval)
+    interval = 1.0 / max(session.settings.preview_frequency, 1)
     try:
         session.world.sample_time(wall_seconds)
     except Exception as error:
@@ -3638,15 +1858,12 @@ def _timer_tick_session(session, wall_seconds, interactive=False):
         try:
             session.reset_solver()
             session.snapshot_reset_pending = False
-            _set_preview_status(session, "运行中：已恢复启动快照并继续物理")
+            session.settings.preview_status = "运行中：已恢复启动快照并继续物理"
         except Exception as recovery_error:
-            if isinstance(recovery_error, PreviewSessionInvalidError):
-                return _recover_tick_failure(session, recovery_error, interval)
             traceback.print_exc()
-            _set_preview_status(
-                session,
+            session.settings.preview_status = (
                 "运行中：启动快照恢复失败，将继续重试 "
-                f"({type(recovery_error).__name__}: {recovery_error})",
+                f"({type(recovery_error).__name__}: {recovery_error})"
             )
             return interval
     try:
