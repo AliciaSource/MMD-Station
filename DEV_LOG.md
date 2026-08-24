@@ -1,5 +1,13 @@
 # Development Log
 
+## 2026-08-24 - V0.1.8 Parent Empty 同 tick 物理输入修正候选
+
+- 用户在真实 Blender 4.4 中确认 Parent Empty 连续拖动延迟已修复，批准该状态晋升为本地安全基线 `baseline-20260824-parent-empty-same-tick`；该基线只固化统一 PMX/MMD raw Object transform 检测，不包含后续 IK 关闭生命周期重构。
+- 用户在真实 Blender 4.4 发现：PMX DLL 下直接移动 MMD 模型 Root Empty 时物理与刚体能同步，而 MMD DLL 下 Object Mode 移动会出现刚体延迟，进入 Armature Pose Mode 移动则正常。核查确认两条 DLL 的正常 Blender hot path 已共用 `_prepare_mmd_tools_step()` / `_submit_pose_targets()` / `_apply_mmd_tools_step()`，但 `PoseInputAdapter.raw_input_changes()` 只监视 evaluated `root.matrix_world` / `armature.matrix_world`；Object Mode Transform modal 存在原始 `matrix_basis` 已变化、depsgraph 尚未传播新 `matrix_world`、timer 已先运行的窗口，旧逻辑会错误复用上一 tick 输入。Pose Mode 更容易先触发 Armature evaluation，因此会掩盖该窗口。
+- 修复保持 PMX/MMD 共用，不增加 MMD-only common-motion/world-delta 分支：Session 现在缓存并监视 MMD Root、Armature 及其完整父级 Object 链的原始 `matrix_basis`。发现任一父级 raw transform 改变时，即使 `matrix_world` 尚未刷新，也会让当前 tick 进入一次必要的 `_update_view_layer()`，随后提交已求值的同 tick world-space 刚体目标。这样既覆盖 Root 自身 Empty，也覆盖额外父级 Empty，并避免重新引入历史上已经导致双重位移的手工 motion-delta 补偿。
+- 新增 `tests/mmd_04_parent_empty_latency_regression.py`，在原 `04.blend` 中故意修改 Root Empty 后不预先调用 `view_layer.update()`，分别验证 PMX/MMD 都能由当前 tick 检出 raw Object transform、完成一次输入求值并同步 59 个绑定 0 型刚体；两条路径均输出 `MMD_04_PARENT_EMPTY_LATENCY_OK ... max_error≈1.9e-08`。既有 `MMD_04_PREVIEW_PIPELINE_OK ... motion_rigid_error=0`、`MMD_04_RIGID_LATENCY_REGRESSION_OK ... max_error=0`、PMX/MMD `PHYSICS_ROOT_OFFSET_REGRESSION_OK` 继续通过。
+- 性能回归保持：`CURRENT_PROXY + debug on` 的 PMX/MMD tick 中位分别约 `7.50/7.91 ms`，合计约 `20.85/20.97 ms`，新增父级链 raw 比较未形成可测的稳定开销。当前改动位于已验收基线 `baseline-20260824-physics-runtime-v2-phase1` 之后，版本保持 V0.1.8，不打包、不修改 DLL、不新建 baseline，等待真实 GUI 对 Parent Empty 连续拖动重新验收。
+
 ## 2026-08-24 - V0.1.8 Physics Runtime V2 第一阶段性能与路径隔离重构
 
 - 用户在真实 Blender 4.4 原工程中按顺序完成 GUI 验收：PMX 无 IK、MMD 无 IK、仅 MMD IK、MMD IK + PMX、MMD IK + MMD 五项均通过；逐 tick Rigid/Joint 修正后未再观察到刚体显示延迟。最后一项 Clear All → F9 `仅选中` → 再移动 → 再清空仍未通过：偶发关闭 IK，或 IK 控制骨已复位但链条残留旧解算结果。该问题作为明确的未解决缺陷保留，不将其误记为已修复；用户批准当前状态晋升为新的本地安全基线 `baseline-20260824-physics-runtime-v2-phase1`。
