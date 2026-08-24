@@ -7,6 +7,7 @@ class PoseInputAdapter:
         self.cached_input_basis = {}
         self.cached_root_matrix = None
         self.cached_armature_matrix = None
+        self.cached_object_basis = {}
         self.cached_frame = None
         self.external_input_evaluated = False
         self.deferred_output_pending = False
@@ -23,6 +24,12 @@ class PoseInputAdapter:
     def refresh_bindings(self):
         session = self.session
         self.pose_bone_count = len(session.armature.pose.bones)
+        watched_objects = {}
+        for obj in (session.root, session.armature):
+            while obj is not None:
+                watched_objects[obj.name] = obj
+                obj = obj.parent
+        self.watched_transform_objects = tuple(watched_objects.values())
         input_pose_bones = {}
         for pose_bone in session.rigid_pose_bones:
             while pose_bone is not None:
@@ -94,6 +101,7 @@ class PoseInputAdapter:
         self.cached_input_basis = {}
         self.cached_root_matrix = None
         self.cached_armature_matrix = None
+        self.cached_object_basis = {}
         self.cached_frame = None
         self.external_input_evaluated = False
         self.force_presentation = True
@@ -103,6 +111,10 @@ class PoseInputAdapter:
         if self.cached_animation_pose is None:
             return True, False
         current_frame = (session.scene.frame_current, session.scene.frame_subframe)
+        for obj in self.watched_transform_objects:
+            expected = self.cached_object_basis.get(obj.name)
+            if expected is None or obj.matrix_basis != expected:
+                return True, False
         if (
             self.cached_frame != current_frame
             or self.cached_root_matrix is None
@@ -135,6 +147,10 @@ class PoseInputAdapter:
         }
         self.cached_root_matrix = session.root.matrix_world.copy()
         self.cached_armature_matrix = session.armature.matrix_world.copy()
+        self.cached_object_basis = {
+            obj.name: obj.matrix_basis.copy()
+            for obj in self.watched_transform_objects
+        }
         self.cached_frame = (
             session.scene.frame_current,
             session.scene.frame_subframe,
