@@ -20,6 +20,7 @@ from .runtime import (
     refresh_bindings,
     runtime_state,
     set_action_input,
+    set_owned_bones,
 )
 from .vmd_hook import SOURCE_FRAME_KEY, SOURCE_VMD_KEY
 
@@ -146,6 +147,46 @@ def _mute_generated_constraints(runtime):
     return muted
 
 
+def _ik_output_bone_names(armature):
+    owned = set()
+    for pose_bone in armature.pose.bones:
+        for constraint in pose_bone.constraints:
+            if (
+                constraint.type != "IK"
+                or getattr(constraint, "target", None) != armature
+            ):
+                continue
+            link = pose_bone
+            remaining = int(constraint.chain_count)
+            while link is not None and (remaining > 0 or constraint.chain_count == 0):
+                owned.add(link.name)
+                link = link.parent
+                remaining -= 1
+            target_names = {pose_bone.name, constraint.subtarget}
+            for target_bone in armature.pose.bones:
+                if any(
+                    target_constraint.name.lower().startswith("mmd_ik_target_")
+                    and getattr(target_constraint, "target", None) == armature
+                    and target_constraint.subtarget in target_names
+                    for target_constraint in target_bone.constraints
+                ):
+                    owned.add(target_bone.name)
+    for bone_name in tuple(owned):
+        parent = armature.pose.bones[bone_name].parent
+        while parent is not None:
+            if parent.name in owned:
+                parent = parent.parent
+                continue
+            if not any(
+                constraint.name.lower().startswith("mmd_")
+                for constraint in parent.constraints
+            ):
+                break
+            owned.add(parent.name)
+            parent = parent.parent
+    return frozenset(owned)
+
+
 def _restore_constraints(runtime, muted):
     for bone_name, constraint_name, previous in muted:
         pose_bone = runtime.pose.bones.get(bone_name)
@@ -226,16 +267,15 @@ def _matrix_near_identity(matrix, tolerance=1.0e-6):
 
 def _cleared_pose_snapshot(canonical, output_basis):
     changed = []
-    identity_count = 0
     for name, output in output_basis.items():
         pose_bone = canonical.pose.bones.get(name)
         if pose_bone is None or pose_bone.matrix_basis == output:
             continue
         changed.append(name)
-        if _matrix_near_identity(pose_bone.matrix_basis):
-            identity_count += 1
-    required = max(2, math.ceil(len(output_basis) * 0.2))
-    if len(changed) < required or identity_count < math.ceil(len(changed) * 0.9):
+    if len(changed) < 2 or any(
+        not _matrix_near_identity(pose_bone.matrix_basis)
+        for pose_bone in canonical.pose.bones
+    ):
         return None
     return {
         pose_bone.name: pose_bone.matrix_basis.copy()
@@ -345,6 +385,7 @@ class Session:
     action_signature: tuple = ()
     solver_matrices: dict = field(default_factory=dict)
     desired_pose: dict = field(default_factory=dict)
+    output_indices: tuple | None = None
 
     def _capture_external_pose(self, canonical, scene):
         if not self.input_signature:
@@ -372,10 +413,27 @@ class Session:
 
     def _apply_output(self, runtime, update=True):
         preserved = _transform_modal_pose_matrices(runtime)
-        mapped = [(index, pose_bone) for index, pose_bone in enumerate(self.mapping) if pose_bone is not None]
+        indices = (
+            range(len(self.mapping))
+            if self.output_indices is None
+            else self.output_indices
+        )
+        mapped = [
+            (index, self.mapping[index])
+            for index in indices
+            if self.mapping[index] is not None
+        ]
         mapped.sort(key=lambda item: len(item[1].parent_recursive))
+        desired_items = {index: pose_bone for index, pose_bone in mapped}
+        for _index, pose_bone in mapped:
+            parent = pose_bone.parent
+            while parent is not None:
+                parent_index = self.bone_indices.get(parent.name)
+                if parent_index is not None:
+                    desired_items.setdefault(parent_index, parent)
+                parent = parent.parent
         desired = {}
-        for index, pose_bone in mapped:
+        for index, pose_bone in desired_items.items():
             values = self.solver.matrix(index)
             if self.solver_matrices.get(index) != values:
                 self.solver_matrices[index] = values
@@ -424,7 +482,8 @@ class Session:
             bpy.context.view_layer.update()
         self.output_basis = {
             pose_bone.name: pose_bone.matrix_basis.copy()
-            for _index, pose_bone in mapped
+            for pose_bone in self.mapping
+            if pose_bone is not None
         }
         self.input_signature = _live_input_signature(runtime, bpy.context.scene)
         self.action_signature = _action_frame_signature(
@@ -750,7 +809,13 @@ def start_live(root, input_basis=None, update=True):
         solver.close()
         raise MMDIKRuntimeError("当前模型与 native PMX 骨名完全不匹配")
     scale = _infer_scale(mapping, solver)
-    muted = []
+    owned_bones = _ik_output_bone_names(canonical)
+    output_indices = tuple(
+        index
+        for index, pose_bone in enumerate(mapping)
+        if pose_bone is not None and pose_bone.name in owned_bones
+    )
+    muted = set_owned_bones(root, owned_bones)
     session = Session(
         root_name=root.name,
         runtime_name=canonical.name,
@@ -767,6 +832,7 @@ def start_live(root, input_basis=None, update=True):
         live=True,
         source_vmd=has_source_vmd,
         action_input=bool(state.get("action_input", False)),
+        output_indices=output_indices,
         input_basis={
             name: matrix.copy()
             for name, matrix in (
@@ -898,12 +964,29 @@ def resume_sessions_after_undo_redo(scene=None):
             session.bone_indices[pose_bone.name] = index
             for alias in _pose_bone_name(pose_bone):
                 session.bone_indices.setdefault(alias, index)
-        session.input_basis = {
-            pose_bone.name: pose_bone.matrix_basis.copy()
+        selected = tuple(
+            pose_bone
             for pose_bone in canonical.pose.bones
-        }
+            if pose_bone.bone.select and pose_bone.name in session.input_basis
+        )
+        preserve_cleared_input = bool(selected) and all(
+            _matrix_near_identity(matrix)
+            for matrix in session.input_basis.values()
+        ) and all(
+            _matrix_near_identity(pose_bone.matrix_basis)
+            for pose_bone in selected
+        )
+        if not preserve_cleared_input:
+            session.input_basis = {
+                pose_bone.name: pose_bone.matrix_basis.copy()
+                for pose_bone in canonical.pose.bones
+            }
         session.output_basis.clear()
-        session.input_signature = ()
+        session.input_signature = (
+            _live_input_signature(canonical, scene)
+            if preserve_cleared_input
+            else ()
+        )
         session.action_signature = ()
         session.solver_matrices.clear()
         session.desired_pose.clear()
@@ -1064,9 +1147,12 @@ def evaluate_physics_pose(root, preview_session, vmd_frame=None):
             - session.blender_start
         )
     if preview_session.solver_target == "MMD":
-        session.evaluate_before_physics(vmd_frame, apply_output=True)
+        session.evaluate_before_physics(vmd_frame, apply_output=False)
     else:
-        session.evaluate_exact(vmd_frame, apply_output=True)
+        session.evaluate_exact(vmd_frame, apply_output=False)
+    runtime = bpy.data.objects.get(session.runtime_name)
+    if runtime is not None:
+        session._apply_output(runtime, update=False)
     return float(vmd_frame)
 
 

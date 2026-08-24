@@ -76,6 +76,8 @@ try:
     assert max(type_zero_errors) < 2.0e-5, max(type_zero_errors)
 
     presentation_start = session.pose_input.output_evaluation_count
+    commit_start = session.pose_input.output_commit_count
+    debug_start = session.pose_input.debug_update_count
     clean_input_start = session.pose_input.input_evaluation_count
     samples = []
     for _index in range(20):
@@ -85,13 +87,20 @@ try:
     presentation_count = (
         session.pose_input.output_evaluation_count - presentation_start
     )
-    assert presentation_count == 10, presentation_count
+    commit_count = session.pose_input.output_commit_count - commit_start
+    debug_count = session.pose_input.debug_update_count - debug_start
+    assert presentation_count == 0, presentation_count
+    assert commit_count == 20, commit_count
+    assert debug_count == 20, debug_count
     assert session.pose_input.input_evaluation_count == clean_input_start
 
     motion_presentation_start = session.pose_input.output_evaluation_count
+    motion_commit_start = session.pose_input.output_commit_count
+    motion_debug_start = session.pose_input.debug_update_count
     motion_capture_start = session.pose_input.fast_captures
     motion_input_start = session.pose_input.input_evaluation_count
     motion_samples = []
+    motion_rigid_errors = []
     for index in range(20):
         root_bone.location = original_location + Vector(
             (0.02 + 0.0005 * (index + 1), 0.0, 0.0)
@@ -100,10 +109,23 @@ try:
         started = time.perf_counter()
         session.tick(interactive=True)
         motion_samples.append((time.perf_counter() - started) * 1000.0)
+        transforms = session.solver.transforms()[
+            session.body_offset:session.body_offset + len(session.rigids)
+        ]
+        for rigid, transform in zip(session.rigids, transforms):
+            position, _rotation = runtime.transform_to_components(transform)
+            expected = Vector(position) * session.import_scale
+            motion_rigid_errors.append(
+                (expected - rigid.matrix_world.translation).length
+            )
     motion_presentations = (
         session.pose_input.output_evaluation_count - motion_presentation_start
     )
-    assert motion_presentations == 10, motion_presentations
+    motion_commits = session.pose_input.output_commit_count - motion_commit_start
+    motion_debugs = session.pose_input.debug_update_count - motion_debug_start
+    assert motion_presentations == 0, motion_presentations
+    assert motion_commits == 20, motion_commits
+    assert motion_debugs == 20, motion_debugs
     assert session.pose_input.fast_captures == motion_capture_start + 20
     assert session.pose_input.input_evaluation_count == motion_input_start
     motion_type_zero_errors = []
@@ -121,6 +143,8 @@ try:
         )
     assert motion_type_zero_errors
     assert max(motion_type_zero_errors) < 2.0e-5
+    assert motion_rigid_errors
+    assert max(motion_rigid_errors) < 2.0e-5, max(motion_rigid_errors)
 finally:
     runtime.stop_preview(root)
 
@@ -128,10 +152,13 @@ print(
     "MMD_04_PREVIEW_PIPELINE_OK",
     f"cache_hits={session.pose_input.cache_hits}",
     f"fast_captures={session.pose_input.fast_captures}",
-    f"presentations={presentation_count}/20",
+    f"commits={commit_count}/20",
+    f"sync_evaluations={presentation_count}/20",
+    f"debug_updates={debug_count}/20",
     f"type0_error={max(type_zero_errors):.9g}",
     f"mean_ms={statistics.mean(samples):.3f}",
     f"median_ms={statistics.median(samples):.3f}",
     f"motion_mean_ms={statistics.mean(motion_samples):.3f}",
     f"motion_type0_error={max(motion_type_zero_errors):.9g}",
+    f"motion_rigid_error={max(motion_rigid_errors):.9g}",
 )

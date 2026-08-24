@@ -146,14 +146,70 @@ def _iter_model_meshes(root):
     yield from mmd_model_api().iterate_mesh_objects(root)
 
 
-def _mute_constraints(canonical):
+def _is_generated_constraint(constraint, canonical):
+    return constraint.name.lower().startswith("mmd_") or (
+        constraint.type == "IK"
+        and getattr(constraint, "target", None) == canonical
+    )
+
+
+def _mute_constraints(canonical, bone_names=()):
     muted = []
     _remove_legacy_output(canonical)
-    for pose_bone in canonical.pose.bones:
+    for bone_name in bone_names:
+        pose_bone = canonical.pose.bones.get(bone_name)
+        if pose_bone is None:
+            continue
         for constraint in pose_bone.constraints:
+            if not _is_generated_constraint(constraint, canonical):
+                continue
             muted.append((pose_bone.name, constraint.name, bool(constraint.mute)))
             constraint.mute = True
     return muted
+
+
+def _owned_constraints(canonical, bone_names):
+    return tuple(
+        (pose_bone.name, constraint)
+        for bone_name in bone_names
+        for pose_bone in (canonical.pose.bones.get(bone_name),)
+        if pose_bone is not None
+        for constraint in pose_bone.constraints
+        if _is_generated_constraint(constraint, canonical)
+    )
+
+
+def _owned_constraints_are_current(canonical, state, bone_names):
+    current = _owned_constraints(canonical, bone_names)
+    recorded = {
+        (bone_name, constraint_name)
+        for bone_name, constraint_name, _previous in state.get(
+            "muted_constraints", ()
+        )
+    }
+    return recorded == {
+        (bone_name, constraint.name) for bone_name, constraint in current
+    } and all(constraint.mute for _bone_name, constraint in current)
+
+
+def set_owned_bones(root, bone_names):
+    state = _load_state(root)
+    if not state:
+        raise MMDIKRuntimeError("当前模型尚未启用 MMD IK 兼容")
+    canonical = canonical_armature(root, state)
+    if canonical is None:
+        raise MMDIKRuntimeError("原 mmd_tools 骨架已丢失")
+    owned_bones = sorted(set(bone_names))
+    if (
+        state.get("owned_bones", []) == owned_bones
+        and _owned_constraints_are_current(canonical, state, owned_bones)
+    ):
+        return list(state.get("muted_constraints", ()))
+    _restore_constraint_mutes(canonical, state)
+    state["owned_bones"] = owned_bones
+    state["muted_constraints"] = _mute_constraints(canonical, owned_bones)
+    _save_state(root, state)
+    return list(state["muted_constraints"])
 
 
 def create_runtime(context, root):
@@ -171,7 +227,8 @@ def create_runtime(context, root):
         "enabled": True,
         "binding_mode": "MEMORY_ONLY",
         "action_input": False,
-        "muted_constraints": _mute_constraints(canonical),
+        "owned_bones": [],
+        "muted_constraints": [],
     }
     _save_state(root, state)
     return canonical, len(list(_iter_model_meshes(root))), True
@@ -184,9 +241,18 @@ def refresh_bindings(root):
     canonical = canonical_armature(root, state)
     if canonical is None:
         raise MMDIKRuntimeError("原 mmd_tools 骨架已丢失")
+    owned_bones = state.get("owned_bones", ())
+    if (
+        state.get("enabled")
+        and _owned_constraints_are_current(canonical, state, owned_bones)
+    ):
+        return len(list(_iter_model_meshes(root)))
     _restore_constraint_mutes(canonical, state)
     state["enabled"] = True
-    state["muted_constraints"] = _mute_constraints(canonical)
+    state["muted_constraints"] = _mute_constraints(
+        canonical,
+        owned_bones,
+    )
     _save_state(root, state)
     return len(list(_iter_model_meshes(root)))
 
@@ -252,7 +318,10 @@ def export_restore_runtime(root, transaction):
     if not state or state.get("session_id") != transaction["state"].get("session_id"):
         return 0
     canonical = canonical_armature(root, state)
-    state["muted_constraints"] = _mute_constraints(canonical)
+    state["muted_constraints"] = _mute_constraints(
+        canonical,
+        state.get("owned_bones", ()),
+    )
     state["enabled"] = True
     _save_state(root, state)
     from .evaluator import resume_live

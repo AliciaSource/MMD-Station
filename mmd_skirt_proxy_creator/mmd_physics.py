@@ -2170,6 +2170,7 @@ class SPX_OT_QuickCheckMMDGroup(Operator):
     mode: EnumProperty(
         items=(
             ("PREFIX", "按名称前缀", ""),
+            ("LOCKED_VERTEX_GROUPS", "当前物体锁定顶点组", ""),
             ("BONE_BRANCH", "已勾选骨骼及子级", ""),
             ("BONE_COLUMN", "同列骨骼", ""),
             ("RIGID_GROUP", "相同碰撞组", ""),
@@ -2194,6 +2195,25 @@ class SPX_OT_QuickCheckMMDGroup(Operator):
                 for item in settings.browser_items
                 if item.label.startswith(prefix) or item.target_name.startswith(prefix)
             }
+        elif self.mode == "LOCKED_VERTEX_GROUPS":
+            mesh_object = context.active_object
+            if mesh_object is None or mesh_object.type != "MESH":
+                self.report({"ERROR"}, "请先选择一个 Mesh 物体")
+                return {"CANCELLED"}
+            locked_names = {
+                group.name for group in mesh_object.vertex_groups if group.lock_weight
+            }
+            if not locked_names:
+                self.report({"ERROR"}, "当前物体没有锁定顶点组")
+                return {"CANCELLED"}
+            matched = 0
+            for item in settings.browser_items:
+                if item.kind == "BONE" and item.target_name in locked_names:
+                    item.selected = True
+                    matched += 1
+            if not matched:
+                self.report({"INFO"}, "锁定顶点组中没有当前骨架对应的骨骼")
+            return {"FINISHED"}
         elif self.mode == "BONE_BRANCH":
             checked = [
                 item
@@ -2299,6 +2319,7 @@ class SPX_MT_MMDQuickSelect(Menu):
         layout.operator(SPX_OT_QuickCheckMMDGroup.bl_idname, text="按名称前缀").mode = "PREFIX"
         layout.separator()
         if kind == "BONE":
+            layout.operator(SPX_OT_QuickCheckMMDGroup.bl_idname, text="当前物体锁定顶点组").mode = "LOCKED_VERTEX_GROUPS"
             layout.operator(SPX_OT_QuickCheckMMDGroup.bl_idname, text="已勾选骨骼及子级").mode = "BONE_BRANCH"
             layout.operator(SPX_OT_QuickCheckMMDGroup.bl_idname, text="同列代理骨骼").mode = "BONE_COLUMN"
         elif kind == "RIGID":

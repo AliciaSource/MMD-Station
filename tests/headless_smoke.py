@@ -1989,8 +1989,22 @@ target_group = source.vertex_groups.new(name=cleanup_target)
 cleanup_group = source.vertex_groups.new(name=cleanup_bone)
 target_group.add([0], 0.2, "REPLACE")
 cleanup_group.add([0], 0.3, "REPLACE")
+cleanup_group.lock_weight = True
+ordinary_locked_group = source.vertex_groups.new(name="SmokeOrdinaryLocked")
+ordinary_locked_group.lock_weight = True
 settings.browser_kind = "BONE"
 assert bpy.ops.surface_proxy.refresh_mmd_browser() == {"FINISHED"}
+assert bpy.ops.surface_proxy.set_mmd_browser_checks(action="NONE") == {"FINISHED"}
+bpy.ops.object.select_all(action="DESELECT")
+source.hide_set(False)
+source.select_set(True)
+bpy.context.view_layer.objects.active = source
+assert bpy.ops.surface_proxy.quick_check_mmd_group(mode="LOCKED_VERTEX_GROUPS") == {
+    "FINISHED"
+}
+assert {
+    item.target_name for item in settings.browser_items if item.selected
+} == {cleanup_bone}
 assert bpy.ops.surface_proxy.set_mmd_browser_checks(action="NONE") == {"FINISHED"}
 settings.browser_prefix = "SmokeProxy_C12_"
 settings.browser_filter_by_prefix = True
@@ -2502,16 +2516,14 @@ settings.topology = "CLOSED"
 second_proxy = bpy.data.objects["SmokeProxyB_Surface"]
 second_proxy.data.vertices[0].co += Vector((0.4, -0.3, 0.2))
 second_proxy_identity = second_proxy.as_pointer()
-assert bpy.ops.surface_proxy.restore_proxy_from_checked_bones() == {"FINISHED"}
+modified_coordinate = second_proxy.data.vertices[0].co.copy()
+assert bpy.ops.surface_proxy.restore_proxy_from_checked_bones() == {"CANCELLED"}
 second_proxy = bpy.data.objects["SmokeProxyB_Surface"]
 assert second_proxy.as_pointer() == second_proxy_identity
+assert second_proxy.data.vertices[0].co == modified_coordinate
+assert bpy.data.objects.get("SmokeProxyB_Surface.001") is None
 assert second_proxy["surface_proxy_closed"]
 assert not second_proxy["surface_proxy_mirror_mode"]
-second_first_bone = model_armature.data.bones["SmokeProxyB_C01_R01"]
-assert (
-    second_proxy.data.vertices[second_proxy["surface_proxy_vertex_map"][0]].co
-    - second_first_bone.head_local
-).length < 1.0e-7
 
 bpy.ops.object.select_all(action="DESELECT")
 model_armature.select_set(True)
@@ -2576,10 +2588,10 @@ model_armature.select_set(True)
 bpy.context.view_layer.objects.active = model_armature
 bpy.ops.object.mode_set(mode="EDIT")
 hair_chains = (
-    (("后发A1.L", "后发A2.L"), -1.5),
-    (("后发B1_L", "后发B2_L"), -0.5),
-    (("后发B1_R", "后发B2_R"), 0.5),
-    (("后发A1.R", "后发A2.R"), 1.5),
+    (("后发01.L", "后发02.L"), -1.5),
+    (("后发11_L", "后发12_L"), -0.5),
+    (("后发11_R", "后发12_R"), 0.5),
+    (("后发01.R", "后发02.R"), 1.5),
 )
 for names, x in hair_chains:
     parent = None
@@ -2603,7 +2615,6 @@ settings.topology = "OPEN"
 settings.restore_connect_sides = False
 assert bpy.ops.surface_proxy.restore_proxy_from_checked_bones() == {"FINISHED"}
 hair_proxy = bpy.data.objects["后发_Surface"]
-hair_identity = hair_proxy.as_pointer()
 assert list(hair_proxy["surface_proxy_column_groups"]) == [0, 0, 1, 1]
 assert list(hair_proxy["surface_proxy_column_sides"]) == ["L", "L", "R", "R"]
 assert len(hair_proxy.data.polygons) == 4
@@ -2622,19 +2633,19 @@ for names, _x in hair_chains:
         item.armature_name = model_armature.name
         item.selected = True
 settings.restore_connect_sides = True
+bpy.data.objects.remove(hair_proxy, do_unlink=True)
 assert bpy.ops.surface_proxy.restore_proxy_from_checked_bones() == {"FINISHED"}
 hair_proxy = bpy.data.objects["后发_Surface"]
-assert hair_proxy.as_pointer() == hair_identity
 assert list(hair_proxy["surface_proxy_column_groups"]) == [0, 0, 0, 0]
 assert list(hair_proxy["surface_proxy_bone_names"]) == [
-    "后发A1.L",
-    "后发A2.L",
-    "后发B1_L",
-    "后发B2_L",
-    "后发B1_R",
-    "后发B2_R",
-    "后发A1.R",
-    "后发A2.R",
+    "后发01.L",
+    "后发02.L",
+    "后发11_L",
+    "后发12_L",
+    "后发11_R",
+    "后发12_R",
+    "后发01.R",
+    "后发02.R",
 ]
 assert len(hair_proxy.data.polygons) == 6
 assert any(
@@ -2643,13 +2654,13 @@ assert any(
     for polygon in hair_proxy.data.polygons
 )
 settings.physics_proxy = hair_proxy
-hair_bone = model_armature.data.bones["后发B1_R"]
+hair_bone = model_armature.data.bones["后发11_R"]
 hair_head = hair_bone.head_local.copy()
 hair_vertex_map = list(hair_proxy["surface_proxy_vertex_map"])
 hair_proxy.data.vertices[hair_vertex_map[6]].co.y += 0.12
 bpy.context.view_layer.objects.active = hair_proxy
 assert bpy.ops.surface_proxy.sync_proxy_bones() == {"FINISHED"}
-hair_bone = model_armature.data.bones["后发B1_R"]
+hair_bone = model_armature.data.bones["后发11_R"]
 assert (hair_bone.head_local - hair_head).length > 0.1
 settings.mmd_root = model_root
 settings.create_horizontal_joints = True
@@ -2674,7 +2685,7 @@ hair_physics = [
 hair_rigid = next(
     obj
     for obj in hair_physics
-    if obj.mmd_type == "RIGID_BODY" and obj.mmd_rigid.bone == "后发A1.L"
+    if obj.mmd_type == "RIGID_BODY" and obj.mmd_rigid.bone == "后发01.L"
 )
 hair_rigid_size = Vector(hair_rigid.mmd_rigid.size)
 hair_rigid_shape = hair_rigid.mmd_rigid.shape

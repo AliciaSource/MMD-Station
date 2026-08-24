@@ -187,7 +187,7 @@ class _RuntimeOperator:
 class SPX_OT_CreateMMDIKRuntime(_RuntimeOperator, Operator):
     bl_idname = "surface_proxy.create_mmd_ik_runtime"
     bl_label = "启用 MMD IK 兼容"
-    bl_description = "让 native DLL 自动接管原 mmd_tools 骨架的最终求值，不改变 Mesh 骨架绑定"
+    bl_description = "让 native DLL 只接管原 mmd_tools 骨架中的 MMD IK 链，不改变 Mesh 骨架绑定"
     bl_options = {"REGISTER"}
 
     def run(self, context):
@@ -276,7 +276,7 @@ class SPX_OT_ReenableMMDIKRuntime(_RuntimeOperator, Operator):
 class SPX_OT_RemoveMMDIKRuntime(_RuntimeOperator, Operator):
     bl_idname = "surface_proxy.remove_mmd_ik_runtime"
     bl_label = "关闭 MMD IK 兼容"
-    bl_description = "停止 native 骨骼接管并恢复 mmd_tools 原有 IK 结果"
+    bl_description = "停止 native IK 链接管并恢复 mmd_tools 原有 IK 结果"
     bl_options = {"REGISTER", "UNDO"}
 
     def run(self, context):
@@ -293,7 +293,7 @@ class SPX_OT_RemoveMMDIKRuntime(_RuntimeOperator, Operator):
             if restart_physics:
                 physics_runtime.start_preview(context)
         _set_armature_selector(context.scene.surface_proxy_creator, selected_armature(root))
-        return f"已关闭 MMD 原生骨骼接管，{count} 个 Mesh 继续使用原骨架"
+        return f"已关闭 MMD 原生 IK 链接管，{count} 个 Mesh 继续使用原骨架"
 
 
 class SPX_OT_StartMMDIKEvaluator(_RuntimeOperator, Operator):
@@ -339,7 +339,7 @@ def draw(layout, settings, context):
         return
     active = evaluator_is_active(root)
     box.label(
-        text="状态：MMD 原生骨骼已自动接管" if active else "状态：接管已停止",
+        text="状态：MMD 原生 IK 链已自动接管" if active else "状态：接管已停止",
         icon="CHECKMARK" if active else "ERROR",
     )
     box.label(text="原 mmd_tools 骨架保持为唯一可见、唯一绑定骨架", icon="INFO")

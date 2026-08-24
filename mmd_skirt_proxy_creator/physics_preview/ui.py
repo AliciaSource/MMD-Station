@@ -236,7 +236,7 @@ def register_settings(cls):
     )
     annotations["preview_update_rigids"] = BoolProperty(
         name="显示刚体运动",
-        description="把求解结果同步到 MMD 刚体对象，便于检查",
+        description="每个物理解算 tick 同步 MMD 刚体和 Joint 调试对象；关闭可省去对象回写成本",
         default=True,
     )
     register_model_id_service()

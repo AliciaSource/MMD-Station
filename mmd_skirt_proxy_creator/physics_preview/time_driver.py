@@ -26,13 +26,11 @@ class PreviewDeadlineScheduler:
         interval = float(interval)
         if interval <= 0.0:
             raise ValueError("interval must be positive")
-        if self.deadline is None:
-            self.deadline = started
-        self.deadline += interval
-        maximum_lag = interval * self.max_lag_intervals
-        if finished - self.deadline > maximum_lag:
-            self.deadline = finished
-        return max(self.deadline - finished, self.minimum_delay)
+        self.deadline = None
+        elapsed = max(0.0, finished - started)
+        if elapsed >= interval:
+            return max(interval, self.minimum_delay)
+        return max(interval - elapsed, self.minimum_delay)
 
 
 class PreviewTimeDriver:

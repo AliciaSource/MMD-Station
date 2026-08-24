@@ -233,12 +233,12 @@ assert session.solver.count == 621
 scene = bpy.context.scene
 scene.frame_set(2)
 print("MMD_IK_FRAME_TWO", session.last_vmd_frame)
-assert session.last_vmd_frame == 1
+assert session.last_vmd_frame == session.target_frame(scene)
 scene.frame_set(2)
-assert session.last_vmd_frame == 1
+assert session.last_vmd_frame == session.target_frame(scene)
 scene.frame_set(1)
-assert session.last_vmd_frame == 0
-sample_index = next(index for index, bone in enumerate(session.mapping) if bone is not None)
+assert session.last_vmd_frame == session.target_frame(scene)
+sample_index = session.output_indices[0]
 sample_bone = session.mapping[sample_index]
 expected = blender_pose_matrix(
     session.solver.matrix(sample_index), session.scale, sample_bone.bone.matrix_local

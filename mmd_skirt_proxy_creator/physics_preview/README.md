@@ -5,14 +5,17 @@
 - `ffi.py`：稳定 C ABI 和 DLL 生命周期；
 - `runtime.py`：从 Blender 当前 MMD 模型提取刚体/Joint，按 MMD 时间语义驱动固定子步求解并非破坏性地回写 Pose Bone；
 - `pose_pipeline.py`：隔离 authored Pose 输入、physics output、dirty state 与 Blender depsgraph 投影；
-- `time_driver.py`：把 Blender timeline 或暂停交互的单调时钟转换为 Bullet `frameSeconds`，并按绝对 deadline 调度 GUI timer；
+- `integration.py`：为可选兼容层提供显式 Armature resolver 与 Session adapter 边界，基础物理路径不接受 monkey-patch；
+- `time_driver.py`：把 Blender timeline 或暂停交互的单调时钟转换为 Bullet `frameSeconds`，并以 cooperative deadline 调度 GUI timer；
 - `ui.py`：启动、停止、重置和少量运行参数；
 - `bin/win_amd64/mmd_physics_solver.dll`：Rust `cdylib`，内部静态链接 Bullet；
 - `native/mmd_physics_solver/`：DLL 源码和可重复构建入口。
 
 `mmd_tools` 在这里仅提供导入模型后已经存在的 RNA 数据字段；求解循环不使用其 Blender Rigid Body World、烘焙或预览实现。
 
-`CURRENT_PROXY + MMD DLL + 单 Session + 未启用 MMD IK` 使用双缓冲热路径：静止 authored input 复用不可变的 Pose/target payload；Blender 已完成外部求值且物理 driver 分支不存在不安全约束时，由 `PoseInputAdapter` 从本次输入重建 canonical Pose，不重复执行 prepare depsgraph evaluation。直接脚本写入但尚未求值、MMD IK、PMX、MODEL、多 Session 或不安全约束结构全部自动回退到完整 prepare/apply 路径。Rust solver 仍逐 tick 推进；GUI 中阻塞式 depsgraph presentation 与 Rigid/Joint 调试对象投影最多 30 Hz，Bone output 仍逐 tick 写入并交给 Blender 主循环合并求值。
+PMX/MMD DLL 的单 Session、未启用 MMD IK 路径统一使用双缓冲热路径，`CURRENT_PROXY` 与 `MODEL` 只影响物理对象范围，不再决定是否优化。静止 authored input 复用不可变的 Pose/target payload；Blender 已完成外部求值且物理 driver 分支不存在不安全约束时，由 `PoseInputAdapter` 从本次输入重建 canonical Pose，不重复执行 prepare depsgraph evaluation。直接脚本写入但尚未求值、多 Session 或不安全约束结构自动回退到完整输入求值。监控集合只包含物理输入骨、其父级与同骨架 constraint target closure，不扫描无关 Pose Bone。
+
+基础 `mmd_tools` 路径每个 solver tick 都提交 Bone output，但交互 timer 不同步阻塞 `view_layer.update()`；它标记 VIEW_3D redraw，让 Blender 把物理输出与下一次自然 depsgraph evaluation 合并。不存在 30 FPS presentation cap，也不跳过 physics tick。启用“显示刚体运动”时，Rigid/Joint 调试对象也随每个 solver tick 写入，避免可见刚体落后物理解算；该写入同样不强制 evaluation，关闭显示则完全省去对象回写成本。MMD IK 兼容通过独立 `MmdIkPhysicsAdapter` 接入，保留自己的同步输入/feedback 路径；没有 native IK Session 时，基础物理 Session 的 `runtime_adapter` 为 `None`，每 tick 不查询或调用 IK evaluator。
 
 启动预览会在修改连接状态和创建 solver 之前建立唯一的启动快照：整个 MMD Armature 的全部 Pose Bone、模型全部刚体对象矩阵和全部 Joint 对象矩阵。对象身份以 Blender 数据名称保存，矩阵是与 RNA 生命周期无关的普通副本；停止时还会恢复动态骨骼连接状态。
 
