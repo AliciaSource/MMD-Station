@@ -539,17 +539,6 @@ fn ffi_guard<T: Copy>(fallback: T, callback: impl FnOnce() -> T) -> T {
     catch_unwind(AssertUnwindSafe(callback)).unwrap_or(fallback)
 }
 
-fn pmx_euler_to_blender_quaternion(euler: Vec3) -> Quat {
-    let value = quaternion_rotation_yaw_pitch_roll(euler.y, euler.x, euler.z);
-    Quat {
-        x: value[0],
-        y: value[1],
-        z: value[2],
-        w: value[3],
-    }
-    .mmd_basis()
-}
-
 #[unsafe(no_mangle)]
 pub extern "C" fn mmd_solver_abi_version() -> u32 {
     ABI_VERSION
@@ -563,8 +552,15 @@ pub extern "C" fn mmd_solver_pmx_euler_to_blender_quaternion(
     if output.is_null() {
         return -1;
     }
+    let value = quaternion_rotation_yaw_pitch_roll(euler.y, euler.x, euler.z);
     unsafe {
-        *output = pmx_euler_to_blender_quaternion(euler);
+        *output = Quat {
+            x: value[0],
+            y: value[1],
+            z: value[2],
+            w: value[3],
+        }
+        .mmd_basis();
     }
     0
 }
@@ -650,89 +646,6 @@ pub unsafe extern "C" fn mmd_solver_set_bone_target(
             return 0;
         };
         solver.set_bone_target(index as usize, target).is_ok() as i32
-    })
-}
-
-#[unsafe(no_mangle)]
-/// # Safety
-///
-/// `handle` must be a live handle returned by `mmd_solver_create`. `indices`
-/// and `targets` must each point to at least `count` readable elements.
-pub unsafe extern "C" fn mmd_solver_set_bone_targets(
-    handle: *mut c_void,
-    indices: *const u32,
-    targets: *const Transform,
-    count: u32,
-) -> i32 {
-    ffi_guard(0, || {
-        let Some(solver) = (unsafe { (handle as *mut Solver).as_mut() }) else {
-            return 0;
-        };
-        if count == 0 {
-            return 1;
-        }
-        if indices.is_null() || targets.is_null() {
-            return 0;
-        }
-        let indices = unsafe { slice::from_raw_parts(indices, count as usize) };
-        let targets = unsafe { slice::from_raw_parts(targets, count as usize) };
-        if indices
-            .iter()
-            .any(|index| *index as usize >= solver.bindings.len())
-        {
-            return 0;
-        }
-        for (&index, &target) in indices.iter().zip(targets) {
-            if solver.set_bone_target(index as usize, target).is_err() {
-                return 0;
-            }
-        }
-        1
-    })
-}
-
-#[unsafe(no_mangle)]
-/// # Safety
-///
-/// `handle` must be a live handle returned by `mmd_solver_create`. `indices`,
-/// `positions`, and `pmx_eulers` must each point to at least `count` readable
-/// elements.
-pub unsafe extern "C" fn mmd_solver_set_bone_targets_pmx_eulers(
-    handle: *mut c_void,
-    indices: *const u32,
-    positions: *const Vec3,
-    pmx_eulers: *const Vec3,
-    count: u32,
-) -> i32 {
-    ffi_guard(0, || {
-        let Some(solver) = (unsafe { (handle as *mut Solver).as_mut() }) else {
-            return 0;
-        };
-        if count == 0 {
-            return 1;
-        }
-        if indices.is_null() || positions.is_null() || pmx_eulers.is_null() {
-            return 0;
-        }
-        let indices = unsafe { slice::from_raw_parts(indices, count as usize) };
-        let positions = unsafe { slice::from_raw_parts(positions, count as usize) };
-        let pmx_eulers = unsafe { slice::from_raw_parts(pmx_eulers, count as usize) };
-        if indices
-            .iter()
-            .any(|index| *index as usize >= solver.bindings.len())
-        {
-            return 0;
-        }
-        for ((&index, &position), &pmx_euler) in indices.iter().zip(positions).zip(pmx_eulers) {
-            let target = Transform {
-                position,
-                rotation: pmx_euler_to_blender_quaternion(pmx_euler),
-            };
-            if solver.set_bone_target(index as usize, target).is_err() {
-                return 0;
-            }
-        }
-        1
     })
 }
 
@@ -952,19 +865,6 @@ mod tests {
         assert_eq!(value[1].to_bits(), 0xbdd92149);
         assert_eq!(value[2].to_bits(), 0x3e1d1f32);
         assert_eq!(value[3].to_bits(), 0x3f7b5aed);
-    }
-
-    #[test]
-    fn pmx_euler_helper_matches_blender_basis_float_bits() {
-        let value = pmx_euler_to_blender_quaternion(Vec3 {
-            x: 0.1,
-            y: -0.2,
-            z: 0.3,
-        });
-        assert_eq!(value.x.to_bits(), 0xbd0c5f89);
-        assert_eq!(value.y.to_bits(), 0xbe1d1f32);
-        assert_eq!(value.z.to_bits(), 0x3dd92149);
-        assert_eq!(value.w.to_bits(), 0x3f7b5aed);
     }
 
     #[test]

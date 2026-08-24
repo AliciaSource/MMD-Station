@@ -133,17 +133,14 @@ lifecycle._resume_undo_redo_timer()
 assert evaluator._SESSIONS[root_name] is original_session
 assert original_session.solver is original_solver
 assert runtime._ACTIVE_SESSIONS[root_name] is original_preview_session
-resumed_preview_solver = original_preview_session.solver
-assert resumed_preview_solver is original_preview_session.world.solver
-assert resumed_preview_solver is not original_preview_solver
-assert original_preview_solver.handle is None
+assert original_preview_session.solver is original_preview_solver
 
 resumed_session = evaluator._SESSIONS[root_name]
 assert resumed_session is original_session
 assert resumed_session.solver is original_solver
 assert not resumed_session.suspended
 assert runtime._ACTIVE_SESSIONS[root_name] is original_preview_session
-assert original_preview_session.solver is resumed_preview_solver
+assert original_preview_session.solver is original_preview_solver
 assert not runtime._RUNTIME_SUSPENDED
 assert max(
     max(

@@ -1,5 +1,4 @@
 import ctypes
-import operator
 import pathlib
 import platform
 
@@ -154,23 +153,6 @@ class SolverLibrary:
             Transform,
         )
         dll.mmd_solver_set_bone_target.restype = ctypes.c_int32
-        if hasattr(dll, "mmd_solver_set_bone_targets"):
-            dll.mmd_solver_set_bone_targets.argtypes = (
-                ctypes.c_void_p,
-                ctypes.POINTER(ctypes.c_uint32),
-                ctypes.POINTER(Transform),
-                ctypes.c_uint32,
-            )
-            dll.mmd_solver_set_bone_targets.restype = ctypes.c_int32
-        if hasattr(dll, "mmd_solver_set_bone_targets_pmx_eulers"):
-            dll.mmd_solver_set_bone_targets_pmx_eulers.argtypes = (
-                ctypes.c_void_p,
-                ctypes.POINTER(ctypes.c_uint32),
-                ctypes.POINTER(Vec3),
-                ctypes.POINTER(Vec3),
-                ctypes.c_uint32,
-            )
-            dll.mmd_solver_set_bone_targets_pmx_eulers.restype = ctypes.c_int32
         dll.mmd_solver_apply_world_delta.argtypes = (
             ctypes.c_void_p,
             ctypes.c_uint32,
@@ -295,96 +277,6 @@ def pmx_euler_to_blender_quaternion(value, library=None):
     return output
 
 
-def _vec3_components(value):
-    if isinstance(value, Vec3):
-        return float(value.x), float(value.y), float(value.z)
-    return float(value[0]), float(value[1]), float(value[2])
-
-
-class BoneTargetPmxEulerBatch:
-    def __init__(self, solver, indices):
-        self.solver = solver
-        normalized_indices = tuple(operator.index(index) for index in indices)
-        for index in normalized_indices:
-            if index < 0 or index >= solver.body_count:
-                raise RuntimeError(f"设置骨骼目标 {index} 失败")
-        self.index_values = normalized_indices
-        self.count = len(normalized_indices)
-        self.indices = (ctypes.c_uint32 * self.count)(*normalized_indices)
-        self.positions = (ctypes.c_float * (self.count * 3))()
-        self.pmx_eulers = (ctypes.c_float * (self.count * 3))()
-        self._position_pointer = ctypes.cast(
-            self.positions,
-            ctypes.POINTER(Vec3),
-        )
-        self._pmx_euler_pointer = ctypes.cast(
-            self.pmx_eulers,
-            ctypes.POINTER(Vec3),
-        )
-
-    def set_target(self, slot, position, pmx_euler):
-        slot = operator.index(slot)
-        if slot < 0 or slot >= self.count:
-            raise IndexError(slot)
-        values = (*_vec3_components(position), *_vec3_components(pmx_euler))
-        base = slot * 3
-        self.positions[base:base + 3] = values[:3]
-        self.pmx_eulers[base:base + 3] = values[3:]
-
-    def set_targets(self, positions, pmx_eulers):
-        positions = tuple(positions)
-        pmx_eulers = tuple(pmx_eulers)
-        if len(positions) != self.count or len(pmx_eulers) != self.count:
-            raise ValueError("PMX Euler 骨骼目标数量不匹配")
-        values = tuple(
-            (*_vec3_components(position), *_vec3_components(pmx_euler))
-            for position, pmx_euler in zip(positions, pmx_eulers)
-        )
-        for slot, components in enumerate(values):
-            base = slot * 3
-            self.positions[base:base + 3] = components[:3]
-            self.pmx_eulers[base:base + 3] = components[3:]
-
-    def submit(self):
-        if not self.count:
-            return
-        batch = getattr(
-            self.solver.library.dll,
-            "mmd_solver_set_bone_targets_pmx_eulers",
-            None,
-        )
-        if batch is not None:
-            if not batch(
-                self.solver.handle,
-                self.indices,
-                self._position_pointer,
-                self._pmx_euler_pointer,
-                self.count,
-            ):
-                raise RuntimeError(
-                    f"批量设置 {self.count} 个 PMX Euler 骨骼目标失败"
-                )
-            return
-        entries = []
-        for slot, index in enumerate(self.index_values):
-            base = slot * 3
-            position = Vec3(*self.positions[base:base + 3])
-            pmx_euler = self.pmx_eulers[base:base + 3]
-            entries.append(
-                (
-                    index,
-                    Transform(
-                        position,
-                        pmx_euler_to_blender_quaternion(
-                            pmx_euler,
-                            library=self.solver.library,
-                        ),
-                    ),
-                )
-            )
-        self.solver.set_bone_targets(entries)
-
-
 class Solver:
     def __init__(
         self,
@@ -454,41 +346,6 @@ class Solver:
             transform,
         ):
             raise RuntimeError(f"设置骨骼目标 {index} 失败")
-
-    def set_bone_targets(self, entries):
-        normalized = []
-        for index, matrix in entries:
-            index = operator.index(index)
-            if index < 0 or index >= self.body_count:
-                raise RuntimeError(f"设置骨骼目标 {index} 失败")
-            transform = (
-                matrix if isinstance(matrix, Transform) else matrix_to_transform(matrix)
-            )
-            normalized.append((index, transform))
-        if not normalized:
-            return
-        batch = getattr(self.library.dll, "mmd_solver_set_bone_targets", None)
-        if batch is None:
-            for index, transform in normalized:
-                self.set_bone_target(index, transform)
-            return
-        count = len(normalized)
-        indices = (ctypes.c_uint32 * count)(
-            *(index for index, _transform in normalized)
-        )
-        targets = (Transform * count)(
-            *(transform for _index, transform in normalized)
-        )
-        if not batch(self.handle, indices, targets, count):
-            raise RuntimeError(f"批量设置 {count} 个骨骼目标失败")
-
-    def bone_target_pmx_euler_batch(self, indices):
-        return BoneTargetPmxEulerBatch(self, indices)
-
-    def set_bone_targets_pmx_eulers(self, indices, positions, pmx_eulers):
-        batch = self.bone_target_pmx_euler_batch(indices)
-        batch.set_targets(positions, pmx_eulers)
-        batch.submit()
 
     def apply_world_delta(self, first_index, count, matrix):
         transform = matrix if isinstance(matrix, Transform) else matrix_to_transform(matrix)

@@ -3,8 +3,6 @@ from bpy.app.handlers import persistent
 
 from .evaluator import (
     _SESSIONS,
-    _registered_session_objects,
-    capture_physics_bindings,
     detach_all_sessions,
     rebuild_enabled_sessions,
     resume_sessions_after_undo_redo,
@@ -19,35 +17,23 @@ _UNDO_REDO_RESUME_PENDING = False
 
 
 def _finish_save_transactions():
-    errors = []
     while _SAVE_TRANSACTIONS:
-        root, transaction = _SAVE_TRANSACTIONS.pop()
-        try:
-            root_is_live = bpy.data.objects.get(root.name) is root
-        except ReferenceError:
-            root_is_live = False
-        if root_is_live:
-            try:
-                export_restore_runtime(root, transaction)
-            except Exception as error:
-                errors.append(error)
-    if errors:
-        raise errors[0]
+        root_name, transaction = _SAVE_TRANSACTIONS.pop()
+        root = bpy.data.objects.get(root_name)
+        if root is not None:
+            export_restore_runtime(root, transaction)
 
 
 @persistent
 def _save_pre(_filepath):
     _finish_save_transactions()
-    for registered_name, session in tuple(_SESSIONS.items()):
-        root, _canonical = _registered_session_objects(
-            registered_name,
-            session,
-        )
+    for root_name in tuple(_SESSIONS):
+        root = bpy.data.objects.get(root_name)
         if root is None:
             continue
         transaction = export_switch_to_canonical(root)
         if transaction:
-            _SAVE_TRANSACTIONS.append((root, transaction))
+            _SAVE_TRANSACTIONS.append((root.name, transaction))
 
 
 @persistent
@@ -83,33 +69,16 @@ def _resume_undo_redo_timer():
     _UNDO_REDO_RESUME_PENDING = False
     from ..physics_preview import runtime as preview_runtime
 
-    native_resume_failed = False
     try:
         resume_sessions_after_undo_redo()
     except Exception as error:
-        native_resume_failed = True
         print(f"MMD native Undo/Redo resume failed: {error}")
-    if native_resume_failed:
-        try:
-            detach_all_sessions()
-        except Exception as error:
-            print(f"MMD native Undo/Redo cleanup failed: {error}")
-        try:
-            rebuild_enabled_sessions()
-        except Exception as error:
-            print(f"MMD native Undo/Redo rebuild failed: {error}")
+        detach_all_sessions()
+        rebuild_enabled_sessions()
     try:
         preview_runtime.resume_after_undo_redo()
     except Exception as error:
         print(f"MMD physics Undo/Redo rebind failed: {error}")
-    for preview_session in tuple(preview_runtime._ACTIVE_SESSIONS.values()):
-        try:
-            capture_physics_bindings(preview_session.root, preview_session)
-        except Exception as error:
-            print(
-                f"MMD physics Undo/Redo binding capture failed for "
-                f"{preview_session.root_name}: {error}"
-            )
     return None
 
 
@@ -138,20 +107,11 @@ def _undo_redo_pre(_scene):
     _SAVE_TRANSACTIONS.clear()
     if _SESSIONS or preview_runtime.is_running():
         _UNDO_REDO_RESUME_PENDING = True
-        try:
-            suspend_sessions_for_undo_redo()
-        except Exception as error:
-            print(f"MMD native Undo/Redo suspend failed: {error}")
-        try:
-            preview_runtime.suspend_for_undo_redo()
-        except Exception as error:
-            print(f"MMD physics Undo/Redo suspend failed: {error}")
+        suspend_sessions_for_undo_redo()
+        preview_runtime.suspend_for_undo_redo()
         return
     _UNDO_REDO_RESUME_PENDING = False
-    try:
-        detach_all_sessions()
-    except Exception as error:
-        print(f"MMD native Undo/Redo cleanup failed: {error}")
+    detach_all_sessions()
 
 
 @persistent
