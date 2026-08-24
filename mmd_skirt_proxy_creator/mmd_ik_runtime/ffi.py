@@ -1,8 +1,26 @@
 import ctypes
+from array import array
+import operator
 from pathlib import Path
 
 
 ABI_VERSION = 2
+
+
+class _LiveMatrixIndexBuffer:
+    __slots__ = ("owner", "indices", "buffer", "values")
+
+    def __init__(self, owner, indices):
+        self.owner = owner
+        self.indices = indices
+        self.buffer = array("I", indices)
+        if self.buffer.itemsize != ctypes.sizeof(ctypes.c_uint32):
+            raise RuntimeError("Live bone index buffer uses an unsupported item size")
+        self.values = (
+            (ctypes.c_uint32 * len(indices)).from_buffer(self.buffer)
+            if indices
+            else None
+        )
 
 
 class NativeBoneSolver:
@@ -21,6 +39,7 @@ class NativeBoneSolver:
         )
         self._instance = self._create()
         self.count = int(self._dll.spx_mmd_bone_count(self._instance))
+        self._live_matrix_index_buffers = {}
         self._output = (ctypes.c_float * (self.count * 16))()
         self.names = tuple(self._bone_name(index) for index in range(self.count))
         self.morph_count = int(self._dll.spx_mmd_bone_morph_count(self._instance))
@@ -83,6 +102,15 @@ class NativeBoneSolver:
             ctypes.c_size_t,
         )
         dll.spx_mmd_bone_transform.restype = ctypes.c_int
+        self._has_bone_transform_batch = hasattr(dll, "spx_mmd_bone_transforms")
+        if self._has_bone_transform_batch:
+            dll.spx_mmd_bone_transforms.argtypes = (
+                ctypes.c_void_p,
+                ctypes.POINTER(ctypes.c_uint32),
+                ctypes.POINTER(ctypes.c_float),
+                ctypes.c_size_t,
+            )
+            dll.spx_mmd_bone_transforms.restype = ctypes.c_int
         dll.spx_mmd_bone_rigid_target.argtypes = (
             ctypes.c_void_p,
             ctypes.c_uint32,
@@ -90,6 +118,15 @@ class NativeBoneSolver:
             ctypes.c_size_t,
         )
         dll.spx_mmd_bone_rigid_target.restype = ctypes.c_int
+        self._has_rigid_target_batch = hasattr(dll, "spx_mmd_bone_rigid_targets")
+        if self._has_rigid_target_batch:
+            dll.spx_mmd_bone_rigid_targets.argtypes = (
+                ctypes.c_void_p,
+                ctypes.POINTER(ctypes.c_uint32),
+                ctypes.POINTER(ctypes.c_float),
+                ctypes.c_size_t,
+            )
+            dll.spx_mmd_bone_rigid_targets.restype = ctypes.c_int
         dll.spx_mmd_bone_set_external_transform.argtypes = (
             ctypes.c_void_p,
             ctypes.c_uint32,
@@ -152,6 +189,18 @@ class NativeBoneSolver:
             ctypes.c_size_t,
         )
         dll.spx_mmd_bone_set_live_matrix.restype = ctypes.c_int
+        self._has_live_matrix_batch = hasattr(
+            dll, "spx_mmd_bone_set_live_matrices"
+        )
+        if self._has_live_matrix_batch:
+            dll.spx_mmd_bone_set_live_matrices.argtypes = (
+                ctypes.c_void_p,
+                ctypes.POINTER(ctypes.c_uint32),
+                ctypes.POINTER(ctypes.c_float),
+                ctypes.POINTER(ctypes.c_float),
+                ctypes.c_size_t,
+            )
+            dll.spx_mmd_bone_set_live_matrices.restype = ctypes.c_int
         dll.spx_mmd_bone_set_live_ik_enabled.argtypes = (
             ctypes.c_void_p,
             ctypes.c_uint32,
@@ -189,6 +238,18 @@ class NativeBoneSolver:
             ctypes.c_size_t,
         )
         dll.spx_mmd_bone_set_external_rigid_matrix_mmd.restype = ctypes.c_int
+        self._has_external_rigid_matrix_mmd_batch = hasattr(
+            dll, "spx_mmd_bone_set_external_rigid_matrices_mmd"
+        )
+        if self._has_external_rigid_matrix_mmd_batch:
+            dll.spx_mmd_bone_set_external_rigid_matrices_mmd.argtypes = (
+                ctypes.c_void_p,
+                ctypes.POINTER(ctypes.c_uint32),
+                ctypes.POINTER(ctypes.c_float),
+                ctypes.POINTER(ctypes.c_float),
+                ctypes.c_size_t,
+            )
+            dll.spx_mmd_bone_set_external_rigid_matrices_mmd.restype = ctypes.c_int
         dll.spx_mmd_bone_clear_external_transforms.argtypes = (ctypes.c_void_p,)
         dll.spx_mmd_bone_commit_external.argtypes = (ctypes.c_void_p,)
         dll.spx_mmd_bone_commit_external.restype = ctypes.c_int
@@ -282,6 +343,94 @@ class NativeBoneSolver:
         ):
             raise RuntimeError(f"无法提交第 {index} 根骨骼的实时姿态")
 
+    def prepare_live_matrix_indices(self, indices):
+        try:
+            normalized = tuple(operator.index(index) for index in indices)
+        except TypeError as error:
+            raise TypeError("Live bone indices must be integers") from error
+        if any(index < 0 or index >= self.count for index in normalized):
+            raise RuntimeError("Invalid live bone batch index")
+        prepared = self._live_matrix_index_buffers.get(normalized)
+        if prepared is None:
+            prepared = _LiveMatrixIndexBuffer(self, normalized)
+            self._live_matrix_index_buffers[normalized] = prepared
+        return prepared
+
+    def set_live_matrix_buffers(self, prepared_indices, positions, bases):
+        if (
+            not isinstance(prepared_indices, _LiveMatrixIndexBuffer)
+            or prepared_indices.owner is not self
+        ):
+            raise ValueError("Live bone index buffer belongs to another solver")
+        if not isinstance(positions, array) or positions.typecode != "f":
+            raise TypeError("Live bone position buffer must be array('f')")
+        if not isinstance(bases, array) or bases.typecode != "f":
+            raise TypeError("Live bone basis buffer must be array('f')")
+        if positions.itemsize != ctypes.sizeof(ctypes.c_float):
+            raise RuntimeError("Live bone position buffer uses an unsupported item size")
+        if bases.itemsize != ctypes.sizeof(ctypes.c_float):
+            raise RuntimeError("Live bone basis buffer uses an unsupported item size")
+        count = len(prepared_indices.indices)
+        if len(positions) != count * 3:
+            raise ValueError(
+                f"Live bone position buffer requires {count * 3} float32 values"
+            )
+        if len(bases) != count * 9:
+            raise ValueError(
+                f"Live bone basis buffer requires {count * 9} float32 values"
+            )
+        if not count:
+            return
+        if self._has_live_matrix_batch:
+            position_values = (ctypes.c_float * len(positions)).from_buffer(positions)
+            basis_values = (ctypes.c_float * len(bases)).from_buffer(bases)
+            if not self._dll.spx_mmd_bone_set_live_matrices(
+                self._instance,
+                prepared_indices.values,
+                position_values,
+                basis_values,
+                count,
+            ):
+                raise RuntimeError(f"Failed to submit {count} live bone matrices")
+            return
+        for offset, index in enumerate(prepared_indices.indices):
+            position_offset = offset * 3
+            basis_offset = offset * 9
+            basis = bases[basis_offset:basis_offset + 9]
+            self.set_live_matrix(
+                index,
+                positions[position_offset:position_offset + 3],
+                (basis[0:3], basis[3:6], basis[6:9]),
+            )
+
+    def set_live_matrices(self, entries):
+        entries = tuple(entries)
+        if not entries:
+            return
+        indices = []
+        position_buffer = array("f")
+        basis_buffer = array("f")
+        for index, position, basis_rows in entries:
+            try:
+                index = operator.index(index)
+            except TypeError as error:
+                raise TypeError("Live bone indices must be integers") from error
+            position = tuple(position)
+            basis = tuple(value for row in basis_rows for value in row)
+            if len(position) != 3 or len(basis) != 9:
+                raise ValueError(
+                    "Live bone matrices require 3 position and 9 basis values"
+                )
+            indices.append(index)
+            position_buffer.extend(position)
+            basis_buffer.extend(basis)
+        prepared_indices = self.prepare_live_matrix_indices(indices)
+        self.set_live_matrix_buffers(
+            prepared_indices,
+            position_buffer,
+            basis_buffer,
+        )
+
     def set_live_ik_enabled(self, index, enabled):
         if not self._dll.spx_mmd_bone_set_live_ik_enabled(
             self._instance, index, int(bool(enabled))
@@ -322,6 +471,29 @@ class NativeBoneSolver:
             raise RuntimeError(f"无法读取第 {index} 根骨骼的 MMD 世界变换")
         return tuple(float(value) for value in values)
 
+    def transforms(self, indices):
+        indices = tuple(operator.index(index) for index in indices)
+        if any(index < 0 or index >= self.count for index in indices):
+            raise RuntimeError("Invalid bone transform batch index")
+        if not indices:
+            return ()
+        if not self._has_bone_transform_batch:
+            return tuple(self.transform(index) for index in indices)
+        count = len(indices)
+        index_values = (ctypes.c_uint32 * count)(*indices)
+        output = (ctypes.c_float * (count * 7))()
+        if not self._dll.spx_mmd_bone_transforms(
+            self._instance,
+            index_values,
+            output,
+            count,
+        ):
+            raise RuntimeError(f"Failed to read {count} MMD bone transforms")
+        return tuple(
+            tuple(float(output[offset + item]) for item in range(7))
+            for offset in range(0, count * 7, 7)
+        )
+
     def set_external_transform(self, index, position, rotation):
         position_values = (ctypes.c_float * 3)(*position)
         rotation_values = (ctypes.c_float * 4)(*rotation)
@@ -341,6 +513,29 @@ class NativeBoneSolver:
         ):
             raise RuntimeError(f"无法读取第 {rigid_index} 个刚体的 MMD 目标变换")
         return tuple(float(value) for value in values)
+
+    def rigid_targets(self, rigid_indices):
+        rigid_indices = tuple(operator.index(index) for index in rigid_indices)
+        if any(index < 0 or index >= self.rigid_count for index in rigid_indices):
+            raise RuntimeError("Invalid rigid target batch index")
+        if not rigid_indices:
+            return ()
+        if not self._has_rigid_target_batch:
+            return tuple(self.rigid_target(index) for index in rigid_indices)
+        count = len(rigid_indices)
+        index_values = (ctypes.c_uint32 * count)(*rigid_indices)
+        output = (ctypes.c_float * (count * 7))()
+        if not self._dll.spx_mmd_bone_rigid_targets(
+            self._instance,
+            index_values,
+            output,
+            count,
+        ):
+            raise RuntimeError(f"Failed to read {count} MMD rigid targets")
+        return tuple(
+            tuple(float(output[offset + item]) for item in range(7))
+            for offset in range(0, count * 7, 7)
+        )
 
     def clear_external_transforms(self):
         self._dll.spx_mmd_bone_clear_external_transforms(self._instance)
@@ -385,6 +580,44 @@ class NativeBoneSolver:
         ):
             raise RuntimeError(f"Failed to submit MMD rigid body {rigid_index} matrix")
 
+    def set_external_rigid_matrices_mmd(self, entries):
+        normalized = []
+        index_buffer = array("I")
+        position_buffer = array("f")
+        basis_buffer = array("f")
+        for rigid_index, position, basis_row_major in entries:
+            rigid_index = operator.index(rigid_index)
+            if rigid_index < 0 or rigid_index >= self.rigid_count:
+                raise RuntimeError(f"Invalid external rigid index {rigid_index}")
+            position = tuple(position)
+            basis = tuple(basis_row_major)
+            if len(position) != 3 or len(basis) != 9:
+                raise ValueError(
+                    "External rigid matrices require 3 position and 9 basis values"
+                )
+            normalized.append((rigid_index, position, basis))
+            index_buffer.append(rigid_index)
+            position_buffer.extend(position)
+            basis_buffer.extend(basis)
+        if not normalized:
+            return
+        if not self._has_external_rigid_matrix_mmd_batch:
+            for rigid_index, position, basis in normalized:
+                self.set_external_rigid_matrix_mmd(rigid_index, position, basis)
+            return
+        count = len(normalized)
+        indices = (ctypes.c_uint32 * count).from_buffer(index_buffer)
+        positions = (ctypes.c_float * (count * 3)).from_buffer(position_buffer)
+        bases = (ctypes.c_float * (count * 9)).from_buffer(basis_buffer)
+        if not self._dll.spx_mmd_bone_set_external_rigid_matrices_mmd(
+            self._instance,
+            indices,
+            positions,
+            bases,
+            count,
+        ):
+            raise RuntimeError(f"Failed to submit {count} MMD rigid body matrices")
+
     def set_external_physical_transform(self, index, mode, position, rotation):
         position_values = (ctypes.c_float * 3)(*position)
         rotation_values = (ctypes.c_float * 4)(*rotation)
@@ -411,10 +644,13 @@ class NativeBoneSolver:
 
     def reset(self):
         if self._instance:
-            self._dll.spx_mmd_bone_destroy(self._instance)
+            instance = self._instance
+            self._instance = None
+            self._dll.spx_mmd_bone_destroy(instance)
         self._instance = self._create()
 
     def close(self):
+        self._live_matrix_index_buffers.clear()
         if self._instance:
             self._dll.spx_mmd_bone_destroy(self._instance)
             self._instance = None

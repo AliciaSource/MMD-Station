@@ -78,10 +78,31 @@ second_delay = deadline.next_delay(
     interval=1.0 / 60.0,
 )
 assert abs(second_finished + second_delay - 2.0 / 60.0) < 1.0e-12
-deadline.next_delay(started=0.2, finished=0.3, interval=1.0 / 60.0)
+reset_delay = deadline.next_delay(
+    started=0.2,
+    finished=0.3,
+    interval=1.0 / 60.0,
+)
+assert reset_delay == deadline.minimum_delay
 assert deadline.deadline == 0.3
 deadline.reset()
 assert deadline.deadline is None
+
+for callback_seconds in (0.018, 0.023, 0.033, 0.050):
+    overloaded = PreviewDeadlineScheduler(minimum_delay=0.001)
+    wall_seconds = 0.0
+    ticks = 600
+    for _index in range(ticks):
+        started = wall_seconds
+        finished = started + callback_seconds
+        wall_seconds = finished + overloaded.next_delay(
+            started,
+            finished,
+            1.0 / 60.0,
+        )
+    measured_hz = ticks / wall_seconds
+    capacity_hz = 1.0 / (callback_seconds + overloaded.minimum_delay)
+    assert measured_hz >= capacity_hz * 0.99, (callback_seconds, measured_hz)
 
 with tempfile.TemporaryDirectory(prefix="mmd-time-driver-") as temporary_directory:
     vmd_path = pathlib.Path(temporary_directory) / "time_driver_fixture.vmd"
