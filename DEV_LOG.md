@@ -1,5 +1,11 @@
 # Development Log
 
+## 2026-08-24 - V0.1.8 物理预览性能候选验收失败并回退
+
+- 用户在原 `04.blend` 的真实 Blender 4.4 视口验收提交 `b226618` 时观察到多处严重姿态/物理显示异常，明确判定验收不合格；background 四象限与性能指标未能覆盖这些真实 GUI 回归，因此该候选不得晋升基线。
+- 已通过提交 `97afcbf` 完整撤销 `b226618` 的 DisplayRig、DebugBatch、Native 批处理、相关 runtime/adapter 改动、DLL 与新增测试，插件生产源码和 DLL 恢复到已验收的 `baseline-20260823-mmd-preview-pose-pipeline` 内容。保留提交 `601de98` 的基线记录，不移动 tag。
+- 当前工作树中既有的顶点组、代理创建和 `headless_smoke.py` 未提交修改均先备份后原样恢复，没有混入回退提交。版本保持 V0.1.8，不打包 ZIP、不 push；真实 Blender 4.4 继续通过源码 Junction 直接使用回退后的基线代码。
+
 ## 2026-08-23 - V0.1.8 物理预览 Pose I/O 双缓冲与交互调度重构
 
 - 用户在真实 `04.blend` 视口确认上一轮刚体延迟已经修复，并批准将提交 `978339a` 标记为本地安全基线 `baseline-20260823-mmd-preview-latency-fixed`。本轮从该基线继续，只处理 `CURRENT_PROXY + MMD DLL + 未启用 MMD IK` 的操作手感；不修改已验收的 type 0、Root/Bone、MMD IK 数学或两个 native DLL。
