@@ -69,17 +69,17 @@ first_delay = deadline.next_delay(
     finished=0.020,
     interval=1.0 / 60.0,
 )
-assert first_delay == 0.001
-second_started = 0.021
-second_finished = 0.025
+assert abs(first_delay - 1.0 / 60.0) < 1.0e-12
+second_started = 0.020 + first_delay
+second_finished = second_started + 0.004
 second_delay = deadline.next_delay(
     started=second_started,
     finished=second_finished,
     interval=1.0 / 60.0,
 )
-assert abs(second_finished + second_delay - 2.0 / 60.0) < 1.0e-12
+assert abs(second_delay - (1.0 / 60.0 - 0.004)) < 1.0e-12
 deadline.next_delay(started=0.2, finished=0.3, interval=1.0 / 60.0)
-assert deadline.deadline == 0.3
+assert deadline.deadline is None
 deadline.reset()
 assert deadline.deadline is None
 

@@ -20,6 +20,7 @@ mmd_tools.register()
 
 import mmd_skirt_proxy_creator
 from mmd_skirt_proxy_creator.mmd_ik_runtime import evaluator
+from mmd_skirt_proxy_creator.mmd_ik_runtime.physics_bridge import MmdIkPhysicsAdapter
 from mmd_skirt_proxy_creator.physics_preview import runtime
 
 mmd_skirt_proxy_creator.register()
@@ -39,6 +40,9 @@ normal_armature = runtime._model_armature(root)
 normal_root_bone = normal_armature.pose.bones["全ての親"]
 normal_baseline = normal_root_bone.matrix_basis.copy()
 normal_preview = runtime.start_preview(bpy.context)[0]
+assert normal_preview.runtime_adapter is None
+assert runtime.PreviewSession.prepare_step.__module__ == runtime.__name__
+assert runtime.PreviewSession.apply_step.__module__ == runtime.__name__
 runtime._timer_tick(0.0)
 bridge_calls = []
 original_modal_capture = evaluator._transform_modal_pose_matrices
@@ -181,6 +185,7 @@ armature.data.bones.active = pose_bone.bone
 
 settings.preview_solver_target = "PMX"
 preview_session = runtime.start_preview(bpy.context)[0]
+assert isinstance(preview_session.runtime_adapter, MmdIkPhysicsAdapter)
 runtime._timer_tick(0.0)
 baseline_input = session.input_basis[pose_bone.name].copy()
 baseline_output = pose_bone.matrix_basis.copy()

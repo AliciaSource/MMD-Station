@@ -12,7 +12,6 @@ import bmesh
 import bpy
 import re
 from math import atan2
-from os.path import commonprefix
 from bpy.props import (
     BoolProperty,
     EnumProperty,
@@ -61,6 +60,9 @@ from .mmd_ik_runtime import draw as draw_mmd_ik_runtime
 from .mmd_ik_runtime import register_services as register_mmd_ik_runtime_services
 from .mmd_ik_runtime import register_settings as register_mmd_ik_runtime_settings
 from .mmd_ik_runtime import unregister_services as unregister_mmd_ik_runtime_services
+from .vertex_group_tools import CLASSES as VERTEX_GROUP_TOOL_CLASSES
+from .vertex_group_tools import register_menu as register_vertex_group_menu
+from .vertex_group_tools import unregister_menu as unregister_vertex_group_menu
 
 def _armature_poll(_self, obj):
     return obj is not None and obj.type == "ARMATURE"
@@ -526,15 +528,12 @@ def _bone_side(name):
 
 def _derived_proxy_prefix(names):
     stems = [_bone_side(name)[0] for name in names]
-    bases = []
-    for stem in stems:
-        base = re.sub(r"[A-Za-z]\d+$", "", stem)
-        base = re.sub(r"\d+$", "", base)
-        bases.append(re.sub(r"[._-]+$", "", base))
-    prefix = commonprefix([base for base in bases if base])
-    if not prefix:
-        prefix = commonprefix(stems)
-    return re.sub(r"[\s._-]+$", "", prefix)
+    subjects = {
+        re.sub(r"[\s._-]+$", "", re.sub(r"\d+$", "", stem))
+        for stem in stems
+    }
+    subjects.discard("")
+    return next(iter(subjects)) if len(subjects) == 1 else ""
 
 
 def _spatially_ordered_chains(chains, closed):
@@ -736,7 +735,9 @@ def _proxy_grid_from_checked_bones(settings):
             raise ProxyBuildError("没有找到可恢复的父子骨链")
         prefix = _derived_proxy_prefix([item.target_name for item in checked])
         if not prefix:
-            raise ProxyBuildError("勾选骨骼的名称前缀必须统一")
+            raise ProxyBuildError(
+                "勾选骨链的主体名称不一致；请按主体分别创建代理"
+            )
         for chain in chains:
             sides = {_bone_side(bone.name)[1] for bone in chain}
             if len(sides) != 1:
@@ -804,26 +805,40 @@ def _proxy_grid_from_checked_bones(settings):
     )
 
 
-def _replace_proxy_mesh_data(target, replacement):
-    old_mesh = target.data
-    target.data = replacement.data
-    target.matrix_world = replacement.matrix_world.copy()
-    for key in (
-        "surface_proxy_columns",
-        "surface_proxy_max_rows",
-        "surface_proxy_column_rows",
-        "surface_proxy_column_bones",
-        "surface_proxy_source",
-        "surface_proxy_closed",
-        "surface_proxy_column_groups",
-        "surface_proxy_sculpt_width",
-    ):
-        target[key] = replacement[key]
-    bpy.data.objects.remove(replacement, do_unlink=True)
-    if old_mesh.users == 0:
-        bpy.data.meshes.remove(old_mesh)
-    target.data.name = target.name
-    return target
+def _proxy_bone_names(proxy_object):
+    stored_names = list(proxy_object.get("surface_proxy_bone_names", []))
+    if stored_names:
+        return stored_names
+
+    prefix = str(proxy_object.get("surface_proxy_prefix", ""))
+    row_counts = list(proxy_object.get("surface_proxy_column_rows", []))
+    if not prefix or not row_counts:
+        return []
+    column_sides = list(proxy_object.get("surface_proxy_column_sides", []))
+    local_indices = list(
+        proxy_object.get("surface_proxy_column_local_indices", [])
+    )
+    if len(column_sides) != len(row_counts):
+        column_sides = [""] * len(row_counts)
+    if len(local_indices) != len(row_counts):
+        local_indices = list(range(len(row_counts)))
+    return [
+        _column_bone_name(prefix, column, row, column_sides, local_indices)
+        for column, count in enumerate(row_counts)
+        for row in range(count - 1)
+    ]
+
+
+def _existing_proxy_for_bones(armature_object, bone_names):
+    selected_names = set(bone_names)
+    for obj in bpy.data.objects:
+        if obj.type != "MESH":
+            continue
+        if str(obj.get("surface_proxy_armature", "")) != armature_object.name:
+            continue
+        if set(_proxy_bone_names(obj)) == selected_names:
+            return obj
+    return None
 
 
 class SPX_OT_RestoreProxyFromCheckedBones(Operator):
@@ -847,13 +862,16 @@ class SPX_OT_RestoreProxyFromCheckedBones(Operator):
                 mirror_exact,
                 bone_names,
             ) = _proxy_grid_from_checked_bones(settings)
-            expected_name = f"{prefix}_Surface"
-            existing = bpy.data.objects.get(expected_name)
-            if existing is not None and existing.type != "MESH":
-                raise ProxyBuildError(f"同名对象不是 Mesh：{expected_name}")
+            existing = _existing_proxy_for_bones(armature_object, bone_names)
+            if existing is not None:
+                self.report(
+                    {"WARNING"},
+                    f"这段骨链已有代理 {existing.name}；请先删除旧代理后再创建",
+                )
+                return {"CANCELLED"}
             if context.object is not None and context.object.mode != "OBJECT":
                 bpy.ops.object.mode_set(mode="OBJECT")
-            replacement = _create_proxy_mesh(
+            proxy_object = _create_proxy_mesh(
                 context,
                 armature_object,
                 prefix,
@@ -861,12 +879,6 @@ class SPX_OT_RestoreProxyFromCheckedBones(Operator):
                 closed,
                 column_groups,
             )
-            if existing is not None:
-                proxy_object = _replace_proxy_mesh_data(existing, replacement)
-                action = "恢复"
-            else:
-                proxy_object = replacement
-                action = "新建"
             initialize_proxy_identity(
                 proxy_object,
                 armature_object,
@@ -883,19 +895,14 @@ class SPX_OT_RestoreProxyFromCheckedBones(Operator):
             proxy_object.data.use_mirror_x = bool(mirrored and mirror_exact)
             proxy_object["surface_proxy_armature"] = armature_object.name
             rigid_count, joint_count = associate_existing_proxy_physics(proxy_object)
-            settings.physics_proxy = proxy_object
             settings.armature = armature_object
             settings.prefix = prefix
-            bpy.ops.object.select_all(action="DESELECT")
-            proxy_object.hide_set(False)
-            proxy_object.select_set(True)
-            context.view_layer.objects.active = proxy_object
         except ProxyBuildError as error:
             self.report({"ERROR"}, str(error))
             return {"CANCELLED"}
         self.report(
             {"INFO"},
-            f"已{action} {proxy_object.name}：{len(grid)} 列、{sum(len(column) - 1 for column in grid)} 根骨骼"
+            f"已新建 {proxy_object.name}：{len(grid)} 列、{sum(len(column) - 1 for column in grid)} 根骨骼"
             + (
                 f"；已关联 {rigid_count} 个刚体、{joint_count} 个 Joint"
                 if rigid_count or joint_count
@@ -1095,6 +1102,7 @@ CLASSES = (
     *MMD_ORDERING_CLASSES,
     *PHYSICS_PREVIEW_CLASSES,
     *MMD_IK_RUNTIME_CLASSES,
+    *VERTEX_GROUP_TOOL_CLASSES,
     SPX_OT_RestoreProxyFromCheckedBones,
     SPX_OT_CreateSkirtProxy,
     SPX_PT_SurfaceProxyCreator,
@@ -1113,12 +1121,14 @@ def register():
     register_sync_services()
     register_browser_auto_refresh()
     register_browser_context_menu()
+    register_vertex_group_menu()
     register_mmd_ik_runtime_services()
 
 
 def unregister():
     unregister_mmd_ik_runtime_services()
     unregister_preview_runtime()
+    unregister_vertex_group_menu()
     unregister_browser_context_menu()
     unregister_browser_auto_refresh()
     unregister_sync_services()

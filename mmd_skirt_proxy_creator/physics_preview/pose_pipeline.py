@@ -16,11 +16,13 @@ class PoseInputAdapter:
         self.fast_captures = 0
         self.input_evaluation_count = 0
         self.output_evaluation_count = 0
+        self.output_commit_count = 0
+        self.debug_update_count = 0
         self.refresh_bindings()
 
     def refresh_bindings(self):
         session = self.session
-        self.all_pose_bones = tuple(session.armature.pose.bones)
+        self.pose_bone_count = len(session.armature.pose.bones)
         input_pose_bones = {}
         for pose_bone in session.rigid_pose_bones:
             while pose_bone is not None:
@@ -29,6 +31,31 @@ class PoseInputAdapter:
         self.ordered_input_pose_bones = tuple(
             sorted(input_pose_bones.values(), key=lambda bone: len(bone.parent_recursive))
         )
+        watched_pose_bones = dict(input_pose_bones)
+        pending = list(self.ordered_input_pose_bones)
+        while pending:
+            pose_bone = pending.pop()
+            for constraint in pose_bone.constraints:
+                targets = (
+                    (
+                        getattr(constraint, "target", None),
+                        getattr(constraint, "subtarget", ""),
+                    ),
+                    (
+                        getattr(constraint, "pole_target", None),
+                        getattr(constraint, "pole_subtarget", ""),
+                    ),
+                )
+                for target, subtarget in targets:
+                    if target is not session.armature or not subtarget:
+                        continue
+                    dependency = session.armature.pose.bones.get(subtarget)
+                    while dependency is not None:
+                        if dependency.name not in watched_pose_bones:
+                            watched_pose_bones[dependency.name] = dependency
+                            pending.append(dependency)
+                        dependency = dependency.parent
+        self.watched_pose_bones = tuple(watched_pose_bones.values())
         reconstructed_names = set()
         driver_names = set(session.driver_pose_bones)
         for pose_bone in self.ordered_input_pose_bones:
@@ -82,12 +109,12 @@ class PoseInputAdapter:
             or session.root.matrix_world != self.cached_root_matrix
             or self.cached_armature_matrix is None
             or session.armature.matrix_world != self.cached_armature_matrix
-            or len(self.all_pose_bones) != len(session.armature.pose.bones)
+            or self.pose_bone_count != len(session.armature.pose.bones)
         ):
             return True, False
         changed = False
         driver_changed = False
-        for pose_bone in self.all_pose_bones:
+        for pose_bone in self.watched_pose_bones:
             if pose_bone.name in session.driver_pose_bones:
                 expected = session.last_output_basis.get(pose_bone.name)
                 if expected is None or pose_bone.matrix_basis != expected:
@@ -103,7 +130,7 @@ class PoseInputAdapter:
         session = self.session
         self.cached_input_basis = {
             pose_bone.name: pose_bone.matrix_basis.copy()
-            for pose_bone in self.all_pose_bones
+            for pose_bone in self.watched_pose_bones
             if pose_bone.name not in session.driver_pose_bones
         }
         self.cached_root_matrix = session.root.matrix_world.copy()
@@ -169,21 +196,22 @@ class PoseInputAdapter:
         session.pending_animation_pose = self.cached_animation_pose
         self.fast_captures += 1
 
-    def presentation_due(self, interactive, optimized):
-        session = self.session
+    def synchronous_output_due(self, interactive, optimized):
         if not interactive or not optimized:
-            self.presentation_phase = 0
             return True
-        if self.force_presentation:
-            self.presentation_phase = 0
-            return True
-        divisor = max(1, int(session.settings.preview_frequency / 30))
-        if divisor == 1:
-            return True
-        self.presentation_phase = (self.presentation_phase + 1) % divisor
-        return self.presentation_phase == 0
+        return False
 
-    def mark_output(self, presented):
+    def debug_output_due(self, interactive, optimized):
+        if not self.session.settings.preview_update_rigids:
+            self.presentation_phase = 0
+            return False
+        self.presentation_phase = 0
+        return True
+
+    def mark_output(self, presented, debugged=False):
+        self.output_commit_count += 1
+        if debugged:
+            self.debug_update_count += 1
         if presented:
             self.output_evaluation_count += 1
             self.deferred_output_pending = False

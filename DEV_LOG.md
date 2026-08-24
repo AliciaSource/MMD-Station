@@ -1,5 +1,28 @@
 # Development Log
 
+## 2026-08-24 - V0.1.8 Physics Runtime V2 第一阶段性能与路径隔离重构
+
+- 用户在真实 Blender 4.4 原工程中按顺序完成 GUI 验收：PMX 无 IK、MMD 无 IK、仅 MMD IK、MMD IK + PMX、MMD IK + MMD 五项均通过；逐 tick Rigid/Joint 修正后未再观察到刚体显示延迟。最后一项 Clear All → F9 `仅选中` → 再移动 → 再清空仍未通过：偶发关闭 IK，或 IK 控制骨已复位但链条残留旧解算结果。该问题作为明确的未解决缺陷保留，不将其误记为已修复；用户批准当前状态晋升为新的本地安全基线 `baseline-20260824-physics-runtime-v2-phase1`。
+- 用户决定停止继续堆叠清空变换局部补丁，要求优先重构 physics host、保持物理同步并把普通 `mmd_tools` 骨架路径与 MMD IK 兼容路径彻底分开。新增 `PHYSICS_RUNTIME_V2_ARCHITECTURE.md`，固定“simulation tick 不可跳、presentation frame 可 latest-wins”、无 30 FPS 代码上限、无超预算 1 ms 饥饿追赶、debug 与 Bone output 解耦以及三个 DLL 分阶段处理的边界。
+- 复现确认原 `04.blend`、`CURRENT_PROXY`、60 Hz、10 substeps、未启用 MMD IK 时，PMX 路径约 `43.20 ms`、MMD 路径约 `32.50 ms`；native solver 约 `0.96-0.97 ms`，DLL output copy 约 `0.04 ms`。PMX 被硬性排除在 input cache 外，MMD presentation 又按 `preview_frequency / 30` 限频；`PreviewDeadlineScheduler` 超预算后仅让出 `1 ms`，共同造成“开启任一物理 DLL 即进入低帧模式”。
+- `PoseInputAdapter` 现在对 PMX/MMD 的无 IK 单 Session 使用同一热路径，`CURRENT_PROXY` 与 `MODEL` 均可缓存。raw input backstop 从全 Armature 扫描收窄为物理输入骨、父级和同骨架 constraint target closure；用户已经完成的 depsgraph evaluation 可直接转换为 canonical physics input，正常拖动不再重复执行 prepare update。直接脚本未求值输入、不安全 constraint、多 Session 仍回退保守路径。
+- 删除固定 30 FPS presentation cadence。基础 `mmd_tools` 路径仍逐 physics tick 提交全部 Bone output，但交互 timer 不再同步阻塞 `view_layer.update()`，只请求 VIEW_3D redraw，让 Blender 把已写入 physics output 与下一次自然 evaluation 合并；因此不跳 solver tick，也不靠降低 fixed frequency/substeps 换性能。首轮真实 GUI 验收发现把 Rigid/Joint debug 对象降到约 15 Hz 会直接造成“显示刚体运动”中的可见刚体更新延迟，验收不合格；现已改为启用显示时逐 solver tick 写入 Rigid/Joint，关闭时仍完全省去对象回写，并补入连续 Root 编辑下每一 tick 的刚体矩阵同步断言。对象写入仍不触发周期性强制 evaluation。
+- timer 改为 cooperative deadline：callback 低于 `16.667 ms` 时返回扣除自身耗时后的 delay，继续维持目标 60 Hz；callback 超预算时返回完整 interval，禁止再次退化为 `work + 1 ms` 连续占满 Blender 主线程。`tests/time_driver_unit.py` 已锁定低于预算与超预算两种行为，timeline/wall-time 到 Bullet 固定子步的既有语义保持不变。
+- 新增 `physics_preview/integration.py` 和显式 `MmdIkPhysicsAdapter`。普通 physics Session 在启动时只解析一次 adapter；没有 native IK Session 时 `runtime_adapter is None`，每 tick 不再经过 evaluator lookup、feedback 或 monkey-patch wrapper。MMD IK 兼容 Session 使用独立 adapter 保留 evaluate/feedback/reset/close 生命周期；删除此前对 `_model_armature`、`PreviewSession.prepare_step/apply_step/close`、`PreviewWorld.reset` 与 `stop_preview` 的运行期替换。runtime switch 与 Undo/Redo 会显式刷新 adapter。
+- 新增 `tests/physics_runtime_v2_performance_regression.py`，在原 `04.blend` 对 PMX/MMD、CURRENT_PROXY/MODEL、debug on/off 记录 input cache、20/20 Bone commits、0/20 synchronous evaluations、逐 tick debug updates、median/p95 与分阶段耗时。Rigid/Joint authored scale 改为 Session 重绑时缓存，避免逐 tick 反复从数百个 Object 矩阵分解 scale。修正刚体显示同步后，CURRENT_PROXY + debug on：PMX tick 中位 `7.51 ms`、p95 `8.46 ms`、含连续 Root 输入合计 `20.77 ms`；MMD tick 中位 `7.87 ms`、p95 `8.11 ms`、合计 `20.80 ms`，其中 apply 约 `4.40–4.47 ms`。debug off 与 MODEL 数据仍沿用此前测试结果。相对本轮 PMX `43.20 ms` 与 MMD `32.50 ms` 起点仍有显著降低，因此三个 DLL 和 physics ABI 本轮均不修改，待真实 GUI 重新验收后再决定 Phase 2。
+- 正确性回归通过：`MMD_04_PREVIEW_PIPELINE_OK ... commits=20/20 sync_evaluations=0/20 debug_updates=20/20 motion_rigid_error=0`，其中连续 Root 编辑期间每一 tick 的全部可见刚体均与 solver transform 同步；`MMD_04_RIGID_LATENCY_REGRESSION_OK max_error=0`、PMX/MMD × IK 关/开四组合 `MMD_07_ROOT_MOTION_REGRESSION_OK`、PMX/MMD `PHYSICS_ROOT_OFFSET_REGRESSION_OK`、`MMD_IK_TRANSFORM_MODAL_REGRESSION_OK`（并断言普通 Session 无 adapter、IK Session 使用显式 adapter）、`MMD_IK_PHYSICS_FEEDBACK_REGRESSION_OK`、`MMD_IK_CLEAR_USER_TRANSFORMS_REGRESSION_OK`、`MMD_IK_PHYSICS_CLEAR_REPEAT_REGRESSION_OK`、`MMD_IK_SCOPED_OWNERSHIP_REGRESSION_OK`、`MMD_IK_PHYSICS_RESET_REGRESSION_OK`、`MMD_IK_RUNTIME_SMOKE_OK` 与完整 `MMD_SKIRT_PROXY_CREATOR_SMOKE_OK`。`python -m py_compile`、UTF-8/no-BOM 与 `git diff --check` 通过。版本保持 V0.1.8，不打包 ZIP、不修改三个 DLL、不 push；真实 Blender 4.4 继续通过现有 Junction 使用源码，等待用户最终 GUI 验收。
+
+## 2026-08-24 - V0.1.8 MMD IK 清空重做隔离与物理甩飞回归修复
+
+- 用户在原 `04.blend` 真实 Blender 4.4 视口确认：上一轮为连续切换“清空用户变换”的 `仅选中` 而加入的全局 pose 历史恢复污染了正常 `MMD IK + MMD DLL` 实时输入；开启兼容与物理后移动足 IK 会把裙子物理骨整片甩飞。已完整撤回该宽泛 pose 历史方案，不再从普通 depsgraph 更新记录或恢复历史输出，也不改动稳定运行中的 IK→物理 feedback 路径。
+- 修复收窄到清空识别与 Undo/Redo 恢复边界：只有 canonical Armature 全部 `matrix_basis` 已归一且至少两个 solver 输出发生变化时，才把当前状态认作“清空全部”；F9 把同一操作从“全部”重做到“仅选中”时，仅在已保存输入全为 identity、当前确有选中映射骨且选中骨仍为 identity 的精确条件下保留清空输入。其它 Undo/Redo 仍按当前 Blender pose 重建输入，正常交互路径不受影响。
+- 针对用户随后反馈的拖动不顺畅，对原 `04.blend` 的 `CURRENT_PROXY + MMD DLL + MMD IK` 连续足 IK 输入重新逐阶段计时：修改前单 tick 平均 `72.036 ms`、中位 `70.938 ms`，主要耗时仍是 Blender Pose/depsgraph，而不是 native/Bullet。将 physics-pose 阶段的 IK 输出改为只写入、不立即刷新，由紧接着的物理输入准备统一执行同一次 depsgraph evaluation；没有降低 `60 Hz`、没有减少 `10` substeps，也没有跳过骨骼输出。修改后同条件单 tick 平均 `57.752 ms`、中位 `57.383 ms`，host tick 约减少 `19.8%`。这是 background 性能证据，真实 GUI 操作手感仍需用户重新验收。
+- 按用户确认的范围把 live MMD IK 兼容从“全骨架最终输出”收窄为“实际 IK 输出闭包”：启用时动态遍历当前 Armature 中指向自身的 `IK` constraints，按各自 `chain_count` 收集 link bones，并纳入相应 `mmd_ik_target_*` target bones 与连续的 mmd_tools generated parent dependencies，不写死足部、手部或特殊控制器名称；native solver 仍读取完整当前姿态以保留父级、追加变换和特殊链依赖，但只把解算结果写回该闭包，也只静音闭包骨上的 mmd_tools generated constraints。原 `04.blend` 实际从 503 根可映射骨收窄为 35 根输出骨、49 个受管约束，其余 generated constraints 保持各自原状态；动态集合同时覆盖左右足链、高跟鞋链以及 `AnalToy`、`PussyToy`、`UrethraToy`、振动/自动振动等 PMX 特殊 IK，不依赖模型专名硬编码。
+- 用户在真实视口发现第一版 15-link scoped output 的高跟鞋 IK 链会漂移。复现确认：连续移动足 IK 时，native 已先改写足/足首 link，而高跟鞋 link 的 generated parent（`足D/ひざD/足首D` 一类）及 target 仍由下一次 Blender depsgraph 求值，导致子骨 basis 用旧 parent matrix 反解；左高跟鞋 link/target 相对同 tick native solver 的矩阵误差会由约 `0.0107` 增至 `0.0145`。修复后 `_apply_output()` 为 scoped outputs 预取 native ancestor matrices，并把 IK target 与连续 generated parents 纳入同一写回闭包；连续 10 次足 IK 位移中高跟鞋 link/target 最大矩阵误差降至 `5.47617674e-07`，不再随移动累积。
+- 最终 35-bone 输出闭包下，同一 `04.blend`、同一 `CURRENT_PROXY + MMD DLL + MMD IK` 连续足 IK 20 tick 平均为 `51.070 ms`、中位 `50.796 ms`：相对本轮最初 `72.036 ms` 平均值降低约 `29.1%`，相对只合并重复 depsgraph refresh 的 `57.752 ms` 再降低约 `11.6%`。瓶颈仍以 Blender depsgraph evaluation 为主，因此该 background 数字不等于真实 GUI 已达到 60 FPS；需用户 Reload Scripts/重启 Blender 后验收实际拖动手感。
+- 新增 `tests/mmd_ik_physics_clear_repeat_regression.py`，直接使用原 `04.blend` 的 `CURRENT_PROXY + MMD DLL + MMD IK`：移动足 IK `0.05 m` 后最大刚体位移为 `0.0557413652 m`，未发生整片甩飞；模拟 F9 从“清空全部”重做到“仅选中”并刷新 depsgraph 后，脚链相对清空结果最大误差为 `3.05566071e-07 m`，IK 输入保持 identity，物理 tick 无失败。输出 `MMD_IK_PHYSICS_CLEAR_REPEAT_REGRESSION_OK`。
+- 新增 `tests/mmd_ik_scoped_ownership_regression.py`，在原 `04.blend` 断言动态 owned/output 集合、owned 与 non-owned constraint mute 边界、普通非 IK 骨不被写回、足 IK 与 `AnalToy` 特殊 IK 的 native output、高跟鞋链连续移动误差，以及关闭兼容后所有约束逐项恢复；输出 `MMD_IK_SCOPED_OWNERSHIP_REGRESSION_OK owned=35 outputs=35 constraints=49 links=ひざ.L,AnalToy速 high_heel_error=5.47617674e-07`。完整 `mmd_ik_runtime_smoke.py` 也按 scoped output contract 更新并通过：`MMD_IK_RUNTIME_SMOKE_OK solver=MMD meshes=4 modifiers=4 bone_morphs=23`。既有回归继续通过：`MMD_IK_CLEAR_USER_TRANSFORMS_REGRESSION_OK`、`MMD_IK_PHYSICS_FEEDBACK_REGRESSION_OK exact_calls=12 exact_min=202`、`MMD_IK_PHYSICS_RESET_REGRESSION_OK`、`MMD_IK_TRANSFORM_MODAL_REGRESSION_OK`、`MMD_04_RIGID_LATENCY_REGRESSION_OK ... max_error=0`；重复清空回归在最终范围实现下为 `rigid_motion=0.0557240016`、`repeat_error=1.52785164e-07`。`python -m py_compile` 与 `git diff --check` 通过。未修改两个 native DLL、物理 fixed frequency/substeps 或其它插件功能。版本保持 V0.1.8，不打包 ZIP、不 push；真实 Blender 4.4 继续通过现有源码 Junction 使用当前修复。
+
 ## 2026-08-24 - V0.1.8 物理预览性能候选验收失败并回退
 
 - 用户在原 `04.blend` 的真实 Blender 4.4 视口验收提交 `b226618` 时观察到多处严重姿态/物理显示异常，明确判定验收不合格；background 四象限与性能指标未能覆盖这些真实 GUI 回归，因此该候选不得晋升基线。
@@ -27,6 +50,37 @@
 - 预览运行期间暂停代理同步与 preview model-id 两个全场景 depsgraph handler；“显示刚体运动”关闭时同时停止 Joint 对象投影；生产 timer 改为扣除本次 callback 已花时间，超预算帧只保留 `1 ms` 最小调度间隔，不再额外固定空等一帧。最终同一 04 当前代理、显示刚体开启的 20 tick 均值为 prepare `14.209 ms`、Rust/Bullet `0.983 ms`、复制 `0.039 ms`、apply `17.847 ms`、合计 `33.078 ms`；稳态 host callback 约减至原来的 `62%`，预期调度周期约 `34 ms`，而 native 求解仍约 `1 ms`。
 - 回归通过：`MMD_04_RIGID_LATENCY_REGRESSION_OK type0=59 target_motion=0.00999998093-0.0100000191 authored_motion=0.0100000202 max_error=0`；`MMD_IK_TRANSFORM_MODAL_REGRESSION_OK`；`MMD_07_ROOT_MOTION_REGRESSION_OK` 的 PMX/MMD × MMD IK 关/开四组合；PMX/MMD 两套 `PHYSICS_ROOT_OFFSET_REGRESSION_OK`；`MMD_IK_PHYSICS_FEEDBACK_REGRESSION_OK exact_calls=12 exact_min=202`、`MMD_IK_PHYSICS_RESET_REGRESSION_OK`、`MMD_IK_CLEAR_USER_TRANSFORMS_REGRESSION_OK`、`MMD_TIME_DRIVER_UNIT_OK`，以及完整 `MMD_SKIRT_PROXY_CREATOR_SMOKE_OK top_range=0.235911131 rigids=48 joints=96`。完整 smoke 中的 traceback 仍为测试主动注入的异常恢复分支，不是未处理失败。
 - 本轮不修改 `mmd_physics_solver.dll`、`mmd_physics_solver_mmd.dll`、native ABI、固定频率或 substeps。版本保持 V0.1.8，不打包 ZIP、不 push；真实 Blender 4.4 继续通过现有源码 Junction 使用当前代码。用户随后在原 `04.blend` 真实视口确认刚体延迟已修复、流畅度较修改前略有改善，并批准将该状态晋升为 `baseline-20260823-mmd-preview-latency-fixed`；同时确认操作手感仍未达到优秀标准，后续性能重构须从此基线继续，不能牺牲本轮已验收的 type 0、Root/Bone 与 MMD IK 正确性。
+
+## 2026-08-22 - 活动顶点组原地拆分为左右镜像组
+
+- 在 Mesh 数据属性的顶点组向下箭头菜单中，将“将所选顶点组转为镜像顶点组”精确插入 Blender 原生两项“镜像顶点组”命令之后；保留同一菜单其它插件的既有扩展顺序。
+- 新增 `surface_proxy.convert_active_group_to_mirrored`：当前无左右后缀的活动组原地改名为 `.L`，新建 `.R` 并移动到其下一行；不会把结果留在列表底部，也不会保留无后缀源组。经实际模型方向校正，局部 `X > 0` 权重写入 `.L`，局部 `X < 0` 写入 `.R`，中心容差内的权重各分一半；源组锁定状态同步给两组。
+- 若活动组已有 `.L/.R/_L/_R`，或目标 `.L/.R` 任一已存在，则取消并提示，不覆盖现有组。操作支持从 Edit Mode 调用并恢复原模式，不修改其它顶点组、活动对象或 Mesh 选择。
+- 新增 `tests/mirror_vertex_group_conversion_smoke.py`，覆盖菜单顺序、正负 X 分流、中心与近中心权重对半、原位列表顺序、无残留源组、锁定状态、其它组权重不变、Edit Mode 恢复及名称冲突拒绝。Blender 4.4.3 输出 `MIRROR_VERTEX_GROUP_CONVERSION_OK`。
+- 本轮未修改代理生成、MMD 物理、MMD IK 或 native DLL。版本保持 V0.1.8，未混合打包当前包含其它未提交工作的工作树；真实 Blender 4.4 继续通过现有源码 Junction 使用本轮代码。
+
+## 2026-08-22 - 骨链代理禁止覆盖与主体名称修正
+
+- 修复“从勾选骨骼恢复或新建代理”按派生名称查找同名对象并用新 Mesh 数据替换旧对象的问题；删除该替换路径，插件不再改写或删除既有代理 Mesh。
+- 代理身份现在按 `Armature + 完整骨骼集合` 判定：同一段骨链已经存在代理时取消操作并提示“请先删除旧代理后再创建”；不同骨链即使派生出同一主体名称，也创建独立对象并由 Blender 使用 `.001`、`.002` 后缀，不触碰先前对象。
+- 创建成功后不再自动写入“代理范围”、不再清空 MMD 查看器列表，也不再取消当前 3D 选择或把新代理设为活动对象；列表内容、勾选状态、活动行、原活动对象和选择集全部保持原样，新代理仅在 Outliner/场景中创建。
+- 修正普通父子骨链的主体名称提取：只移除骨名末尾数字和 `.L/.R/_L/_R`，数字前的中文、英文和下划线全部保留为主体；例如 `Bone_Piao031.L → Bone_Piao_Surface`、`后发A1.L → 后发A_Surface`、`后发B1.R → 后发B_Surface`。一次勾选包含多个不同主体时拒绝合并并提示分别创建，不再擅自缩成共同前缀。
+- 新增 `tests/proxy_creation_no_overwrite_smoke.py`，覆盖 `Bone_Piao031.L` 首链命名、`后发A/后发B` 主体提取与混选拒绝、同链二次创建阻断且旧对象/旧 Mesh/坐标不变、同主体的另一段骨链生成 `Bone_Piao_Surface.001`。Blender 4.4.3 输出 `PROXY_CREATION_NO_OVERWRITE_OK`；同步修正主 smoke 中旧的“原位覆盖恢复”预期。
+- 本轮未修改 MMD 物理、MMD IK、native DLL 或既有代理物理对象。版本保持 V0.1.8，未混合打包当前包含其它未提交工作的工作树；真实 Blender 4.4 继续通过现有源码 Junction 使用本轮代码。
+
+## 2026-08-22 - 锁定顶点组权重合并到新组
+
+- 在 Mesh 数据属性的顶点组向下箭头菜单中，将“用锁定组的权重创建新组”固定插入 Blender 原生“反转全部锁定状态”正下方；即使其它插件也扩展同一菜单，本项仍保持在原生菜单末项之后。
+- 新增 `surface_proxy.create_group_from_locked_weights`：读取当前活动 Mesh 中所有 `lock_weight=True` 的顶点组，逐顶点相加权重并创建 `锁定组权重`（重名时由 Blender 自动生成编号后缀）。源顶点组、锁定状态及原权重均不删除、不改写；结果超过 Blender 单组权重上限时按 Blender 原生行为保存为 `1.0`，并恢复调用前的 Object/Edit 等模式。
+- 新增 `mmd_skirt_proxy_creator/vertex_group_tools.py` 与隔离回归 `tests/locked_vertex_group_weight_merge_smoke.py`。Blender 4.4.3 验证菜单插入顺序、Edit Mode 调用后模式恢复、锁定组求和、未锁定组排除、源权重不变、重名新组和权重上限，输出 `LOCKED_VERTEX_GROUP_WEIGHT_MERGE_OK`；真实 Blender 4.4 用户环境确认 Junction 指向当前源码、插件已启用且菜单回调索引为 `1`。
+- 本轮未修改代理生成、MMD 物理、MMD IK 或 native DLL。工作树开始时已有其它未提交的物理与 smoke 修改，因此不把混合工作树打成新发布 ZIP、不递增 V0.1.8；真实 Blender 4.4 已通过现有源码 Junction 直接装载本功能，重启 Blender 或 Reload Scripts 后生效。
+
+## 2026-08-22 - 锁定顶点组快速勾选骨骼
+
+- 在 MMD 查看器的骨骼“快速选组”菜单新增“当前物体锁定顶点组”：读取当前活动 Mesh 的 `VertexGroup.lock_weight`，只勾选当前骨骼列表中与锁定顶点组同名的骨骼；没有对应骨骼的普通顶点组直接跳过，未锁定的同名骨骼组不会误选。现有勾选状态保留，不修改顶点组、骨骼选择或权重数据。
+- 修改 `mmd_skirt_proxy_creator/mmd_physics.py`，并在 `tests/headless_smoke.py` 补入主 smoke 回归；另新增隔离的 `tests/locked_vertex_group_quick_select_smoke.py`，覆盖“锁定骨骼组命中、锁定普通组跳过、未锁定骨骼组不命中”，Blender 4.4.3 输出 `LOCKED_VERTEX_GROUP_QUICK_SELECT_OK`。
+- `python -m py_compile` 与 `git diff --check` 通过。完整 `headless_smoke.py` 在运行到本功能前命中当前 `HEAD` 已有的 physics preview 恢复断言（`tests/headless_smoke.py:699`），未把该无关失败记作本功能通过；本轮未修改物理预览、MMD IK、PMX/MMD DLL 或代理生成链路。
+- 版本保持 V0.1.8，未打包 ZIP；真实 Blender 4.4 继续通过源码 Junction 指向当前仓库插件目录，Reload Scripts 或重启 Blender 后即可使用。
 
 ## 2026-08-21 - MMD IK 首次启用与 Blender Undo/Redo 运行态重绑
 

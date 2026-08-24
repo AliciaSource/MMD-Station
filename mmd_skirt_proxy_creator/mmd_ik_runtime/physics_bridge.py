@@ -3,47 +3,16 @@ import bpy
 from .runtime import selected_armature
 
 
-_ORIGINAL_MODEL_ARMATURE = None
-_ORIGINAL_SESSION_INIT = None
-_ORIGINAL_PREPARE_STEP = None
-_ORIGINAL_APPLY_STEP = None
-_ORIGINAL_STOP_PREVIEW = None
-_ORIGINAL_WORLD_RESET = None
-_ORIGINAL_SESSION_CLOSE = None
+_INSTALLED = False
 
 
-def install():
-    global _ORIGINAL_MODEL_ARMATURE, _ORIGINAL_SESSION_INIT, _ORIGINAL_PREPARE_STEP, _ORIGINAL_APPLY_STEP, _ORIGINAL_STOP_PREVIEW, _ORIGINAL_WORLD_RESET, _ORIGINAL_SESSION_CLOSE
-    if _ORIGINAL_MODEL_ARMATURE is not None:
-        return
-    from ..physics_preview import runtime as physics_runtime
+class MmdIkPhysicsAdapter:
+    def __init__(self, physics_session, native_session):
+        self.physics_session = physics_session
+        self.native_session = native_session
 
-    _ORIGINAL_MODEL_ARMATURE = physics_runtime._model_armature
-    _ORIGINAL_SESSION_INIT = physics_runtime.PreviewSession.__init__
-    _ORIGINAL_PREPARE_STEP = physics_runtime.PreviewSession.prepare_step
-    _ORIGINAL_APPLY_STEP = physics_runtime.PreviewSession.apply_step
-    _ORIGINAL_STOP_PREVIEW = physics_runtime.stop_preview
-    _ORIGINAL_WORLD_RESET = physics_runtime.PreviewWorld.reset
-    _ORIGINAL_SESSION_CLOSE = physics_runtime.PreviewSession.close
-
-    def runtime_aware_model_armature(root):
-        armature = selected_armature(root)
-        return armature if armature is not None else _ORIGINAL_MODEL_ARMATURE(root)
-
-    def runtime_aware_session_init(self, scene, settings, root):
-        return _ORIGINAL_SESSION_INIT(self, scene, settings, root)
-
-    def runtime_aware_prepare_step(self):
-        from .evaluator import _SESSIONS
-
-        try:
-            native_session = _SESSIONS.get(self.root.name)
-        except (AttributeError, ReferenceError):
-            return _ORIGINAL_PREPARE_STEP(self)
-        if native_session is None:
-            self.pose_input.set_native_input_active(False)
-            return _ORIGINAL_PREPARE_STEP(self)
-        self.pose_input.set_native_input_active(True)
+    def prepare_step(self, prepare_mmd_tools_step):
+        from ..physics_preview import runtime as physics_runtime
         from .evaluator import (
             _transform_modal_pose_matrices,
             evaluate_physics_pose,
@@ -51,157 +20,146 @@ def install():
             uses_exact_physics_targets,
         )
 
+        session = self.physics_session
+        native_session = self.native_session
         previous_suspended = native_session.suspended
         native_session.suspended = True
-        self._mmd_ik_modal_pose_matrices = _transform_modal_pose_matrices(
-            self.armature
+        session._mmd_ik_modal_pose_matrices = _transform_modal_pose_matrices(
+            session.armature
         )
         try:
-            self.ik_motion_anchor = physics_runtime._model_motion_anchor(self.armature)
-            operation_center = self.armature.pose.bones.get("操作中心")
+            session.ik_motion_anchor = physics_runtime._model_motion_anchor(
+                session.armature
+            )
+            operation_center = session.armature.pose.bones.get("操作中心")
             operation_center_matrix = (
                 operation_center.matrix.copy() if operation_center is not None else None
             )
-            native_pose_active = evaluate_physics_pose(self.root, self) is not None
+            native_pose_active = evaluate_physics_pose(session.root, session) is not None
             if operation_center is not None and operation_center_matrix is not None:
                 operation_center.matrix = operation_center_matrix
-            exact_targets = uses_exact_physics_targets(self.root, self)
+            exact_targets = uses_exact_physics_targets(session.root, session)
             reset_probe = (
-                self._broad_pose_reset_detected if native_pose_active else None
+                session._broad_pose_reset_detected if native_pose_active else None
             )
             if native_pose_active:
-                self._broad_pose_reset_detected = lambda: False
+                session._broad_pose_reset_detected = lambda: False
             try:
-                result = _ORIGINAL_PREPARE_STEP(self)
+                result = prepare_mmd_tools_step()
             finally:
                 if native_pose_active:
-                    self._broad_pose_reset_detected = reset_probe
+                    session._broad_pose_reset_detected = reset_probe
             if exact_targets:
-                prepare_physics_targets(self.root, self)
+                prepare_physics_targets(session.root, session)
             return result
         finally:
             native_session.suspended = previous_suspended
 
-    def runtime_aware_apply_step(
+    def apply_step(
         self,
+        apply_mmd_tools_step,
         transforms=None,
         bone_transforms=None,
         joint_states=None,
         present_output=True,
+        update_debug=None,
     ):
-        from .evaluator import _SESSIONS
-
-        try:
-            native_session = _SESSIONS.get(self.root.name)
-        except (AttributeError, ReferenceError):
-            return _ORIGINAL_APPLY_STEP(
-                self,
-                transforms,
-                bone_transforms,
-                joint_states,
-                present_output=present_output,
-            )
-        if native_session is None:
-            return _ORIGINAL_APPLY_STEP(
-                self,
-                transforms,
-                bone_transforms,
-                joint_states,
-                present_output=present_output,
-            )
-        if transforms is None:
-            transforms = self.solver.transforms()
-            bone_transforms = self.solver.bone_transforms()
-            joint_states = self.solver.joint_states()
         from .evaluator import submit_physics_feedback
 
+        session = self.physics_session
+        native_session = self.native_session
+        if transforms is None:
+            transforms = session.solver.transforms()
+            bone_transforms = session.solver.bone_transforms()
+            joint_states = session.solver.joint_states()
         previous_suspended = native_session.suspended
         native_session.suspended = True
         try:
-            result = _ORIGINAL_APPLY_STEP(
-                self,
+            result = apply_mmd_tools_step(
                 transforms,
                 bone_transforms,
                 joint_states,
                 present_output=present_output,
+                update_debug=update_debug,
             )
-            submit_physics_feedback(self.root, self, transforms)
-            preserved = getattr(self, "_mmd_ik_modal_pose_matrices", {})
+            submit_physics_feedback(session.root, session, transforms)
+            preserved = getattr(session, "_mmd_ik_modal_pose_matrices", {})
             for name, matrix in sorted(
                 preserved.items(),
-                key=lambda item: len(self.armature.pose.bones[item[0]].parent_recursive),
+                key=lambda item: len(
+                    session.armature.pose.bones[item[0]].parent_recursive
+                ),
             ):
-                pose_bone = self.armature.pose.bones.get(name)
+                pose_bone = session.armature.pose.bones.get(name)
                 if pose_bone is not None:
                     pose_bone.matrix_basis = matrix
             if preserved:
-                self.armature.update_tag(refresh={"OBJECT"})
+                session.armature.update_tag(refresh={"OBJECT"})
                 bpy.context.view_layer.update()
-            native_session.sync_output_pose(self.armature, self.scene)
+            native_session.sync_output_pose(session.armature, session.scene)
             return result
         finally:
             native_session.suspended = previous_suspended
 
-    def runtime_aware_stop_preview(root=None, restore=True):
-        roots = (
-            tuple(session.root for session in physics_runtime._ACTIVE_SESSIONS.values())
-            if root is None
-            else (root,)
+    def before_world_reset(self):
+        from .evaluator import clear_physics_feedback
+
+        clear_physics_feedback(self.physics_session.root)
+
+    def after_world_reset(self):
+        from .evaluator import capture_physics_bindings
+
+        capture_physics_bindings(
+            self.physics_session.root,
+            self.physics_session,
         )
-        from .evaluator import capture_live_input, replay_live, restore_live_input
 
-        inputs = {item.name: capture_live_input(item) for item in roots}
-        result = _ORIGINAL_STOP_PREVIEW(root, restore)
-        from .evaluator import clear_physics_feedback
+    def before_close(self, _restore):
+        from .evaluator import capture_live_input
 
-        for item in roots:
-            if restore_live_input(item, inputs.get(item.name)):
-                replay_live(item)
-            clear_physics_feedback(item)
-        return result
+        return capture_live_input(self.physics_session.root)
 
-    def runtime_aware_world_reset(self, prepared_session=None):
-        from .evaluator import capture_physics_bindings, clear_physics_feedback
+    def after_close(self, live_input):
+        from .evaluator import (
+            clear_physics_feedback,
+            replay_live,
+            restore_live_input,
+        )
 
-        for preview_session in self.sessions:
-            clear_physics_feedback(preview_session.root)
-        result = _ORIGINAL_WORLD_RESET(self, prepared_session=prepared_session)
-        for preview_session in self.sessions:
-            capture_physics_bindings(preview_session.root, preview_session)
-        return result
+        root = self.physics_session.root
+        if restore_live_input(root, live_input):
+            replay_live(root)
+        clear_physics_feedback(root)
 
-    def runtime_aware_session_close(self, restore=True):
-        from .evaluator import clear_physics_feedback
 
-        clear_physics_feedback(self.root)
-        return _ORIGINAL_SESSION_CLOSE(self, restore)
+def _resolve_model_armature(root):
+    return selected_armature(root)
 
-    physics_runtime._model_armature = runtime_aware_model_armature
-    physics_runtime.PreviewSession.__init__ = runtime_aware_session_init
-    physics_runtime.PreviewSession.prepare_step = runtime_aware_prepare_step
-    physics_runtime.PreviewSession.apply_step = runtime_aware_apply_step
-    physics_runtime.stop_preview = runtime_aware_stop_preview
-    physics_runtime.PreviewWorld.reset = runtime_aware_world_reset
-    physics_runtime.PreviewSession.close = runtime_aware_session_close
+
+def _create_session_adapter(physics_session):
+    from .evaluator import _SESSIONS
+
+    native_session = _SESSIONS.get(physics_session.root_name)
+    if native_session is None:
+        return None
+    return MmdIkPhysicsAdapter(physics_session, native_session)
+
+
+def install():
+    global _INSTALLED
+    if _INSTALLED:
+        return
+    from ..physics_preview import integration
+
+    integration.install(_resolve_model_armature, _create_session_adapter)
+    _INSTALLED = True
 
 
 def uninstall():
-    global _ORIGINAL_MODEL_ARMATURE, _ORIGINAL_SESSION_INIT, _ORIGINAL_PREPARE_STEP, _ORIGINAL_APPLY_STEP, _ORIGINAL_STOP_PREVIEW, _ORIGINAL_WORLD_RESET, _ORIGINAL_SESSION_CLOSE
-    if _ORIGINAL_MODEL_ARMATURE is None:
+    global _INSTALLED
+    if not _INSTALLED:
         return
-    from ..physics_preview import runtime as physics_runtime
+    from ..physics_preview import integration
 
-    physics_runtime._model_armature = _ORIGINAL_MODEL_ARMATURE
-    physics_runtime.PreviewSession.__init__ = _ORIGINAL_SESSION_INIT
-    physics_runtime.PreviewSession.prepare_step = _ORIGINAL_PREPARE_STEP
-    physics_runtime.PreviewSession.apply_step = _ORIGINAL_APPLY_STEP
-    physics_runtime.stop_preview = _ORIGINAL_STOP_PREVIEW
-    physics_runtime.PreviewWorld.reset = _ORIGINAL_WORLD_RESET
-    physics_runtime.PreviewSession.close = _ORIGINAL_SESSION_CLOSE
-    _ORIGINAL_MODEL_ARMATURE = None
-    _ORIGINAL_SESSION_INIT = None
-    _ORIGINAL_PREPARE_STEP = None
-    _ORIGINAL_APPLY_STEP = None
-    _ORIGINAL_STOP_PREVIEW = None
-    _ORIGINAL_WORLD_RESET = None
-    _ORIGINAL_SESSION_CLOSE = None
+    integration.uninstall(_resolve_model_armature, _create_session_adapter)
+    _INSTALLED = False
