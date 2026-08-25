@@ -1,5 +1,12 @@
 # Development Log
 
+## 2026-08-25 - V0.1.8 全“骨骼+物理”骨链位置冻结修复
+
+- 用户在原 `D:\MMD\模型\Alicia\鳴潮-達尼婭\達尼婭\06.blend` 中发现：当连续骨链刚体全部为“骨骼+物理”（type 2）时，预览只更新旋转，骨骼位置停留在启动位置。根因位于 Blender adapter 的层级回写，而非 PMX/MMD DLL：DLL 按 MMD type 2 语义返回动画位置与物理旋转，但 `_resolve_hierarchical_bone_targets()` 又把每根子骨写回 DLL 的绝对动画位置，覆盖了父骨物理旋转对其局部偏移产生的层级位移。
+- type 2 回写现改为保留已沿父级解算出的 `inherited.translation`，只从 DLL 采用物理旋转和原层级 scale。这样骨自身的平移仍由动画局部变换控制，但连续子骨会像 MMD/PMX Editor 一样跟随父骨物理旋转移动；type 1 的完整物理解算、type 0 目标提交、DLL、fixed frequency/substeps 与 MMD IK 路径均未改动。
+- 新增最小两级全 type 2 回归 `tests/type2_chain_translation_regression.py`：修复前稳定失败，子骨保持 `(0, 1, 0)`；修复后随父骨 90° 旋转到约 `(-1, 0, 0)`，输出 `TYPE2_CHAIN_TRANSLATION_REGRESSION_OK error=1.40579497e-07`。同步把既有 type 2 断言从错误的“绝对位置等于 DLL 动画位置”改为“相对父骨的局部动画平移保持不变”。
+- 新增真实工程回归 `tests/mmd_06_type2_chain_translation_regression.py`，以 Blender 4.4.3 无保存加载上述 `06.blend`，识别 17 组连续 type 2 父子骨并运行 120 tick：PMX 为 `local_error=2.27339956e-07, displacement=0.052140129`，MMD 为 `local_error=3.1676404e-07, displacement=0.0501235642`。PMX/MMD `PHYSICS_ROOT_OFFSET_REGRESSION_OK` 与完整 `MMD_SKIRT_PROXY_CREATOR_SMOKE_OK` 继续通过。版本保持 V0.1.8，源码 Junction 直接生效，不修改 DLL、不打包 ZIP、不 push；真实交互视口观感仍待用户重启/Reload Scripts 后确认。
+
 ## 2026-08-24 - V0.1.8 Parent Empty 同 tick 物理输入修正候选
 
 - 用户在真实 Blender 4.4 中确认 Parent Empty 连续拖动延迟已修复，批准该状态晋升为本地安全基线 `baseline-20260824-parent-empty-same-tick`；该基线只固化统一 PMX/MMD raw Object transform 检测，不包含后续 IK 关闭生命周期重构。

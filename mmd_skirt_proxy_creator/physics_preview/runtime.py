@@ -251,7 +251,7 @@ def _resolve_hierarchical_bone_targets(
             mode, physics_matrix = target
             if mode == 2:
                 inherited = Matrix.LocRotScale(
-                    physics_matrix.translation,
+                    inherited.translation,
                     physics_matrix.to_quaternion(),
                     inherited.to_scale(),
                 )

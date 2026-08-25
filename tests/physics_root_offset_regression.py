@@ -141,11 +141,16 @@ max_type_two_blender_error = 0.0
 for index in type_two_indices:
     rigid = session.rigids[index]
     bone_name = rigid.mmd_rigid.bone
-    expected_position = animation_pose[bone_name].translation
-    actual_position = session.armature.pose.bones[bone_name].matrix.translation
+    pose_bone = session.armature.pose.bones[bone_name]
+    parent = pose_bone.parent
+    expected_matrix = animation_pose[bone_name]
+    actual_matrix = pose_bone.matrix
+    if parent is not None:
+        expected_matrix = animation_pose[parent.name].inverted_safe() @ expected_matrix
+        actual_matrix = parent.matrix.inverted_safe() @ actual_matrix
     max_type_two_blender_error = max(
         max_type_two_blender_error,
-        (actual_position - expected_position).length,
+        (actual_matrix.translation - expected_matrix.translation).length,
     )
 
 root_bone = session.armature.pose.bones.get("全ての親")
@@ -158,11 +163,16 @@ for _frame in range(60):
     for index in type_two_indices:
         rigid = session.rigids[index]
         bone_name = rigid.mmd_rigid.bone
-        expected_position = animation_pose[bone_name].translation
-        actual_position = session.armature.pose.bones[bone_name].matrix.translation
+        pose_bone = session.armature.pose.bones[bone_name]
+        parent = pose_bone.parent
+        expected_matrix = animation_pose[bone_name]
+        actual_matrix = pose_bone.matrix
+        if parent is not None:
+            expected_matrix = animation_pose[parent.name].inverted_safe() @ expected_matrix
+            actual_matrix = parent.matrix.inverted_safe() @ actual_matrix
         max_type_two_blender_error = max(
             max_type_two_blender_error,
-            (actual_position - expected_position).length,
+            (actual_matrix.translation - expected_matrix.translation).length,
         )
 
 assert kinematic_target_pass_fraction > 0.95, kinematic_target_pass_fraction
