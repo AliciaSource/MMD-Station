@@ -110,6 +110,10 @@ output_bones = frozenset(session.mapping[index].name for index in session.output
 mapped_owned = frozenset(name for name in expected_owned if name in session.bone_indices)
 assert actual_owned == expected_owned
 assert output_bones == mapped_owned
+assert frozenset(session.output_basis) == output_bones
+assert frozenset(session.presented_basis) == frozenset(
+    pose_bone.name for pose_bone in armature.pose.bones
+)
 
 after_constraints = constraint_snapshot()
 owned_constraint_keys = {

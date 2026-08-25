@@ -257,19 +257,20 @@ def refresh_bindings(root):
     return len(list(_iter_model_meshes(root)))
 
 
-def restore_bindings(root, keep_runtime=True):
+def restore_bindings(root, keep_runtime=True, update=True):
     state = _load_state(root)
     if not state:
         return 0
     from .evaluator import stop as stop_evaluator
 
-    stop_evaluator(root)
+    stop_evaluator(root, update=False)
     canonical = canonical_armature(root, state)
     if canonical is None:
         raise MMDIKRuntimeError("原 mmd_tools 骨架已丢失，无法复原")
     _restore_constraint_mutes(canonical, state)
     canonical.update_tag(refresh={"OBJECT"})
-    bpy.context.view_layer.update()
+    if update:
+        bpy.context.view_layer.update()
     if keep_runtime:
         state["enabled"] = False
         _save_state(root, state)

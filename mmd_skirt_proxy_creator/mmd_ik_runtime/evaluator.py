@@ -380,12 +380,25 @@ class Session:
     pose_override: bool = False
     input_basis: dict = field(default_factory=dict)
     output_basis: dict = field(default_factory=dict)
+    presented_basis: dict = field(default_factory=dict)
     suspended: bool = False
     action_input: bool = False
     action_signature: tuple = ()
     solver_matrices: dict = field(default_factory=dict)
     desired_pose: dict = field(default_factory=dict)
     output_indices: tuple | None = None
+
+    def output_bone_names(self):
+        indices = (
+            range(len(self.mapping))
+            if self.output_indices is None
+            else self.output_indices
+        )
+        return frozenset(
+            self.mapping[index].name
+            for index in indices
+            if self.mapping[index] is not None
+        )
 
     def _capture_external_pose(self, canonical, scene):
         if not self.input_signature:
@@ -396,11 +409,11 @@ class Session:
         signature = _live_input_signature(canonical, scene)
         if signature == self.input_signature:
             return False
-        cleared = _cleared_pose_snapshot(canonical, self.output_basis)
+        cleared = _cleared_pose_snapshot(canonical, self.presented_basis)
         if cleared is not None:
             self.input_basis = cleared
         else:
-            for name, output in self.output_basis.items():
+            for name, output in self.presented_basis.items():
                 pose_bone = canonical.pose.bones.get(name)
                 source = self.input_basis.get(name)
                 if pose_bone is None or source is None or pose_bone.matrix_basis == output:
@@ -482,8 +495,11 @@ class Session:
             bpy.context.view_layer.update()
         self.output_basis = {
             pose_bone.name: pose_bone.matrix_basis.copy()
-            for pose_bone in self.mapping
-            if pose_bone is not None
+            for _index, pose_bone in mapped
+        }
+        self.presented_basis = {
+            pose_bone.name: pose_bone.matrix_basis.copy()
+            for pose_bone in runtime.pose.bones
         }
         self.input_signature = _live_input_signature(runtime, bpy.context.scene)
         self.action_signature = _action_frame_signature(
@@ -491,10 +507,15 @@ class Session:
         )
 
     def sync_output_pose(self, canonical, scene):
+        output_names = self.output_bone_names()
         self.output_basis = {
             pose_bone.name: pose_bone.matrix_basis.copy()
             for pose_bone in canonical.pose.bones
-            if pose_bone.name in self.bone_indices
+            if pose_bone.name in output_names
+        }
+        self.presented_basis = {
+            pose_bone.name: pose_bone.matrix_basis.copy()
+            for pose_bone in canonical.pose.bones
         }
         self.input_signature = _live_input_signature(canonical, scene)
         self.action_signature = _action_frame_signature(
@@ -539,10 +560,13 @@ class Session:
         canonical = bpy.data.objects.get(self.canonical_name or self.runtime_name)
         if canonical is None:
             return
+        output_names = self.output_bone_names()
         was_updating = self.updating
         self.updating = True
         try:
             for name, matrix in self.input_basis.items():
+                if name not in output_names:
+                    continue
                 pose_bone = canonical.pose.bones.get(name)
                 if pose_bone is not None:
                     pose_bone.matrix_basis = matrix
@@ -552,14 +576,17 @@ class Session:
         finally:
             self.updating = was_updating
 
-    def close(self):
+    def close(self, update=True):
         runtime = bpy.data.objects.get(self.runtime_name)
         if runtime is not None:
             if self.live:
-                self.restore_input()
+                self.restore_input(update=False)
             _restore_constraints(runtime, self.muted_constraints)
             if runtime.animation_data is not None:
                 runtime.animation_data.action = self.original_action
+            runtime.update_tag(refresh={"OBJECT"})
+            if update:
+                bpy.context.view_layer.update()
         self.solver.close()
 
     def target_frame(self, scene):
@@ -856,12 +883,12 @@ def start_live(root, input_basis=None, update=True):
     return matched, solver.count, scale
 
 
-def stop(root):
+def stop(root, update=True):
     if root is None:
         return
     session = _SESSIONS.pop(root.name, None)
     if session is not None:
-        session.close()
+        session.close(update=update)
 
 
 def is_active(root):
@@ -982,6 +1009,7 @@ def resume_sessions_after_undo_redo(scene=None):
                 for pose_bone in canonical.pose.bones
             }
         session.output_basis.clear()
+        session.presented_basis.clear()
         session.input_signature = (
             _live_input_signature(canonical, scene)
             if preserve_cleared_input

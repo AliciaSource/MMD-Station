@@ -1,6 +1,6 @@
 # Physics Runtime V2 性能架构
 
-状态：PHASE 1 IMPLEMENTED（等待真实 GUI 验收）  
+状态：PHASE 1 BASELINE + PHASE 3 LIFECYCLE SLICE BASELINE
 日期：2026-08-24
 
 ## 1. 结论
@@ -279,3 +279,28 @@ authored pose snapshot
 | MMD | MODEL | off | 11.95 ms | 10.88 ms | 22.97 ms |
 
 PMX `CURRENT_PROXY + debug on` 细分中位为 `prepare 1.99 ms + native step 0.99 ms + outputs 0.04 ms + apply 2.37 ms`，runtime tick p95 为 `8.03 ms`；MMD 对应 p95 为 `8.49 ms`。与 Phase 0 的 PMX 约 43.20 ms、MMD 约 32.50 ms 总路径相比，host latency 已大幅下降；两个 physics DLL 当前没有足够收益证明需要立即升级 ABI，Phase 2 暂缓到真实 GUI 验收后再决定。
+
+## 10. Phase 3 生命周期切片：IK / Physics 所有权交接
+
+2026-08-24 已实现关闭 MMD IK 兼容的第一条显式 transaction：
+
+- `input_basis`：authored/native 输入层；
+- `output_basis`：仅包含 `output_indices` 对应的 IK-owned output closure；
+- `presented_basis`：上一份完整展示姿态，只用于识别外部编辑与 Clear，不代表 IK 所有权；
+- `RuntimeAdapterHandoff`：保存当前 physics driver output，暂停 commit，原地切换 adapter，再恢复同一 physics Session。
+
+关闭兼容的状态转换固定为：
+
+```text
+IK+Physics RUNNING
+-> suspend physics commit
+-> capture physics-owned driver basis
+-> restore only IK-owned authored input
+-> restore mmd_tools constraints
+-> detach MmdIkPhysicsAdapter in place
+-> restore physics-owned driver basis
+-> invalidate PoseInputAdapter once
+-> Physics RUNNING (same world / solver / generation)
+```
+
+禁止在该转换中调用 `stop_preview(..., restore=True)`、重启 world 或用全 Armature pose snapshot 覆盖当前输出。这样 adapter 生命周期、IK output ownership 与全姿态编辑检测不再共享同一个隐式矩阵缓存。完整 Undo/Redo epoch 化仍属于后续 Phase 3；本切片只固化已覆盖的关闭兼容、Clear All、Clear Selected 和持续物理交接。

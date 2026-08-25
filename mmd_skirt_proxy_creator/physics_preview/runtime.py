@@ -6,6 +6,7 @@ import struct
 import time
 import traceback
 from collections import Counter, defaultdict, deque
+from dataclasses import dataclass
 from pathlib import Path
 
 import bpy
@@ -37,6 +38,13 @@ _RUNTIME_SUSPENDED = False
 _MIN_TIMER_DELAY = 0.001
 _VIEW_LAYER_UPDATE_DEPTH = 0
 _TIMER_DEADLINE = PreviewDeadlineScheduler(minimum_delay=_MIN_TIMER_DELAY)
+
+
+@dataclass
+class RuntimeAdapterHandoff:
+    session: object
+    previous_suspended: bool
+    driver_basis: dict
 
 
 def _update_view_layer():
@@ -1472,6 +1480,45 @@ def suspend_for_runtime_switch(root):
     session.armature.update_tag(refresh={"OBJECT"})
     _update_view_layer()
     return session, previous_suspended
+
+
+def begin_runtime_adapter_handoff(root):
+    global _RUNTIME_SUSPENDED
+    session = _ACTIVE_SESSIONS.get(root.name) if root is not None else None
+    if session is None:
+        return None
+    previous_suspended = _RUNTIME_SUSPENDED
+    _RUNTIME_SUSPENDED = True
+    session._rebind_blender_data(force=True)
+    return RuntimeAdapterHandoff(
+        session=session,
+        previous_suspended=previous_suspended,
+        driver_basis=session._capture_driver_basis(),
+    )
+
+
+def complete_runtime_adapter_handoff(token):
+    global _RUNTIME_SUSPENDED
+    if token is None:
+        return None
+    session = token.session
+    try:
+        session._rebind_blender_data(force=True)
+        session._refresh_runtime_adapter()
+        for name, matrix_basis in sorted(
+            token.driver_basis.items(),
+            key=lambda item: session.driver_depths.get(item[0], 0),
+        ):
+            pose_bone = session.driver_pose_bones.get(name)
+            if pose_bone is not None:
+                pose_bone.matrix_basis = matrix_basis
+        session.last_output_basis = session._capture_driver_basis()
+        session.pose_input.invalidate()
+        session.armature.update_tag(refresh={"OBJECT"})
+        _update_view_layer()
+    finally:
+        _RUNTIME_SUSPENDED = token.previous_suspended
+    return session
 
 
 def resume_after_runtime_switch(token):

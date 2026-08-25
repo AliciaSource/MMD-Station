@@ -283,15 +283,15 @@ class SPX_OT_RemoveMMDIKRuntime(_RuntimeOperator, Operator):
         root = _selected_root(context)
         from ..physics_preview import runtime as physics_runtime
 
-        restart_physics = physics_runtime.is_running(root)
-        if restart_physics:
-            physics_runtime.stop_preview(root, restore=True)
+        handoff = physics_runtime.begin_runtime_adapter_handoff(root)
         try:
-            stop_evaluator(root)
-            count = restore_bindings(root, keep_runtime=False)
+            count = restore_bindings(
+                root,
+                keep_runtime=False,
+                update=handoff is None,
+            )
         finally:
-            if restart_physics:
-                physics_runtime.start_preview(context)
+            physics_runtime.complete_runtime_adapter_handoff(handoff)
         _set_armature_selector(context.scene.surface_proxy_creator, selected_armature(root))
         return f"已关闭 MMD 原生 IK 链接管，{count} 个 Mesh 继续使用原骨架"
 
