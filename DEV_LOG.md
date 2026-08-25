@@ -1,5 +1,9 @@
 # Development Log
 
+## 2026-08-25 - V0.1.8 IK / Physics 所有权交接验收基线
+
+- 用户在真实 Blender 4.4 工程中确认关闭 MMD IK 兼容时的 physics 原地 handoff、刚体/物理骨保持以及其余相关回归均已修复，批准当前实现晋升为本地安全基线 `baseline-20260825-ik-physics-handoff`。该基线保留 `input_basis` / IK-owned `output_basis` / full-pose `presented_basis` 三层所有权，以及不重启 physics world 的 `RuntimeAdapterHandoff`；仍明确不包含随后报告的二次 Clear + F9“仅选中”重做错位修复。
+
 ## 2026-08-25 - V0.1.8 全“骨骼+物理”骨链位置冻结修复
 
 - 用户在原 `D:\MMD\模型\Alicia\鳴潮-達尼婭\達尼婭\06.blend` 中发现：当连续骨链刚体全部为“骨骼+物理”（type 2）时，预览只更新旋转，骨骼位置停留在启动位置。根因位于 Blender adapter 的层级回写，而非 PMX/MMD DLL：DLL 按 MMD type 2 语义返回动画位置与物理旋转，但 `_resolve_hierarchical_bone_targets()` 又把每根子骨写回 DLL 的绝对动画位置，覆盖了父骨物理旋转对其局部偏移产生的层级位移。
@@ -14,6 +18,15 @@
 - 修复保持 PMX/MMD 共用，不增加 MMD-only common-motion/world-delta 分支：Session 现在缓存并监视 MMD Root、Armature 及其完整父级 Object 链的原始 `matrix_basis`。发现任一父级 raw transform 改变时，即使 `matrix_world` 尚未刷新，也会让当前 tick 进入一次必要的 `_update_view_layer()`，随后提交已求值的同 tick world-space 刚体目标。这样既覆盖 Root 自身 Empty，也覆盖额外父级 Empty，并避免重新引入历史上已经导致双重位移的手工 motion-delta 补偿。
 - 新增 `tests/mmd_04_parent_empty_latency_regression.py`，在原 `04.blend` 中故意修改 Root Empty 后不预先调用 `view_layer.update()`，分别验证 PMX/MMD 都能由当前 tick 检出 raw Object transform、完成一次输入求值并同步 59 个绑定 0 型刚体；两条路径均输出 `MMD_04_PARENT_EMPTY_LATENCY_OK ... max_error≈1.9e-08`。既有 `MMD_04_PREVIEW_PIPELINE_OK ... motion_rigid_error=0`、`MMD_04_RIGID_LATENCY_REGRESSION_OK ... max_error=0`、PMX/MMD `PHYSICS_ROOT_OFFSET_REGRESSION_OK` 继续通过。
 - 性能回归保持：`CURRENT_PROXY + debug on` 的 PMX/MMD tick 中位分别约 `7.50/7.91 ms`，合计约 `20.85/20.97 ms`，新增父级链 raw 比较未形成可测的稳定开销。当前改动位于已验收基线 `baseline-20260824-physics-runtime-v2-phase1` 之后，版本保持 V0.1.8，不打包、不修改 DLL、不新建 baseline，等待真实 GUI 对 Parent Empty 连续拖动重新验收。
+
+## 2026-08-24 - V0.1.8 MMD IK / Physics 显式所有权交接重构候选
+
+- 用户确认 `baseline-20260824-parent-empty-same-tick` 对应的 Parent Empty 同 tick 修复可以晋升为基线；本轮从该 tag 后继续，专门处理“物理运行中关闭 MMD IK 兼容”导致跟踪刚体/物理骨恢复启动姿态，以及随后清空用户变换再次错位的问题。
+- 根因不是 DLL 解算，而是关闭按钮把整个 physics preview 以 `restore=True` 停止后重新创建：旧 Session 的启动快照会先覆盖当前物理输出，新的 world 又丢失原 solver 连续状态。与此同时，IK `Session.close()` 把全 Armature 的 `input_basis` 写回，超出了 IK 实际拥有的 35-bone output closure；`output_basis` 还同时承担“IK-owned output”和“全姿态外部编辑检测”两种互相冲突的职责。
+- 重构为显式三层姿态所有权：`input_basis` 仅表示 authored/native 输入，`output_basis` 只保存 `output_indices` 对应的 IK-owned closure，新增 `presented_basis` 独立保存上一份完整展示姿态用于检测外部编辑与 Clear。IK 停止、Undo/Redo suspend、frame restore 现在只恢复 IK 真正写过的 output bones，不再覆盖 physics-owned 或普通 mmd_tools bones。
+- 新增 `RuntimeAdapterHandoff`：关闭兼容时只暂停当前 physics commit，保留同一个 `PreviewSession`、`PreviewWorld`、solver、generation、190 根 physics driver 输出和全部 Rigid 显示矩阵；恢复 mmd_tools constraints 后原地把 adapter 从 `MmdIkPhysicsAdapter` 切换为 `None`，重建 pose input cache 并只做一次 view-layer update。物理 world 不停止、不 Reset、不重建，也不丢速度/连续状态。
+- 新增 `tests/mmd_ik_disable_physics_handoff_regression.py`，在原 `04.blend` 对 PMX/MMD 两条 physics path 验证关闭前后 Session/World/Solver/generation 对象身份保持、190 根 driver 与全部 Rigid 零位移误差、adapter 正确脱离；随后依次执行 Clear All、再次移动足 IK、Clear Selected，足 IK 与脚链回归误差均为 `0`，physics tick 无失败。两条路径均输出 `MMD_IK_DISABLE_PHYSICS_HANDOFF_REGRESSION_OK`。
+- 回归继续通过：`MMD_IK_SCOPED_OWNERSHIP_REGRESSION_OK owned=35 outputs=35 constraints=49 high_heel_error=8.94e-08`、`MMD_IK_PHYSICS_CLEAR_REPEAT_REGRESSION_OK repeat_error=1.53e-07`、`MMD_IK_CLEAR_USER_TRANSFORMS_REGRESSION_OK`、`MMD_IK_TRANSFORM_MODAL_REGRESSION_OK`、`MMD_IK_PHYSICS_FEEDBACK_REGRESSION_OK exact_calls=12`、`MMD_IK_PHYSICS_RESET_REGRESSION_OK`、`MMD_IK_RUNTIME_SMOKE_OK`。无 IK 的 PMX/MMD Parent Empty、preview pipeline 与 rigid latency 六组回归继续通过；未修改三个 DLL、fixed frequency/substeps 或版本号，不打包、不 push，真实 Blender 4.4 继续通过源码 Junction 使用，等待 GUI 验收后再决定是否晋升新基线。
 
 ## 2026-08-24 - V0.1.8 Physics Runtime V2 第一阶段性能与路径隔离重构
 
