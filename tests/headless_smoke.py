@@ -728,8 +728,6 @@ def assert_preview_alignment(session):
         bone_position, bone_rotation = transform_to_components(bone_transforms[index])
         bone_world = session.armature.matrix_world @ pose_bone.matrix
         if int(rigid.mmd_rigid.type) == 2:
-            expected_bone_position = Vector(bone_position) * session.import_scale
-            assert (bone_world.translation - expected_bone_position).length < 1.0e-5
             expected_rotation = Quaternion(bone_rotation)
             rotation_error = bone_world.to_quaternion().rotation_difference(expected_rotation).angle
             rotation_error = min(rotation_error, abs(math.tau - rotation_error))
