@@ -844,6 +844,25 @@ assert bpy.ops.surface_proxy.reorder_morph_offsets(action="AFTER") == {
 }
 assert [data.material for data in smart_morph.data] == detail_order_before_anchor_moves
 
+# Detail minus deletes every checked row when checks exist, otherwise it falls
+# back to the blue active row.
+assert bpy.ops.surface_proxy.select_morph_details(action="NONE") == {"FINISHED"}
+detail_materials_before_remove = [data.material for data in smart_morph.data]
+smart_morph.active_data = 4
+smart_morph.data[1].spx_morph_detail_selected = True
+smart_morph.data[3].spx_morph_detail_selected = True
+assert bpy.ops.surface_proxy.remove_morph_offset() == {"FINISHED"}
+assert [data.material for data in smart_morph.data] == [
+    detail_materials_before_remove[index] for index in (0, 2, 4)
+]
+assert smart_morph.active_data == 1
+active_material_before_remove = smart_morph.data[smart_morph.active_data].material
+assert bpy.ops.surface_proxy.remove_morph_offset() == {"FINISHED"}
+assert active_material_before_remove not in {
+    data.material for data in smart_morph.data
+}
+assert len(smart_morph.data) == 2
+
 # Non-material tabs keep the original empty-offset add behavior.
 root.spx_morph_active_index = root.spx_morph_states.find(states["UVShift"].uid)
 uv_offset_count = len(uv_morph.data)

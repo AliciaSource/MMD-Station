@@ -2503,6 +2503,7 @@ class SPX_OT_AddMorphOffset(Operator):
 class SPX_OT_RemoveMorphOffset(Operator):
     bl_idname = "surface_proxy.remove_morph_offset"
     bl_label = "删除 Morph Offset"
+    bl_description = "删除勾选详情项；未勾选时删除蓝色活动项"
     bl_options = {"REGISTER", "UNDO"}
 
     def execute(self, context):
@@ -2510,9 +2511,19 @@ class SPX_OT_RemoveMorphOffset(Operator):
         morph = _active_morph(root)
         if morph is None or not getattr(morph, "data", None):
             return {"CANCELLED"}
-        morph.data.remove(morph.active_data)
-        morph.active_data = min(morph.active_data, max(0, len(morph.data) - 1))
+        remove_indices = [
+            index
+            for index, data in enumerate(morph.data)
+            if bool(getattr(data, DETAIL_SELECTED_PROPERTY, False))
+        ]
+        if not remove_indices:
+            remove_indices = [min(max(morph.active_data, 0), len(morph.data) - 1)]
+        next_active_index = remove_indices[0]
+        for index in reversed(remove_indices):
+            morph.data.remove(index)
+        morph.active_data = min(next_active_index, max(0, len(morph.data) - 1))
         evaluate_morph_root(root)
+        self.report({"INFO"}, f"已删除 {len(remove_indices)} 个 Morph 详情项")
         return {"FINISHED"}
 
 
