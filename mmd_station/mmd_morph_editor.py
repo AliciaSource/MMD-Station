@@ -1597,13 +1597,19 @@ def _morph_has_details(root, morph_type, morph):
             )
             for mesh_object in FnModel.iterate_mesh_objects(root)
         )
+    if morph_type == "group_morphs":
+        return any(
+            offset.name
+            in getattr(root.mmd_root, offset.morph_type, ())
+            for offset in morph.data
+        )
     return bool(morph.data)
 
 
 class SPX_OT_CleanSelectedEmptyMorphs(Operator):
     bl_idname = "surface_proxy.clean_selected_empty_morphs"
     bl_label = "清理空 Morph"
-    bl_description = "移除当前 Tab 已勾选且没有详情内容的 Morph"
+    bl_description = "移除当前 Tab 已勾选且没有有效详情内容的 Morph"
     bl_options = {"REGISTER", "UNDO"}
 
     def execute(self, context):

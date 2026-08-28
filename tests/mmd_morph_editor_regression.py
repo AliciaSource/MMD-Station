@@ -969,6 +969,13 @@ cleanup_group_keep.name = nonempty_morph_names["group_morphs"]
 cleanup_group_offset = cleanup_group_keep.data.add()
 cleanup_group_offset.morph_type = "material_morphs"
 cleanup_group_offset.name = "Hide"
+dangling_group_name = "CleanupGroupDangling"
+cleanup_group_dangling = root.mmd_root.group_morphs.add()
+cleanup_group_dangling.name = dangling_group_name
+for group_morph in (cleanup_group_keep, cleanup_group_dangling):
+    dangling_offset = group_morph.data.add()
+    dangling_offset.morph_type = "vertex_morphs"
+    dangling_offset.name = empty_morph_names["vertex_morphs"]
 ensure_morph_states(root)
 
 morph_types = list(empty_morph_names)
@@ -978,7 +985,12 @@ for morph_index, morph_type in enumerate(morph_types):
     for state in root.spx_morph_states:
         state.selected = (
             state.morph_type == morph_type
-            and state.morph_name in {empty_name, nonempty_morph_names[morph_type]}
+            and state.morph_name
+            in {
+                empty_name,
+                nonempty_morph_names[morph_type],
+                dangling_group_name,
+            }
         )
     assert bpy.ops.surface_proxy.clean_selected_empty_morphs() == {"FINISHED"}
     assert getattr(root.mmd_root, morph_type).get(empty_name) is None
@@ -986,6 +998,8 @@ for morph_index, morph_type in enumerate(morph_types):
         getattr(root.mmd_root, morph_type).get(nonempty_morph_names[morph_type])
         is not None
     )
+    if morph_type == "group_morphs":
+        assert root.mmd_root.group_morphs.get(dangling_group_name) is None
     for other_type in morph_types[morph_index + 1 :]:
         assert (
             getattr(root.mmd_root, other_type).get(empty_morph_names[other_type])
