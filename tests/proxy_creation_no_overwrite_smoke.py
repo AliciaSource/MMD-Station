@@ -17,6 +17,9 @@ assert mmd_station._derived_proxy_prefix(
     ["Bone_Piao031.L", "Bone_Piao032.L"]
 ) == "Bone_Piao"
 assert mmd_station._derived_proxy_prefix(
+    ["Bone_Piao130_M", "Bone_Piao131_M"]
+) == "Bone_Piao"
+assert mmd_station._derived_proxy_prefix(
     ["后发A1.L", "后发A2.L"]
 ) == "后发A"
 assert mmd_station._derived_proxy_prefix(
@@ -49,7 +52,8 @@ hair_chains = (
     ("Bone_Hair_A1.L", "Bone_Hair_A2.L", 2.0),
     ("Bone_Hair_B1.R", "Bone_Hair_B2.R", 3.0),
 )
-for root_name, child_name, x in (*chains, *hair_chains):
+center_chain = ("Bone_Piao130_M", "Bone_Piao131_M", 4.0)
+for root_name, child_name, x in (*chains, *hair_chains, center_chain):
     root = armature_data.edit_bones.new(root_name)
     root.head = (x, 0.0, 1.0)
     root.tail = (x, 0.0, 0.5)
@@ -132,6 +136,11 @@ assert not second_proxy.select_get()
 assert first_proxy.as_pointer() == first_pointer
 assert set(first_proxy["surface_proxy_bone_names"]) == set(first_chain)
 assert set(second_proxy["surface_proxy_bone_names"]) == set(second_chain)
+
+select_chain(center_chain[:2])
+assert bpy.ops.surface_proxy.restore_proxy_from_checked_bones() == {"FINISHED"}
+center_proxy = bpy.data.objects["Bone_Piao_Surface.002"]
+assert set(center_proxy["surface_proxy_bone_names"]) == set(center_chain[:2])
 
 hair_bones = [name for chain in hair_chains for name in chain[:2]]
 select_chain(hair_bones)
