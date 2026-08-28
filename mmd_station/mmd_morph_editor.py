@@ -214,6 +214,41 @@ def _morph_states_are_current(root):
     return True
 
 
+def _morph_state_structure_is_current(root):
+    if root is None or not hasattr(root, "spx_morph_states"):
+        return False
+    live = {}
+    for morph_type in MORPH_TYPE_KEYS:
+        for morph in _morph_collection(root, morph_type):
+            uid = str(morph.get(MORPH_UID_PROPERTY, ""))
+            if not uid or uid in live:
+                return False
+            live[uid] = (morph_type, morph)
+    states = root.spx_morph_states
+    if len(states) != len(live):
+        return False
+    seen = set()
+    for state in states:
+        current = live.get(state.uid)
+        if (
+            state.uid in seen
+            or state.name != state.uid
+            or current is None
+            or current[0] != state.morph_type
+        ):
+            return False
+        seen.add(state.uid)
+    return len(seen) == len(live)
+
+
+def _refresh_morph_state_metadata(root):
+    for state in root.spx_morph_states:
+        morph = _morph_by_uid(root, state.morph_type, state.uid)
+        if morph is not None and state.morph_name != morph.name:
+            state.morph_name = morph.name
+    _sync_morph_order(root)
+
+
 def _tag_view3d_redraw():
     window_manager = getattr(bpy.context, "window_manager", None)
     if window_manager is None:
@@ -238,7 +273,10 @@ def _schedule_morph_state_refresh(root):
     def refresh():
         try:
             if root.name in bpy.data.objects and hasattr(root, "spx_morph_states"):
-                ensure_morph_states(root)
+                if _morph_state_structure_is_current(root):
+                    _refresh_morph_state_metadata(root)
+                else:
+                    ensure_morph_states(root)
         except ReferenceError:
             pass
         finally:
@@ -1455,6 +1493,14 @@ class SPX_OT_AddMorph(Operator):
         root = _find_root(context, settings)
         if root is None:
             return {"CANCELLED"}
+        states = root.spx_morph_states
+        active_uid = (
+            states[root.spx_morph_active_index].uid
+            if 0 <= root.spx_morph_active_index < len(states)
+            and states[root.spx_morph_active_index].morph_type
+            == settings.morph_editor_type
+            else ""
+        )
         morphs = _morph_collection(root, settings.morph_editor_type)
         morph = morphs.add()
         base = "新建 Morph"
@@ -1468,11 +1514,29 @@ class SPX_OT_AddMorph(Operator):
         if settings.morph_editor_type == "uv_morphs":
             morph.data_type = "VERTEX_GROUP"
         morph[MORPH_UID_PROPERTY] = uuid.uuid4().hex
+        new_uid = morph[MORPH_UID_PROPERTY]
         ensure_morph_states(root)
-        root.spx_morph_active_index = root.spx_morph_states.find(
-            morph[MORPH_UID_PROPERTY]
-        )
+        if active_uid:
+            type_states = [
+                state
+                for state in states
+                if state.morph_type == settings.morph_editor_type
+            ]
+            order = [state.uid for state in type_states if state.uid != new_uid]
+            if active_uid in order:
+                insert_at = order.index(active_uid) + 1
+                order.insert(insert_at, new_uid)
+                positions = [
+                    index
+                    for index, state in enumerate(states)
+                    if state.morph_type == settings.morph_editor_type
+                ]
+                desired_all = [state.uid for state in states]
+                for position, uid in zip(positions, order, strict=False):
+                    desired_all[position] = uid
+                _set_collection_order(states, desired_all)
         _sync_morph_order(root)
+        root.spx_morph_active_index = states.find(new_uid)
         return {"FINISHED"}
 
 
@@ -2369,8 +2433,8 @@ class SPX_OT_ApplyMaterialMorphPreset(Operator):
 
     preset: EnumProperty(
         items=(
-            ("HIDE", "隐藏", "将勾选详情行设为相加隐藏参数"),
-            ("SHOW", "显示", "将勾选详情行设为相加显示参数"),
+            ("HIDE", "隐藏", "将目标详情行设为相加隐藏参数"),
+            ("SHOW", "显示", "将目标详情行设为相加显示参数"),
         ),
         options={"HIDDEN"},
     )
@@ -2378,8 +2442,8 @@ class SPX_OT_ApplyMaterialMorphPreset(Operator):
     @classmethod
     def description(cls, _context, properties):
         if properties.preset == "HIDE":
-            return "将勾选详情行设为相加；漫射与边缘 Alpha 为 -1，其余参数为 0"
-        return "将勾选详情行设为相加；漫射与边缘 Alpha 为 1，其余参数为 0"
+            return "单个目标直接应用；多个目标将勾选详情行设为相加，漫射与边缘 Alpha 为 -1，其余参数为 0"
+        return "单个目标直接应用；多个目标将勾选详情行设为相加，漫射与边缘 Alpha 为 1，其余参数为 0"
 
     def execute(self, context):
         root = _find_root(context, context.scene.surface_proxy_creator)
@@ -2391,6 +2455,8 @@ class SPX_OT_ApplyMaterialMorphPreset(Operator):
             for data in morph.data
             if bool(getattr(data, DETAIL_SELECTED_PROPERTY, False))
         ]
+        if not selected and len(morph.data) == 1:
+            selected = [morph.data[0]]
         if not selected:
             self.report({"WARNING"}, "请先勾选 Material Morph 详情行")
             return {"CANCELLED"}
@@ -2453,6 +2519,67 @@ class SPX_OT_SelectMorphDetails(Operator):
                 setattr(target, property_name, False)
             else:
                 setattr(target, property_name, not getattr(target, property_name))
+        return {"FINISHED"}
+
+
+class SPX_OT_CollectSelectedMorphsIntoGroup(Operator):
+    bl_idname = "surface_proxy.collect_selected_morphs_into_group"
+    bl_label = "将其它 Tab 勾选 Morph 加入当前组"
+    bl_description = "将材质、UV、骨骼和顶点 Tab 中已勾选的 Morph 加入当前 Group Morph，默认权重为 1"
+    bl_options = {"REGISTER", "UNDO"}
+
+    def execute(self, context):
+        root = _find_root(context, context.scene.surface_proxy_creator)
+        if root is None or not (
+            0 <= root.spx_morph_active_index < len(root.spx_morph_states)
+        ):
+            return {"CANCELLED"}
+        active_state = root.spx_morph_states[root.spx_morph_active_index]
+        if active_state.morph_type != "group_morphs":
+            return {"CANCELLED"}
+        group_morph = _morph_by_uid(root, active_state.morph_type, active_state.uid)
+        if group_morph is None:
+            return {"CANCELLED"}
+
+        selected = []
+        for state in root.spx_morph_states:
+            if state.morph_type == "group_morphs" or not state.selected:
+                continue
+            morph = _morph_by_uid(root, state.morph_type, state.uid)
+            if morph is not None:
+                selected.append((state.morph_type, morph.name))
+        if not selected:
+            self.report({"WARNING"}, "请先在材质、UV、骨骼或顶点 Tab 勾选 Morph")
+            return {"CANCELLED"}
+
+        existing = {(data.morph_type, data.name) for data in group_morph.data}
+        candidates = [item for item in selected if item not in existing]
+        if not candidates:
+            self.report({"WARNING"}, "勾选的 Morph 已全部存在于当前 Group Morph")
+            return {"CANCELLED"}
+
+        insert_at = (
+            min(max(group_morph.active_data, 0), len(group_morph.data) - 1) + 1
+            if group_morph.data
+            else 0
+        )
+        first_inserted = insert_at
+        for morph_type, morph_name in candidates:
+            data = group_morph.data.add()
+            data.morph_type = morph_type
+            data.name = morph_name
+            data.factor = 1.0
+            source_index = len(group_morph.data) - 1
+            if source_index != insert_at:
+                group_morph.data.move(source_index, insert_at)
+            insert_at += 1
+        group_morph.active_data = first_inserted
+        evaluate_morph_root(root)
+        duplicate_count = len(selected) - len(candidates)
+        message = f"已将 {len(candidates)} 个 Morph 加入当前 Group Morph"
+        if duplicate_count:
+            message += f"；跳过 {duplicate_count} 个重复项"
+        self.report({"INFO"}, message)
         return {"FINISHED"}
 
 
@@ -2963,6 +3090,11 @@ def _draw_active_details(layout, context, root):
         _draw_bone_details(box, root, morph)
     elif state.morph_type == "group_morphs":
         _draw_offset_list(box, morph, "SPX_UL_GroupMorphOffsets")
+        box.operator(
+            SPX_OT_CollectSelectedMorphsIntoGroup.bl_idname,
+            text="将其它 Tab 勾选 Morph 加入当前组",
+            icon="IMPORT",
+        )
         if morph.data:
             data = morph.data[morph.active_data]
             box.prop(data, "morph_type", text="Morph 类型")
@@ -2987,8 +3119,9 @@ def draw_morph_editor(layout, context):
         return
     if not _morph_states_are_current(root):
         _schedule_morph_state_refresh(root)
-        layout.label(text="正在读取 Morph…", icon="TIME")
-        return
+        if not _morph_state_structure_is_current(root):
+            layout.label(text="正在读取 Morph…", icon="TIME")
+            return
     tabs = layout.row(align=True)
     tabs.prop(settings, "morph_editor_type", expand=True)
     controls = layout.row(align=True)
@@ -3192,6 +3325,7 @@ CLASSES = (
     SPX_OT_ReorderMorphOffsets,
     SPX_OT_ApplyMaterialMorphPreset,
     SPX_OT_SelectMorphDetails,
+    SPX_OT_CollectSelectedMorphsIntoGroup,
     SPX_OT_ViewUVMorph,
     SPX_OT_ClearUVMorphPreview,
     SPX_OT_SelectVertexMorphObject,

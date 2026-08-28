@@ -16,6 +16,28 @@ from bl_ext.blender_org.mmd_tools.core.model import FnModel, Model
 from mmd_station.mmd_material_order import (
     ordered_materials,
 )
+from mmd_station.mmd_physics import SPX_UL_MMDItems
+
+
+class RecordingUILayout:
+    def __init__(self, calls=None):
+        self.calls = calls if calls is not None else []
+        self.alignment = "LEFT"
+
+    def row(self, **_kwargs):
+        return RecordingUILayout(self.calls)
+
+    def split(self, **_kwargs):
+        return RecordingUILayout(self.calls)
+
+    def prop(self, owner, property_name, **kwargs):
+        self.calls.append((owner, property_name, kwargs))
+
+    def label(self, **_kwargs):
+        return None
+
+    def operator(self, *_args, **_kwargs):
+        return type("RecordedOperator", (), {})()
 
 
 def make_material(name, name_j, name_e):
@@ -87,6 +109,30 @@ assert [item.material for item in settings.browser_items] == [
     material_a,
 ]
 assert [item.order_index for item in settings.browser_items] == [0, 1, 2]
+
+# Match the Morph editor's label-like name fields: the UIList owns single-click
+# row activation, while Blender reserves text editing for double-click.
+browser_item = next(item for item in settings.browser_items if item.material == material_b)
+recording_layout = RecordingUILayout()
+SPX_UL_MMDItems.draw_item(
+    None,
+    bpy.context,
+    recording_layout,
+    settings,
+    browser_item,
+    0,
+    settings,
+    "browser_index",
+    settings.browser_index,
+)
+material_props = {
+    property_name: kwargs
+    for owner, property_name, kwargs in recording_layout.calls
+    if owner in {material_b, material_b.mmd_material}
+}
+assert material_props["name"]["emboss"] is False
+assert material_props["name_j"]["emboss"] is False
+assert "emboss" not in material_props["name_e"]
 
 # Material navigation selects the corresponding Mesh in Object Mode.
 assert bpy.ops.surface_proxy.select_mmd_item(

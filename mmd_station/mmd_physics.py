@@ -22,6 +22,7 @@ from bpy.types import Menu, Operator, PropertyGroup, UIList
 from mathutils import Euler, Matrix, Vector
 
 from .bone_physics_creator import draw as draw_bone_physics_creator
+from .collection_organization import place_mmd_objects
 from .core import ProxyBuildError, proxy_bone_name
 from .mmd_naming import (
     bone_mmd_names,
@@ -1030,6 +1031,7 @@ def create_proxy_physics(context, proxy_object, settings):
 
     rigid_group = FnModel.ensure_rigid_group_object(context, root)
     joint_group = FnModel.ensure_joint_group_object(context, root)
+    place_mmd_objects(context.scene, root, (rigid_group, joint_group))
     rigid_map = {}
     created = []
     mask = list(settings.collision_group_mask)
@@ -1077,6 +1079,7 @@ def create_proxy_physics(context, proxy_object, settings):
             len(rigid_descriptors),
         )
         created.extend(rigid_objects)
+        place_mmd_objects(context.scene, root, rigid_objects)
         for rigid, descriptor in zip(rigid_objects, rigid_descriptors):
             column, row, name, name_j, name_e, geometry, factor, dynamics_type = descriptor
             rigid = FnRigidBody.setup_rigid_body_object(
@@ -1174,6 +1177,7 @@ def create_proxy_physics(context, proxy_object, settings):
             FnModel.get_empty_display_size(root),
         )
         created.extend(joint_objects)
+        place_mmd_objects(context.scene, root, joint_objects)
         for joint, descriptor in zip(joint_objects, joint_descriptors):
             role, column, row, rigid_a, rigid_b, location, rotation, factor = descriptor
             joint_args = _joint_vectors(settings, role, factor)
@@ -1303,6 +1307,7 @@ def _reconcile_horizontal_joints(
             len(missing),
             FnModel.get_empty_display_size(root),
         )
+        place_mmd_objects(context.scene, root, (joint_group, *created))
         try:
             for joint, (column, following, row) in zip(created, missing):
                 rigid_a = rigid_map[(column, row)]
@@ -1714,8 +1719,8 @@ class SPX_UL_MMDItems(UIList):
             if material is None:
                 blender_name.label(text="材质已不存在", icon="ERROR")
                 return
-            blender_name.prop(material, "name", text="")
-            mmd_name.prop(material.mmd_material, "name_j", text="")
+            blender_name.prop(material, "name", text="", emboss=False)
+            mmd_name.prop(material.mmd_material, "name_j", text="", emboss=False)
             mmd_english_name.prop(material.mmd_material, "name_e", text="")
             operator = navigation.operator(
                 "surface_proxy.select_mmd_item",
@@ -3598,6 +3603,7 @@ class SPX_OT_CreateJointFromCheckedRigids(Operator):
                 1,
                 FnModel.get_empty_display_size(root),
             )[0]
+            place_mmd_objects(context.scene, root, (joint_group, joint))
             try:
                 location, rotation = _manual_joint_transform(
                     rigid_a,

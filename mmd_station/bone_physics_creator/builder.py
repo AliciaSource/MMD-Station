@@ -4,6 +4,7 @@ from dataclasses import dataclass
 import bpy
 from mathutils import Euler, Matrix, Vector
 
+from ..collection_organization import place_mmd_objects
 from ..mmd_naming import bone_mmd_names, normalize_mmd_indices
 from .selection import restore_bone_selection, selected_bones_from_view
 
@@ -214,6 +215,7 @@ def create_from_selected(context, settings, mode):
         selected_bones = [armature.data.bones[name] for name in selected_names]
         rigid_group = FnModel.ensure_rigid_group_object(context, root)
         joint_group = FnModel.ensure_joint_group_object(context, root)
+        place_mmd_objects(context.scene, root, (rigid_group, joint_group))
         by_bone = _rigids_by_bone(FnModel, root)
         existing_pairs = _existing_joint_pairs(FnModel, root)
         create_rigids = mode in {"FOLLOW", "PHYSICS", "COMBINED"}
@@ -244,6 +246,8 @@ def create_from_selected(context, settings, mode):
                 created_rigid_objects.append(rigid)
                 by_bone.setdefault(bone.name, []).append(rigid)
                 created_rigids += 1
+
+            place_mmd_objects(context.scene, root, created_rigid_objects)
 
         if create_joints:
             for child_bone in selected_bones:
@@ -279,6 +283,8 @@ def create_from_selected(context, settings, mode):
                 created_joint_objects.append(joint)
                 existing_pairs.add(pair)
                 created_joints += 1
+
+            place_mmd_objects(context.scene, root, created_joint_objects)
     except Exception:
         for obj in reversed(created_objects):
             if obj.name in bpy.data.objects:
