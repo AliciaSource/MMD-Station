@@ -14,6 +14,7 @@ bpy.ops.preferences.addon_enable(module="bl_ext.blender_org.mmd_tools")
 import mmd_station
 from mmd_station import mmd_morph_editor as morph_editor_module
 from bl_ext.blender_org.mmd_tools.core.model import FnModel, Model
+from mmd_station.mmd_material_order import ordered_materials, set_material_order
 from mmd_station.mmd_morph_editor import (
     DETAIL_SELECTED_PROPERTY,
     OUTPUT_BRIDGE_PROPERTY,
@@ -655,8 +656,6 @@ states = {state.morph_name: state for state in root.spx_morph_states}
 # removes shared-material duplicates, and inserts the new block after the active row.
 smart_material_a = make_material("SmartMaterialA")
 smart_material_b = make_material("SmartMaterialB")
-mesh_b.data.materials.append(smart_material_a)
-mesh_b.data.materials.append(smart_material_b)
 smart_morph = root.mmd_root.material_morphs.add()
 smart_morph.name = "SmartMaterialAdd"
 smart_anchor = smart_morph.data.add()
@@ -673,25 +672,42 @@ root.spx_morph_active_index = root.spx_morph_states.find(
 )
 for scene_object in bpy.context.selected_objects:
     scene_object.select_set(False)
+original_material_order = ordered_materials(root, FnModel)
+custom_mesh.data.materials[0] = smart_material_a
+hidden_mesh.data.materials[0] = smart_material_b
 mesh_a.select_set(True)
-mesh_b.select_set(True)
+custom_mesh.select_set(True)
+hidden_mesh.select_set(True)
 bpy.context.view_layer.objects.active = mesh_a
+set_material_order(
+    root,
+    [smart_material_b, material, smart_material_a]
+    + [
+        ordered_material
+        for ordered_material in original_material_order
+        if ordered_material not in {smart_material_b, material, smart_material_a}
+    ],
+)
 assert bpy.ops.surface_proxy.add_morph_offset() == {"FINISHED"}
 assert [data.material for data in smart_morph.data] == [
     hidden_material.name,
+    smart_material_b.name,
     material.name,
     smart_material_a.name,
-    smart_material_b.name,
     custom_material.name,
 ]
 assert [data.related_mesh for data in smart_morph.data[1:4]] == [
+    hidden_mesh.data.name,
     mesh_a.data.name,
-    mesh_b.data.name,
-    mesh_b.data.name,
+    custom_mesh.data.name,
 ]
 assert smart_morph.active_data == 1
 assert bpy.ops.surface_proxy.add_morph_offset() == {"CANCELLED"}
 assert len(smart_morph.data) == 5
+custom_mesh.data.materials[0] = custom_material
+hidden_mesh.data.materials[0] = hidden_material
+set_material_order(root, original_material_order)
+smart_morph.data.move(1, 3)
 
 # Detail interval selection fills only the rows between the first and last
 # checked endpoints and rejects a single endpoint without changing selection.
