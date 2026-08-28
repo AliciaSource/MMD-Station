@@ -71,6 +71,11 @@ from .mmd_morph_editor import draw_morph_editor
 from .mmd_morph_editor import register_services as register_morph_editor_services
 from .mmd_morph_editor import register_settings as register_morph_editor_settings
 from .mmd_morph_editor import unregister_services as unregister_morph_editor_services
+from .mmd_display_frame import CLASSES as MMD_DISPLAY_FRAME_CLASSES
+from .mmd_display_frame import draw_display_frame_editor
+from .mmd_display_frame import register_services as register_display_frame_services
+from .mmd_display_frame import register_settings as register_display_frame_settings
+from .mmd_display_frame import unregister_services as unregister_display_frame_services
 from .vertex_group_tools import CLASSES as VERTEX_GROUP_TOOL_CLASSES
 from .vertex_group_tools import register_menu as register_vertex_group_menu
 from .vertex_group_tools import unregister_menu as unregister_vertex_group_menu
@@ -85,6 +90,7 @@ class SPX_Settings(PropertyGroup):
             ("PROXY", "代理创建", "创建和编辑裙面代理、骨骼、刚体与 Joint"),
             ("BROWSER", "MMD 查看器", "查看和编辑 MMD 骨骼、刚体与 Joint"),
             ("MORPH", "Morph 编辑器", "编辑、排序、预览并为 MMD Morph 设置 Keyframe"),
+            ("DISPLAY", "显示枠", "编辑 PMX 显示枠、骨骼与 Morph 显示项"),
             ("PREVIEW", "物理预览", "使用 Rust DLL 预览 MMD 物理"),
             ("IK", "MMD IK", "创建不影响 PMX 再导出的 MMD 兼容 IK Runtime"),
         ),
@@ -1099,6 +1105,8 @@ def draw_workspace(layout, context):
         draw_browser(layout, settings)
     elif settings.workspace_tab == "MORPH":
         draw_morph_editor(layout, context)
+    elif settings.workspace_tab == "DISPLAY":
+        draw_display_frame_editor(layout, context)
     elif settings.workspace_tab == "PREVIEW":
         draw_preview(layout, settings)
     else:
@@ -1127,6 +1135,7 @@ CLASSES = (
     *MMD_ORDERING_CLASSES,
     *MMD_BONE_SUBDIVISION_CLASSES,
     *MMD_MORPH_EDITOR_CLASSES,
+    *MMD_DISPLAY_FRAME_CLASSES,
     *PHYSICS_PREVIEW_CLASSES,
     *MMD_IK_RUNTIME_CLASSES,
     *VERTEX_GROUP_TOOL_CLASSES,
@@ -1144,6 +1153,7 @@ def register():
     register_bone_subdivision_settings(SPX_Settings)
     register_mmd_ik_runtime_settings(SPX_Settings)
     register_morph_editor_settings(SPX_Settings)
+    register_display_frame_settings(SPX_Settings)
     for cls in CLASSES:
         bpy.utils.register_class(cls)
     bpy.types.Scene.surface_proxy_creator = PointerProperty(type=SPX_Settings)
@@ -1154,10 +1164,12 @@ def register():
     register_vertex_group_menu()
     register_mmd_ik_runtime_services()
     register_morph_editor_services()
+    register_display_frame_services()
 
 
 def unregister():
     unregister_material_export_hook()
+    unregister_display_frame_services()
     unregister_morph_editor_services()
     unregister_mmd_ik_runtime_services()
     unregister_preview_runtime()
