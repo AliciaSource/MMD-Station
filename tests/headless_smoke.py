@@ -5,10 +5,11 @@ import struct
 import sys
 import tempfile
 import threading
+from types import SimpleNamespace
 
 import bmesh
 import bpy
-from mathutils import Matrix, Quaternion, Vector
+from mathutils import Euler, Matrix, Quaternion, Vector
 
 
 PROJECT_ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -31,7 +32,6 @@ from mmd_skirt_proxy_creator.mmd_physics import (
     _draw_active_mmd_inspector,
     _joint_interpolation_factor,
     _mmd_browser_depsgraph_update,
-    _missing_mmd_bone_names,
     _mmd_api,
     _refresh_mmd_browser_from_changes,
     _rigid_size,
@@ -39,6 +39,8 @@ from mmd_skirt_proxy_creator.mmd_physics import (
     _segment_geometry,
     draw_physics_settings,
 )
+from mmd_skirt_proxy_creator.mmd_naming import standardized_bone_mmd_names
+from mmd_skirt_proxy_creator.mirror_physics import mirrored_name, mirrored_world_matrix
 from mmd_skirt_proxy_creator.physics_preview.ffi import (
     ABI_VERSION,
     SolverLibrary,
@@ -109,9 +111,10 @@ fitted_terminal_direction = (
 assert fitted_previous_direction.normalized().dot(
     fitted_terminal_direction.normalized()
 ) > 0.9999
-assert _missing_mmd_bone_names("后发A1.R") == ("右后发A1", "后发A1_R")
-assert _missing_mmd_bone_names("后发A1_L") == ("左后发A1", "后发A1_L")
-assert _missing_mmd_bone_names("后发A1") == ("后发A1", "后发A1")
+empty_mmd_bone = SimpleNamespace(mmd_bone=SimpleNamespace(name_j="", name_e=""))
+assert standardized_bone_mmd_names(empty_mmd_bone, "后发A1.R") == ("右后发A1", "后发A1_R")
+assert standardized_bone_mmd_names(empty_mmd_bone, "后发A1_L") == ("左后发A1", "后发A1_L")
+assert standardized_bone_mmd_names(empty_mmd_bone, "后发A1") == ("后发A1", "后发A1")
 
 
 def build_source_mesh(name="MMDProxySmokeSource"):
@@ -354,16 +357,16 @@ assert tuple(settings.spring_linear) == (0.0, 800.0, 0.0)
 assert tuple(settings.spring_linear_end) == (0.0, 250.0, 0.0)
 assert tuple(settings.spring_linear_interpolate) == (False, True, False)
 assert tuple(settings.horizontal_limit_linear_lower) == (0.0, 0.0, 0.0)
-assert tuple(round(value, 4) for value in settings.horizontal_limit_linear_upper) == (0.02, 0.0, 0.0)
+assert tuple(settings.horizontal_limit_linear_upper) == (0.0, 0.0, 0.0)
 assert tuple(settings.horizontal_limit_linear_lower_end) == (0.0, 0.0, 0.0)
-assert tuple(round(value, 4) for value in settings.horizontal_limit_linear_upper_end) == (0.03, 0.0, 0.0)
-assert tuple(settings.horizontal_limit_linear_interpolate) == (True, False, False)
+assert tuple(settings.horizontal_limit_linear_upper_end) == (0.0, 0.0, 0.0)
+assert tuple(settings.horizontal_limit_linear_interpolate) == (False, False, False)
 assert tuple(round(math.degrees(value)) for value in settings.horizontal_limit_angular_upper) == (10, 3, 5)
 assert tuple(round(math.degrees(value)) for value in settings.horizontal_limit_angular_upper_end) == (18, 5, 12)
 assert tuple(settings.horizontal_limit_angular_interpolate) == (True, True, True)
-assert tuple(settings.horizontal_spring_linear) == (120.0, 0.0, 0.0)
-assert tuple(settings.horizontal_spring_linear_end) == (40.0, 0.0, 0.0)
-assert tuple(settings.horizontal_spring_linear_interpolate) == (True, False, False)
+assert tuple(settings.horizontal_spring_linear) == (0.0, 0.0, 0.0)
+assert tuple(settings.horizontal_spring_linear_end) == (0.0, 0.0, 0.0)
+assert tuple(settings.horizontal_spring_linear_interpolate) == (False, False, False)
 assert tuple(round(value, 4) for value in settings.horizontal_spring_angular) == (0.8, 1.5, 4.0)
 assert tuple(round(value, 4) for value in settings.horizontal_spring_angular_end) == (0.25, 0.5, 1.5)
 assert SPX_OT_AddPhysicsPreset.preset_values == [
@@ -477,24 +480,40 @@ assert bpy.ops.object.mode_set(mode="EDIT") == {"FINISHED"}
 dot_side_bone = armature.data.edit_bones.new("后发测试.R")
 dot_side_bone.head = (0.0, 0.0, 2.0)
 dot_side_bone.tail = (0.0, 0.0, 2.1)
+dot_mirror_bone = armature.data.edit_bones.new("后发测试.L")
+dot_mirror_bone.head = (-0.1, 0.0, 2.0)
+dot_mirror_bone.tail = (-0.1, 0.0, 2.1)
 underscore_side_bone = armature.data.edit_bones.new("后发测试_L")
 underscore_side_bone.head = (0.1, 0.0, 2.0)
 underscore_side_bone.tail = (0.1, 0.0, 2.1)
+underscore_mirror_bone = armature.data.edit_bones.new("后发测试_R")
+underscore_mirror_bone.head = (0.2, 0.0, 2.0)
+underscore_mirror_bone.tail = (0.2, 0.0, 2.1)
+prefix_left_bone = armature.data.edit_bones.new("前缀测试A")
+prefix_left_bone.head = (0.3, 0.0, 2.0)
+prefix_left_bone.tail = (0.3, 0.0, 2.1)
+prefix_right_bone = armature.data.edit_bones.new("前缀测试B")
+prefix_right_bone.head = (0.4, 0.0, 2.0)
+prefix_right_bone.tail = (0.4, 0.0, 2.1)
 assert bpy.ops.object.mode_set(mode="OBJECT") == {"FINISHED"}
 anchor_bone = model_armature.data.bones[anchor_rigid.mmd_rigid.bone]
 assert bpy.ops.surface_proxy.refresh_mmd_browser() == {"FINISHED"}
 first_bone = armature.pose.bones["SmokeProxy_C02_R01"]
 second_bone = armature.pose.bones["SmokeProxy_C02_R02"]
 dot_side_bone = armature.pose.bones["后发测试.R"]
+dot_mirror_bone = armature.pose.bones["后发测试.L"]
 underscore_side_bone = armature.pose.bones["后发测试_L"]
+underscore_mirror_bone = armature.pose.bones["后发测试_R"]
+prefix_left_bone = armature.pose.bones["前缀测试A"]
+prefix_right_bone = armature.pose.bones["前缀测试B"]
 first_bone.mmd_bone.name_j = ""
 first_bone.mmd_bone.name_e = ""
 second_bone.mmd_bone.name_j = "保留名称"
-second_bone.mmd_bone.name_e = ""
+second_bone.mmd_bone.name_e = "PreservedName"
 dot_side_bone.mmd_bone.name_j = ""
 dot_side_bone.mmd_bone.name_e = ""
-underscore_side_bone.mmd_bone.name_j = ""
-underscore_side_bone.mmd_bone.name_e = ""
+underscore_side_bone.mmd_bone.name_j = "WrongName_R"
+underscore_side_bone.mmd_bone.name_e = "WrongName.R"
 assert bpy.ops.surface_proxy.set_mmd_browser_checks(action="NONE") == {"FINISHED"}
 for item in settings.browser_items:
     item.selected = item.target_name in {first_bone.name, dot_side_bone.name}
@@ -503,15 +522,45 @@ assert first_bone.mmd_bone.name_j == first_bone.name
 assert first_bone.mmd_bone.name_e == first_bone.name
 assert dot_side_bone.mmd_bone.name_j == "右后发测试"
 assert dot_side_bone.mmd_bone.name_e == "后发测试_R"
-assert underscore_side_bone.mmd_bone.name_j == ""
-assert underscore_side_bone.mmd_bone.name_e == ""
+assert underscore_side_bone.mmd_bone.name_j == "WrongName_R"
+assert underscore_side_bone.mmd_bone.name_e == "WrongName.R"
 assert second_bone.mmd_bone.name_j == "保留名称"
-assert second_bone.mmd_bone.name_e == ""
+assert second_bone.mmd_bone.name_e == "PreservedName"
 assert bpy.ops.surface_proxy.fill_missing_mmd_bone_names(scope="ALL") == {"FINISHED"}
 assert second_bone.mmd_bone.name_j == "保留名称"
-assert second_bone.mmd_bone.name_e == second_bone.name
+assert second_bone.mmd_bone.name_e == "PreservedName"
 assert underscore_side_bone.mmd_bone.name_j == "左后发测试"
 assert underscore_side_bone.mmd_bone.name_e == "后发测试_L"
+settings.browser_index = next(
+    index
+    for index, item in enumerate(settings.browser_items)
+    if item.target_name == dot_side_bone.name
+)
+dot_side_bone.mmd_bone.name_j = "左髪_L"
+dot_side_bone.mmd_bone.name_e = "Hair_L"
+assert bpy.ops.surface_proxy.fill_missing_mmd_bone_names(scope="ACTIVE") == {"FINISHED"}
+assert dot_side_bone.mmd_bone.name_j == "右髪"
+assert dot_side_bone.mmd_bone.name_e == "Hair_R"
+prefix_left_bone.mmd_bone.name_j = "左前缀测试"
+prefix_left_bone.mmd_bone.name_e = "PrefixTest_L"
+prefix_right_bone.mmd_bone.name_j = "右前缀测试"
+prefix_right_bone.mmd_bone.name_e = "PrefixTest_R"
+assert bpy.ops.surface_proxy.set_mmd_browser_checks(action="NONE") == {"FINISHED"}
+mirror_sources = {
+    dot_side_bone.name,
+    underscore_side_bone.name,
+    prefix_left_bone.name,
+}
+for item in settings.browser_items:
+    item.selected = item.target_name in mirror_sources
+assert bpy.ops.surface_proxy.quick_check_mmd_group(mode="MIRROR") == {"FINISHED"}
+assert {
+    item.target_name for item in settings.browser_items if item.selected
+} == mirror_sources | {
+    dot_mirror_bone.name,
+    underscore_mirror_bone.name,
+    prefix_right_bone.name,
+}
 settings.create_horizontal_joints = True
 settings.rigid_shape = "BOX"
 settings.rigid_radius_ratio = 0.2
@@ -584,7 +633,170 @@ settings.preview_frequency = 60
 settings.preview_substeps = 2
 settings.top_rigid_type = "2"
 settings.body_rigid_type = "2"
+for obj in physics_objects:
+    for key in [name for name in obj.keys() if name.startswith("surface_proxy_")]:
+        del obj[key]
+protected_rigid = rigids[0]
+protected_location = protected_rigid.location + Vector((0.12, -0.08, 0.04))
+protected_rotation = Euler((0.11, -0.22, 0.33), "XYZ")
+protected_size_input = Vector((0.31, 0.27, 0.43))
+protected_mask_input = [index in {2, 7, 11} for index in range(16)]
+protected_rigid.location = protected_location
+protected_rigid.rotation_euler = protected_rotation
+protected_rigid.mmd_rigid.shape = "SPHERE"
+protected_rigid.mmd_rigid.size = protected_size_input
+protected_rigid.mmd_rigid.type = "0"
+protected_rigid.mmd_rigid.collision_group_number = 11
+protected_rigid.mmd_rigid.collision_group_mask = protected_mask_input
+protected_rigid.rigid_body.mass = 9.25
+protected_rigid.rigid_body.friction = 0.17
+protected_rigid.rigid_body.restitution = 0.23
+protected_rigid.rigid_body.linear_damping = 0.37
+protected_rigid.rigid_body.angular_damping = 0.41
+protected_joint = joints[0]
+protected_joint.location += Vector((-0.09, 0.07, 0.13))
+protected_joint.rotation_euler = Euler((-0.14, 0.19, -0.27), "XYZ")
+protected_constraint = protected_joint.rigid_body_constraint
+protected_constraint.limit_lin_x_lower = -0.12
+protected_constraint.limit_lin_x_upper = 0.23
+protected_constraint.limit_ang_z_lower = -0.34
+protected_constraint.limit_ang_z_upper = 0.45
+protected_joint.mmd_joint.spring_linear = (7.1, 7.2, 7.3)
+protected_joint.mmd_joint.spring_angular = (8.1, 8.2, 8.3)
+bpy.context.view_layer.update()
+protected_location = protected_rigid.location.copy()
+protected_rotation = protected_rigid.rotation_euler.copy()
+protected_size = Vector(protected_rigid.mmd_rigid.size)
+protected_mask = list(protected_rigid.mmd_rigid.collision_group_mask)
+protected_joint_location = protected_joint.location.copy()
+protected_joint_rotation = protected_joint.rotation_euler.copy()
+protected_joint_limits = (
+    protected_constraint.limit_lin_x_lower,
+    protected_constraint.limit_lin_x_upper,
+    protected_constraint.limit_ang_z_lower,
+    protected_constraint.limit_ang_z_upper,
+)
+protected_joint_spring_linear = tuple(protected_joint.mmd_joint.spring_linear)
+protected_joint_spring_angular = tuple(protected_joint.mmd_joint.spring_angular)
+for name in (
+    "protect_apply_location",
+    "protect_apply_rotation",
+    "protect_apply_joint_location",
+    "protect_apply_joint_rotation",
+    "protect_apply_shape",
+    "protect_apply_size",
+    "protect_apply_type",
+    "protect_apply_dynamics",
+    "protect_apply_collision",
+    "protect_apply_joint_parameters",
+):
+    setattr(settings, name, True)
+settings.create_horizontal_joints = False
 assert bpy.ops.surface_proxy.update_mmd_physics() == {"FINISHED"}
+assert sum(
+    obj.get("surface_proxy_object") == proxy.name
+    and obj.get("surface_proxy_role") == "JOINT_HORIZONTAL"
+    for obj in bpy.data.objects
+) == expected_horizontal
+assert (protected_rigid.location - protected_location).length < 1.0e-7
+assert all(
+    abs(first - second) < 1.0e-7
+    for first, second in zip(protected_rigid.rotation_euler, protected_rotation)
+)
+assert protected_rigid.mmd_rigid.shape == "SPHERE"
+assert (Vector(protected_rigid.mmd_rigid.size) - protected_size).length < 1.0e-7
+assert int(protected_rigid.mmd_rigid.type) == 0
+assert protected_rigid.mmd_rigid.collision_group_number == 11
+assert list(protected_rigid.mmd_rigid.collision_group_mask) == protected_mask
+assert abs(protected_rigid.rigid_body.mass - 9.25) < 1.0e-7
+assert abs(protected_rigid.rigid_body.friction - 0.17) < 1.0e-7
+assert abs(protected_rigid.rigid_body.restitution - 0.23) < 1.0e-7
+assert abs(protected_rigid.rigid_body.linear_damping - 0.37) < 1.0e-7
+assert abs(protected_rigid.rigid_body.angular_damping - 0.41) < 1.0e-7
+assert (protected_joint.location - protected_joint_location).length < 1.0e-7
+assert all(
+    abs(first - second) < 1.0e-7
+    for first, second in zip(
+        protected_joint.rotation_euler,
+        protected_joint_rotation,
+    )
+)
+assert (
+    protected_constraint.limit_lin_x_lower,
+    protected_constraint.limit_lin_x_upper,
+    protected_constraint.limit_ang_z_lower,
+    protected_constraint.limit_ang_z_upper,
+) == protected_joint_limits
+assert tuple(protected_joint.mmd_joint.spring_linear) == protected_joint_spring_linear
+assert tuple(protected_joint.mmd_joint.spring_angular) == protected_joint_spring_angular
+for name in (
+    "protect_apply_location",
+    "protect_apply_rotation",
+    "protect_apply_joint_location",
+    "protect_apply_joint_rotation",
+    "protect_apply_shape",
+    "protect_apply_size",
+    "protect_apply_type",
+    "protect_apply_dynamics",
+    "protect_apply_collision",
+    "protect_apply_joint_parameters",
+):
+    setattr(settings, name, False)
+assert bpy.ops.surface_proxy.update_mmd_physics() == {"FINISHED"}
+assert not any(
+    obj.get("surface_proxy_object") == proxy.name
+    and obj.get("surface_proxy_role") == "JOINT_HORIZONTAL"
+    for obj in bpy.data.objects
+)
+assert (protected_rigid.location - protected_location).length > 1.0e-4
+assert protected_rigid.mmd_rigid.shape == "BOX"
+assert int(protected_rigid.mmd_rigid.type) == 2
+assert abs(protected_rigid.rigid_body.mass - 1.0) < 1.0e-7
+assert (protected_joint.location - protected_joint_location).length > 1.0e-4
+assert tuple(protected_joint.mmd_joint.spring_angular) != protected_joint_spring_angular
+settings.create_horizontal_joints = True
+missing_endpoint_rigid = max(
+    (
+        obj
+        for obj in rigids
+        if obj.get("surface_proxy_role") == "RIGID"
+        and int(obj.get("surface_proxy_column", -1)) == 0
+    ),
+    key=lambda obj: int(obj.get("surface_proxy_row", -1)),
+)
+missing_endpoint_bone = missing_endpoint_rigid.mmd_rigid.bone
+for key in [
+    name for name in missing_endpoint_rigid.keys() if name.startswith("surface_proxy_")
+]:
+    del missing_endpoint_rigid[key]
+missing_endpoint_rigid.mmd_rigid.bone = ""
+missing_horizontal_count = sum(
+    0 in pair
+    for pair in mmd_physics_module._column_pairs(
+        mmd_physics_module._column_groups(proxy, len(row_counts)),
+        bool(proxy.get("surface_proxy_closed", True)),
+    )
+)
+assert bpy.ops.surface_proxy.update_mmd_physics() == {"FINISHED"}
+assert sum(
+    obj.get("surface_proxy_object") == proxy.name
+    and obj.get("surface_proxy_role") == "JOINT_HORIZONTAL"
+    for obj in bpy.data.objects
+) == expected_horizontal - missing_horizontal_count
+missing_endpoint_rigid.mmd_rigid.bone = missing_endpoint_bone
+assert bpy.ops.surface_proxy.update_mmd_physics() == {"FINISHED"}
+assert sum(
+    obj.get("surface_proxy_object") == proxy.name
+    and obj.get("surface_proxy_role") == "JOINT_HORIZONTAL"
+    for obj in bpy.data.objects
+) == expected_horizontal
+physics_objects = [
+    obj
+    for obj in bpy.data.objects
+    if obj.get("surface_proxy_object") == proxy.name
+]
+rigids = [obj for obj in physics_objects if obj.mmd_type == "RIGID_BODY"]
+joints = [obj for obj in physics_objects if obj.mmd_type == "JOINT"]
 # Keep this runtime-alignment fixture above MMD's native Y=0 ground plane.
 preview_fixture_root_matrix = model_root.matrix_world.copy()
 model_root.location.z += 2.0
@@ -1232,18 +1444,96 @@ for joint in [*anchor_joints, *vertical_joints]:
 for joint in horizontal_joints:
     rigid_a = joint.rigid_body_constraint.object1
     rigid_b = joint.rigid_body_constraint.object2
-    assert (
-        joint.rotation_euler.to_quaternion().rotation_difference(
-            rigid_a.rotation_euler.to_quaternion()
-        ).angle
-        < 1.0e-6
-    )
+    horizontal_axis = joint.rotation_euler.to_matrix() @ Vector((1.0, 0.0, 0.0))
+    joint_normal = joint.rotation_euler.to_matrix() @ Vector((0.0, 1.0, 0.0))
+    connection_axis = (rigid_b.location - rigid_a.location).normalized()
+    assert abs(horizontal_axis.dot(connection_axis)) > 0.9999
+    normal_a = Vector(rigid_a["surface_proxy_normal"])
+    normal_b = Vector(rigid_b["surface_proxy_normal"])
+    if normal_a.dot(normal_b) < 0.0:
+        normal_a.negate()
+    normal_reference = (normal_a + normal_b).normalized()
+    assert joint_normal.dot(normal_reference) > 0.0
     expected_location = (rigid_a.location + rigid_b.location) * 0.5
     assert (joint.location - expected_location).length < 1.0e-6, (
         joint.name,
         tuple(joint.location),
         tuple(expected_location),
     )
+
+back_reference = SimpleNamespace(
+    get=lambda name, default=None: (
+        (0.0, 1.0, 0.0) if name == "surface_proxy_normal" else default
+    ),
+    rotation_euler=Euler((0.0, 0.0, 0.0), "XYZ"),
+)
+back_grid = [
+    [Vector((0.0, 0.0, 0.0)), Vector((0.0, 0.0, -1.0))],
+    [Vector((1.0, 0.0, 0.0)), Vector((1.0, 0.0, -1.0))],
+]
+back_rotation = mmd_physics_module._horizontal_joint_rotation(
+    back_grid,
+    0,
+    1,
+    0,
+    back_reference,
+    back_reference,
+)
+back_basis = back_rotation.to_matrix()
+assert (back_basis @ Vector((0.0, 1.0, 0.0))).dot(
+    Vector((0.0, 1.0, 0.0))
+) > 0.9999
+assert (back_basis @ Vector((0.0, 0.0, 1.0))).dot(
+    Vector((0.0, 0.0, -1.0))
+) > 0.9999
+assert back_basis.determinant() > 0.9999
+independent_axis_joint = horizontal_joints[0]
+independent_rigid_a = independent_axis_joint.rigid_body_constraint.object1
+independent_rigid_b = independent_axis_joint.rigid_body_constraint.object2
+expected_grid_rotation = independent_axis_joint.rotation_euler.copy()
+independent_rigid_a.location += Vector((0.13, -0.08, 0.06))
+independent_rigid_b.location += Vector((-0.09, 0.11, -0.04))
+independent_rigid_a.rotation_euler = Euler((0.31, -0.22, 0.47), "XYZ")
+independent_rigid_b.rotation_euler = Euler((-0.26, 0.38, -0.19), "XYZ")
+independent_axis_joint.rotation_euler = Euler((0.77, -0.61, 0.53), "XYZ")
+preserved_rigid_a_location = independent_rigid_a.location.copy()
+preserved_rigid_b_location = independent_rigid_b.location.copy()
+preserved_rigid_a_rotation = independent_rigid_a.rotation_euler.copy()
+preserved_rigid_b_rotation = independent_rigid_b.rotation_euler.copy()
+stale_joint_rotation = independent_axis_joint.rotation_euler.copy()
+settings.protect_apply_location = True
+settings.protect_apply_rotation = True
+settings.protect_apply_joint_rotation = False
+assert bpy.ops.surface_proxy.update_mmd_physics() == {"FINISHED"}
+assert (independent_rigid_a.location - preserved_rigid_a_location).length < 1.0e-7
+assert (independent_rigid_b.location - preserved_rigid_b_location).length < 1.0e-7
+assert (
+    independent_rigid_a.rotation_euler.to_quaternion().rotation_difference(
+        preserved_rigid_a_rotation.to_quaternion()
+    ).angle
+    < 1.0e-6
+)
+assert (
+    independent_rigid_b.rotation_euler.to_quaternion().rotation_difference(
+        preserved_rigid_b_rotation.to_quaternion()
+    ).angle
+    < 1.0e-6
+)
+assert (
+    independent_axis_joint.rotation_euler.to_quaternion().rotation_difference(
+        stale_joint_rotation.to_quaternion()
+    ).angle
+    > 0.1
+)
+assert (
+    independent_axis_joint.rotation_euler.to_quaternion().rotation_difference(
+        expected_grid_rotation.to_quaternion()
+    ).angle
+    < 1.0e-6
+)
+settings.protect_apply_location = False
+settings.protect_apply_rotation = False
+assert bpy.ops.surface_proxy.update_mmd_physics() == {"FINISHED"}
 checked_name_joint = vertical_joints[0]
 unchecked_name_joint = horizontal_joints[0]
 checked_rigid_b = checked_name_joint.rigid_body_constraint.object2
@@ -1283,6 +1573,60 @@ assert (
     unchecked_name_joint.mmd_joint.name_e
     == f"{unchecked_rigid_b.mmd_rigid.name_e}_H"
 )
+bone_sync_horizontal = next(
+    joint
+    for joint in horizontal_joints
+    if int(joint["surface_proxy_row"]) == 0
+)
+bone_sync_rigid = bone_sync_horizontal.rigid_body_constraint.object2
+bone_sync_plain = next(
+    joint
+    for joint in anchor_joints
+    if joint.rigid_body_constraint.object2 == bone_sync_rigid
+)
+bone_sync_bone = armature.pose.bones[bone_sync_rigid.mmd_rigid.bone]
+bone_sync_bone.mmd_bone.name_j = "同步骨"
+bone_sync_bone.mmd_bone.name_e = "SyncedBone"
+bone_sync_rigid.name = "987_StaleRigidName"
+bone_sync_rigid.mmd_rigid.name_j = "StaleRigidName"
+bone_sync_rigid.mmd_rigid.name_e = "StaleRigidName"
+settings.browser_kind = "BONE"
+settings.browser_current_proxy_only = True
+assert bpy.ops.surface_proxy.refresh_mmd_browser() == {"FINISHED"}
+assert bpy.ops.surface_proxy.set_mmd_browser_checks(action="NONE") == {"FINISHED"}
+next(
+    item
+    for item in settings.browser_items
+    if item.target_name == bone_sync_bone.name
+).selected = True
+assert bpy.ops.surface_proxy.sync_bone_names_to_rigids() == {"FINISHED"}
+assert bone_sync_rigid.name == f"987_{bone_sync_bone.name}"
+assert bone_sync_rigid.mmd_rigid.name_j == "同步骨"
+assert bone_sync_rigid.mmd_rigid.name_e == "SyncedBone"
+for joint in (bone_sync_plain, bone_sync_horizontal):
+    joint.mmd_joint.name_j = "StaleJointName"
+    joint.mmd_joint.name_e = "StaleJointName"
+for key in list(bone_sync_horizontal.keys()):
+    if key.startswith("surface_proxy_"):
+        del bone_sync_horizontal[key]
+assert bpy.ops.surface_proxy.sync_bone_names_to_joints() == {"FINISHED"}
+assert bone_sync_horizontal.get("surface_proxy_role") == "JOINT_HORIZONTAL"
+assert re.sub(r"^[0-9A-Z]{3}_", "", bone_sync_horizontal.name) == (
+    f"J.{bone_sync_bone.name}_H"
+)
+assert bone_sync_horizontal.mmd_joint.name_j == "同步骨_H"
+assert bone_sync_horizontal.mmd_joint.name_e == "SyncedBone_H"
+assert re.sub(r"^[0-9A-Z]{3}_", "", bone_sync_plain.name) == (
+    f"J.{bone_sync_bone.name}"
+)
+assert bone_sync_plain.mmd_joint.name_j == "同步骨"
+assert bone_sync_plain.mmd_joint.name_e == "SyncedBone"
+bone_sync_bone.mmd_bone.name_e = ""
+bone_sync_plain.mmd_joint.name_e = "StaleJointName"
+bone_sync_horizontal.mmd_joint.name_e = "StaleJointName"
+assert bpy.ops.surface_proxy.sync_bone_names_to_joints() == {"FINISHED"}
+assert bone_sync_plain.mmd_joint.name_e == ""
+assert bone_sync_horizontal.mmd_joint.name_e == ""
 settings.browser_current_proxy_only = False
 assert bpy.ops.surface_proxy.update_mmd_physics() == {"FINISHED"}
 max_point_count = max(row_counts)
@@ -1390,6 +1734,22 @@ assert all(tuple(obj.mmd_joint.spring_angular) == (4.0, 5.0, 6.0) for obj in ver
 assert all(tuple(obj.mmd_joint.spring_angular) == (9.0, 10.0, 11.0) for obj in horizontal_joints)
 assert (top_horizontal.location - expected_horizontal_location).length < 1.0e-6
 
+first_protection_values = {
+    "protect_apply_location": True,
+    "protect_apply_rotation": False,
+    "protect_apply_joint_location": True,
+    "protect_apply_joint_rotation": False,
+    "protect_apply_shape": True,
+    "protect_apply_size": False,
+    "protect_apply_type": True,
+    "protect_apply_dynamics": False,
+    "protect_apply_collision": True,
+    "protect_apply_joint_parameters": False,
+}
+for name, value in first_protection_values.items():
+    setattr(settings, name, value)
+assert bpy.ops.surface_proxy.update_mmd_physics() == {"FINISHED"}
+
 second_source = build_source_mesh("MMDProxySmokeSourceB")
 second_source.parent = model_root
 modifier = second_source.modifiers.new(name="MMDProxySmokeArmatureB", type="ARMATURE")
@@ -1405,8 +1765,15 @@ settings.write_weights = False
 assert bpy.ops.surface_proxy.create_skirt_proxy() == {"FINISHED"}
 second_proxy = bpy.data.objects["SmokeProxyB_Surface"]
 assert settings.physics_proxy == second_proxy
+for name in first_protection_values:
+    assert getattr(settings, name) is False
 settings.mmd_root = model_root
 settings.mass = 7.0
+second_protection_values = {
+    name: not value for name, value in first_protection_values.items()
+}
+for name, value in second_protection_values.items():
+    setattr(settings, name, value)
 assert bpy.ops.surface_proxy.create_mmd_physics() == {"FINISHED"}
 second_physics = [
     obj
@@ -1422,6 +1789,17 @@ assert all(abs(obj.rigid_body.mass - 7.0) < 1.0e-7 for obj in second_rigids)
 
 settings.physics_proxy = proxy
 assert abs(settings.mass - 2.5) < 1.0e-7
+for name, value in first_protection_values.items():
+    assert getattr(settings, name) is value
+settings.physics_proxy = second_proxy
+for name, value in second_protection_values.items():
+    assert getattr(settings, name) is value
+for name in second_protection_values:
+    setattr(settings, name, False)
+assert bpy.ops.surface_proxy.update_mmd_physics() == {"FINISHED"}
+settings.physics_proxy = proxy
+for name in first_protection_values:
+    setattr(settings, name, False)
 bpy.context.view_layer.objects.active = second_proxy
 settings.mass = 3.5
 assert bpy.ops.surface_proxy.update_mmd_physics() == {"FINISHED"}
@@ -1505,6 +1883,9 @@ class LayoutProbe:
 
     def label(self, **_kwargs):
         return None
+
+    def separator(self, **kwargs):
+        self.records.append(("__separator__", kwargs.get("factor"), None))
 
     def prop(self, data, name, **kwargs):
         assert hasattr(data, name), name
@@ -1655,7 +2036,7 @@ for physics_tab in ("BASIC", "RIGID", "VERTICAL", "HORIZONTAL"):
             for name, index, text in probe.records
             if name == "collision_group_mask"
         ]
-        assert numbered == [(index, str(index + 1)) for index in range(16)]
+        assert numbered == [(index, str(index)) for index in range(16)]
     if physics_tab == "VERTICAL":
         assert any(
             name == "adaptive_number_limit_angular_lower_0"
@@ -1676,14 +2057,14 @@ for physics_tab in ("BASIC", "RIGID", "VERTICAL", "HORIZONTAL"):
         )
 
 settings.collision_group_number = 5
-assert settings.collision_group_display == 6
+assert settings.collision_group_display == 5
 settings.collision_group_mask = [False] * 16
 assert not settings.block_same_collision_group
 settings.block_same_collision_group = True
 assert settings.collision_group_mask[5]
 assert sum(bool(value) for value in settings.collision_group_mask) == 1
 settings.collision_group_display = 5
-assert settings.collision_group_number == 4
+assert settings.collision_group_number == 5
 
 settings.browser_kind = "BONE"
 assert bpy.ops.surface_proxy.refresh_mmd_browser() == {"FINISHED"}
@@ -1911,11 +2292,182 @@ for browser_kind in ("RIGID", "JOINT"):
     assert bpy.ops.surface_proxy.refresh_mmd_browser() == {"FINISHED"}
     probe = LayoutProbe()
     original_draw_browser(probe, settings)
+    assert probe.operators.count("surface_proxy.reorder_checked_mmd_items") == 6
+    assert probe.records.count(("__separator__", 0.5, None)) == 1
     assert "surface_proxy.sync_selected_mmd_objects_to_browser" in probe.operators
     assert "surface_proxy.create_mirrored_mmd_items" in probe.operators
     assert "surface_proxy.sync_mirrored_mmd_items" in probe.operators
-    if browser_kind == "JOINT":
+    if browser_kind == "RIGID":
+        assert "surface_proxy.sync_joint_axes_from_rigids" in probe.operators
+        assert "surface_proxy.create_joint_from_checked_rigids" in probe.operators
+    else:
         assert "surface_proxy.sync_joint_names_from_rigid_b" in probe.operators
+
+settings.physics_proxy = proxy
+settings.browser_current_proxy_only = True
+settings.browser_kind = "RIGID"
+assert bpy.ops.surface_proxy.refresh_mmd_browser() == {"FINISHED"}
+
+
+def expected_manual_curve_midpoint(rigid_a, rigid_b, local_axis):
+    position_a = rigid_a.matrix_world.translation
+    position_b = rigid_b.matrix_world.translation
+    connection = position_b - position_a
+    span = connection.length
+    connection.normalize()
+    tangent_a = (
+        rigid_a.matrix_world.to_3x3().normalized() @ local_axis
+    ).normalized()
+    tangent_b = (
+        rigid_b.matrix_world.to_3x3().normalized() @ local_axis
+    ).normalized()
+    if tangent_a.dot(connection) < 0.0:
+        tangent_a.negate()
+    if tangent_b.dot(connection) < 0.0:
+        tangent_b.negate()
+    handle_a = tangent_a * span
+    handle_b = tangent_b * span
+    position = (position_a + position_b) * 0.5 + (handle_a - handle_b) * 0.125
+    tangent = (position_b - position_a) * 1.5 - (handle_a + handle_b) * 0.25
+    tangent.normalize()
+    return position, tangent
+
+
+manual_vertical_a = next(
+    rigid
+    for rigid in rigids
+    if int(rigid["surface_proxy_column"]) == 0
+    and int(rigid["surface_proxy_row"]) == 0
+)
+manual_vertical_b = next(
+    rigid
+    for rigid in rigids
+    if int(rigid["surface_proxy_column"]) == 0
+    and int(rigid["surface_proxy_row"]) == 2
+)
+assert bpy.ops.surface_proxy.set_mmd_browser_checks(action="NONE") == {"FINISHED"}
+for index, item in enumerate(settings.browser_items):
+    if item.target_name in {manual_vertical_a.name, manual_vertical_b.name}:
+        item.selected = True
+    if item.target_name == manual_vertical_b.name:
+        settings.browser_index = index
+assert bpy.ops.surface_proxy.create_joint_from_checked_rigids() == {"FINISHED"}
+manual_vertical = bpy.context.active_object
+assert manual_vertical.get("surface_proxy_manual_joint") is True
+assert manual_vertical.get("surface_proxy_role") == "JOINT_VERTICAL"
+assert manual_vertical.rigid_body_constraint.object1 == manual_vertical_a
+assert manual_vertical.rigid_body_constraint.object2 == manual_vertical_b
+expected_vertical_position, expected_vertical_tangent = expected_manual_curve_midpoint(
+    manual_vertical_a,
+    manual_vertical_b,
+    Vector((0.0, 0.0, 1.0)),
+)
+assert (
+    manual_vertical.matrix_world.translation
+    - expected_vertical_position
+).length < 1.0e-6
+manual_vertical_axis_z = (
+    manual_vertical.matrix_world.to_3x3().normalized()
+    @ Vector((0.0, 0.0, 1.0))
+).normalized()
+assert manual_vertical_axis_z.dot(expected_vertical_tangent) > 0.999999
+bpy.data.objects.remove(manual_vertical, do_unlink=True)
+
+manual_horizontal_a = next(
+    rigid
+    for rigid in rigids
+    if int(rigid["surface_proxy_column"]) == 0
+    and int(rigid["surface_proxy_row"]) == 0
+)
+manual_horizontal_b = next(
+    rigid
+    for rigid in rigids
+    if int(rigid["surface_proxy_column"]) == 2
+    and int(rigid["surface_proxy_row"]) == 2
+)
+same_orientation_matrix = manual_horizontal_a.matrix_world.copy()
+same_orientation_matrix.translation = manual_horizontal_b.matrix_world.translation
+original_horizontal_b_matrix = manual_horizontal_b.matrix_world.copy()
+manual_horizontal_b.matrix_world = same_orientation_matrix
+bpy.context.view_layer.update()
+same_orientation_location, _same_orientation_rotation = (
+    mmd_physics_module._manual_joint_transform(
+        manual_horizontal_a,
+        manual_horizontal_b,
+        "JOINT_HORIZONTAL",
+        joints[0].parent,
+    )
+)
+same_orientation_world_location = joints[0].parent.matrix_world @ same_orientation_location
+same_orientation_midpoint = (
+    manual_horizontal_a.matrix_world.translation
+    + manual_horizontal_b.matrix_world.translation
+) * 0.5
+assert (
+    same_orientation_world_location - same_orientation_midpoint
+).length < 1.0e-6
+manual_horizontal_b.matrix_world = original_horizontal_b_matrix
+bpy.context.view_layer.update()
+assert bpy.ops.surface_proxy.set_mmd_browser_checks(action="NONE") == {"FINISHED"}
+for index, item in enumerate(settings.browser_items):
+    if item.target_name in {manual_horizontal_a.name, manual_horizontal_b.name}:
+        item.selected = True
+    if item.target_name == manual_horizontal_b.name:
+        settings.browser_index = index
+assert bpy.ops.surface_proxy.create_joint_from_checked_rigids() == {"FINISHED"}
+manual_horizontal = bpy.context.active_object
+manual_horizontal_name = manual_horizontal.name
+assert manual_horizontal.get("surface_proxy_manual_joint") is True
+assert manual_horizontal.get("surface_proxy_role") == "JOINT_HORIZONTAL"
+assert manual_horizontal.rigid_body_constraint.object1 == manual_horizontal_a
+assert manual_horizontal.rigid_body_constraint.object2 == manual_horizontal_b
+assert manual_horizontal.mmd_joint.name_j.endswith("_H")
+manual_horizontal.location += Vector((0.31, -0.27, 0.19))
+manual_horizontal.rotation_euler = Euler((0.8, -0.6, 0.4), "YXZ")
+assert bpy.ops.surface_proxy.update_mmd_physics() == {"FINISHED"}
+assert manual_horizontal_name in bpy.data.objects
+manual_horizontal = bpy.data.objects[manual_horizontal_name]
+expected_manual_midpoint = (
+    manual_horizontal_a.matrix_world.translation
+    + manual_horizontal_b.matrix_world.translation
+) * 0.5
+expected_manual_position, expected_manual_tangent = expected_manual_curve_midpoint(
+    manual_horizontal_a,
+    manual_horizontal_b,
+    Vector((1.0, 0.0, 0.0)),
+)
+assert (
+    manual_horizontal.matrix_world.translation - expected_manual_position
+).length < 1.0e-6
+assert (expected_manual_position - expected_manual_midpoint).length > 1.0e-5
+manual_connection = (
+    manual_horizontal_b.matrix_world.translation
+    - manual_horizontal_a.matrix_world.translation
+).normalized()
+manual_axis_x = (
+    manual_horizontal.matrix_world.to_3x3().normalized()
+    @ Vector((1.0, 0.0, 0.0))
+).normalized()
+manual_axis_y = (
+    manual_horizontal.matrix_world.to_3x3().normalized()
+    @ Vector((0.0, 1.0, 0.0))
+).normalized()
+manual_b_axis_y = (
+    manual_horizontal_b.matrix_world.to_3x3().normalized()
+    @ Vector((0.0, 1.0, 0.0))
+).normalized()
+assert manual_axis_x.dot(expected_manual_tangent) > 0.999999
+assert manual_axis_x.dot(manual_connection) > 0.0
+assert abs(manual_axis_y.dot(manual_axis_x)) < 1.0e-6
+assert manual_axis_y.dot(manual_b_axis_y) > 0.0
+assert sum(
+    obj.get("surface_proxy_role") == "JOINT_HORIZONTAL"
+    and not obj.get("surface_proxy_manual_joint")
+    for obj in bpy.data.objects
+    if obj.get("surface_proxy_object") == proxy.name
+) == expected_horizontal
+bpy.data.objects.remove(manual_horizontal, do_unlink=True)
+settings.browser_current_proxy_only = False
 
 for kind, expected in (
     ("BONE", len(model_armature.data.bones)),
@@ -2341,6 +2893,74 @@ assert mirror_right_rigid.mmd_rigid.name_j.startswith("右")
 assert mirror_right_rigid.mmd_rigid.name_e.endswith("_R")
 assert all(re.match(r"^\d{3}_", obj.name) for obj in mirror_rigids)
 assert all(re.match(r"^\d{3}_J\.", obj.name) for obj in mirror_joints)
+mirror_left_joint = next(
+    joint
+    for joint in mirror_joints
+    if joint.rigid_body_constraint.object2.mmd_rigid.bone.endswith(".L")
+)
+mirror_left_rigid = mirror_left_joint.rigid_body_constraint.object2
+mirror_right_rigid = next(
+    rigid
+    for rigid in mirror_rigids
+    if rigid.mmd_rigid.bone == mirrored_name(mirror_left_rigid.mmd_rigid.bone)
+)
+mirror_right_joint = next(
+    joint
+    for joint in mirror_joints
+    if joint.rigid_body_constraint.object2 == mirror_right_rigid
+    and joint.mmd_joint.name_e == mirrored_name(mirror_left_joint.mmd_joint.name_e)
+)
+mirror_left_joint_location = mirror_left_joint.matrix_world.translation.copy()
+mirror_left_rigid.rotation_euler = Euler((0.41, -0.28, 0.73), "YXZ")
+bpy.context.view_layer.update()
+settings.browser_kind = "RIGID"
+settings.browser_current_proxy_only = False
+assert bpy.ops.surface_proxy.refresh_mmd_browser() == {"FINISHED"}
+assert bpy.ops.surface_proxy.set_mmd_browser_checks(action="NONE") == {"FINISHED"}
+next(
+    item for item in settings.browser_items if item.target_name == mirror_left_rigid.name
+).selected = True
+assert bpy.ops.surface_proxy.quick_check_mmd_group(mode="MIRROR") == {"FINISHED"}
+assert {
+    item.target_name for item in settings.browser_items if item.selected
+} == {mirror_left_rigid.name, mirror_right_rigid.name}
+assert bpy.ops.surface_proxy.set_mmd_browser_checks(action="NONE") == {"FINISHED"}
+next(
+    item for item in settings.browser_items if item.target_name == mirror_left_rigid.name
+).selected = True
+assert bpy.ops.surface_proxy.sync_joint_axes_from_rigids() == {"FINISHED"}
+assert (mirror_left_joint.matrix_world.translation - mirror_left_joint_location).length < 1.0e-7
+left_joint_axes = mirror_left_joint.matrix_world.to_3x3().normalized()
+left_rigid_axes = mirror_left_rigid.matrix_world.to_3x3().normalized()
+assert max(
+    abs(left_joint_axes[row][column] - left_rigid_axes[row][column])
+    for row in range(3)
+    for column in range(3)
+) < 1.0e-6
+settings.mirror_include_joints = True
+assert bpy.ops.surface_proxy.sync_mirrored_mmd_items() == {"FINISHED"}
+expected_right_rigid = mirrored_world_matrix(mirror_left_rigid, model_armature)
+expected_right_joint = mirrored_world_matrix(mirror_left_joint, model_armature)
+assert max(
+    abs(mirror_right_rigid.matrix_world[row][column] - expected_right_rigid[row][column])
+    for row in range(4)
+    for column in range(4)
+) < 1.0e-6
+assert max(
+    abs(mirror_right_joint.matrix_world[row][column] - expected_right_joint[row][column])
+    for row in range(4)
+    for column in range(4)
+) < 1.0e-6
+settings.browser_kind = "JOINT"
+assert bpy.ops.surface_proxy.refresh_mmd_browser() == {"FINISHED"}
+assert bpy.ops.surface_proxy.set_mmd_browser_checks(action="NONE") == {"FINISHED"}
+next(
+    item for item in settings.browser_items if item.target_name == mirror_left_joint.name
+).selected = True
+assert bpy.ops.surface_proxy.quick_check_mmd_group(mode="MIRROR") == {"FINISHED"}
+assert {
+    item.target_name for item in settings.browser_items if item.selected
+} == {mirror_left_joint.name, mirror_right_joint.name}
 assert bpy.ops.surface_proxy.rebind_proxy_weights() == {"FINISHED"}
 for vertex in mirror_source.data.vertices[:mirror_side_size]:
     names = {
@@ -2501,6 +3121,36 @@ proxy_sync._load_proxy_identity = lambda _unused: (_ for _ in ()).throw(
 assert proxy_sync._initialize_proxy_services() == 0.1
 proxy_sync._load_proxy_identity = original_load_proxy_identity
 assert proxy_sync._initialize_proxy_services() is None
+
+line_old_bone_names = list(line_proxy["surface_proxy_bone_names"])
+line_new_bone_names = []
+for index, old_name in enumerate(line_old_bone_names):
+    bone = model_armature.data.bones[old_name]
+    bone.name = f"RenamedLineBone{index + 1:02d}"
+    line_new_bone_names.append(bone.name)
+assert list(line_proxy["surface_proxy_bone_names"]) == line_old_bone_names
+recovered_armature, recovered_prefix, recovered_rows, recovered_map = (
+    proxy_sync.identify_proxy(line_proxy)
+)
+assert recovered_armature == model_armature
+assert recovered_prefix == "LineProxy"
+assert recovered_rows == line_rows
+assert recovered_map == line_vertex_map
+assert list(line_proxy["surface_proxy_bone_names"]) == line_new_bone_names
+second_recovered_armature, second_recovered_prefix, second_recovered_rows, second_recovered_map = (
+    proxy_sync.identify_proxy(line_proxy)
+)
+assert second_recovered_armature == model_armature
+assert second_recovered_prefix == "LineProxy"
+assert second_recovered_rows == line_rows
+assert second_recovered_map == line_vertex_map
+recovered_middle_bone = model_armature.data.bones[
+    line_new_bone_names[line_middle_row]
+]
+recovered_middle_head = recovered_middle_bone.head_local.copy()
+line_proxy.data.vertices[line_vertex_map[line_middle_row]].co.x += 0.05
+assert proxy_sync.sync_proxy_bones(bpy.context, line_proxy) == len(line_new_bone_names)
+assert (recovered_middle_bone.head_local - recovered_middle_head).length > 0.04
 
 settings.browser_items.clear()
 for bone in model_armature.data.bones:

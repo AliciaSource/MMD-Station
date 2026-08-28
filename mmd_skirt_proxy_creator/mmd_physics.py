@@ -15,6 +15,7 @@ from bpy.props import (
     FloatProperty,
     FloatVectorProperty,
     IntProperty,
+    PointerProperty,
     StringProperty,
 )
 from bpy.types import Menu, Operator, PropertyGroup, UIList
@@ -27,9 +28,32 @@ from .mmd_naming import (
     normalize_mmd_indices,
     normalized_mmd_names,
     set_ordered_object_name,
+    standardized_bone_mmd_names,
 )
 from .mmd_ordering import draw as draw_mmd_ordering
-from .mirror_physics import CLASSES as MIRROR_PHYSICS_CLASSES, draw_mirror_tools
+from .mmd_bone_subdivision import draw as draw_mmd_bone_subdivision
+from .mmd_rigid_scale import (
+    bake_rigid_object_scale,
+    rigid_object_scale_needs_bake,
+    rigid_scale_repair_plan,
+    rigid_world_scale_is_invalid,
+)
+from .mmd_material_order import (
+    draw_name_sync as draw_material_name_sync,
+    material_identity,
+    ordered_materials,
+    register_export_hook as register_material_export_hook,
+)
+from .mirror_physics import (
+    CLASSES as MIRROR_PHYSICS_CLASSES,
+    _find_mirror_joint,
+    _find_mirror_rigid,
+    _joint_endpoints,
+    _side,
+    _source_side,
+    draw_mirror_tools,
+    mirrored_name,
+)
 
 
 PHYSICS_SCHEMA = 1
@@ -129,6 +153,21 @@ PHYSICS_SETTING_NAMES += (
     "rigid_radius_multiply",
     "rigid_length_multiply",
 )
+
+APPLY_PROTECTION_SETTING_NAMES = (
+    "protect_apply_location",
+    "protect_apply_rotation",
+    "protect_apply_joint_location",
+    "protect_apply_joint_rotation",
+    "protect_apply_shape",
+    "protect_apply_size",
+    "protect_apply_type",
+    "protect_apply_dynamics",
+    "protect_apply_collision",
+    "protect_apply_joint_parameters",
+)
+
+PROXY_PHYSICS_SETTING_NAMES = PHYSICS_SETTING_NAMES + APPLY_PROTECTION_SETTING_NAMES
 
 PHYSICS_PRESET_SUBDIR = "mmd_skirt_proxy_creator/physics"
 AUTO_RIGID_WIDTH_HALF_SPAN = 0.55
@@ -266,7 +305,7 @@ def _physics_setting_key(name):
 
 
 def _save_proxy_physics_settings(proxy_object, settings):
-    for name in PHYSICS_SETTING_NAMES:
+    for name in PROXY_PHYSICS_SETTING_NAMES:
         value = getattr(settings, name)
         if hasattr(value, "to_list"):
             value = value.to_list()
@@ -278,7 +317,7 @@ def _save_proxy_physics_settings(proxy_object, settings):
 def _load_proxy_physics_settings(settings, proxy_object):
     if proxy_object is None:
         return
-    for name in PHYSICS_SETTING_NAMES:
+    for name in PROXY_PHYSICS_SETTING_NAMES:
         key = _physics_setting_key(name)
         legacy_key = f"surface_proxy_physics_setting_{name}"
         if key in proxy_object:
@@ -500,6 +539,134 @@ def _horizontal_joint_location(grid, column, following, row):
         + grid[following][row]
         + grid[following][row + 1]
     ) * 0.25
+
+
+def _horizontal_joint_rotation(
+    grid,
+    column,
+    following,
+    row,
+    rigid_a=None,
+    rigid_b=None,
+):
+    midpoint_a = (grid[column][row] + grid[column][row + 1]) * 0.5
+    midpoint_b = (grid[following][row] + grid[following][row + 1]) * 0.5
+    horizontal = midpoint_b - midpoint_a
+    if horizontal.length <= 1.0e-8:
+        raise ProxyBuildError(
+            f"代理第 {column + 1} 列与第 {following + 1} 列的横 Joint 间距为零"
+        )
+    horizontal.normalize()
+
+    vertical = (
+        grid[column][row + 1]
+        - grid[column][row]
+        + grid[following][row + 1]
+        - grid[following][row]
+    ) * 0.5
+    vertical -= horizontal * vertical.dot(horizontal)
+    if vertical.length <= 1.0e-8:
+        vertical = horizontal.orthogonal()
+    vertical.normalize()
+    normal = vertical.cross(horizontal)
+    normal.normalize()
+
+    references = []
+    for rigid in (rigid_a, rigid_b):
+        if rigid is None:
+            continue
+        stored_value = rigid.get("surface_proxy_normal")
+        stored = (
+            Vector(stored_value)
+            if stored_value is not None and len(stored_value) == 3
+            else Vector((0.0, 0.0, 0.0))
+        )
+        if stored.length <= 1.0e-8:
+            stored = rigid.rotation_euler.to_matrix() @ Vector((0.0, 1.0, 0.0))
+        stored -= vertical * stored.dot(vertical)
+        if stored.length > 1.0e-8:
+            stored.normalize()
+            references.append(stored)
+    if references:
+        reference = references[-1].copy()
+        for candidate in references[:-1]:
+            if candidate.dot(reference) < 0.0:
+                candidate = -candidate
+            reference += candidate
+        if reference.length > 1.0e-8 and normal.dot(reference) < 0.0:
+            horizontal.negate()
+            normal.negate()
+    return Matrix((horizontal, normal, vertical)).transposed().to_euler("YXZ")
+
+
+def _manual_joint_transform(rigid_a, rigid_b, role, parent):
+    position_a = rigid_a.matrix_world.translation
+    position_b = rigid_b.matrix_world.translation
+    connection = position_b - position_a
+    span = connection.length
+    if span <= 1.0e-8:
+        raise ProxyBuildError("两个刚体的位置重合，无法计算 Joint 轴线")
+    connection.normalize()
+
+    orientation_a = rigid_a.matrix_world.to_3x3().normalized()
+    orientation_b = rigid_b.matrix_world.to_3x3().normalized()
+    tangent_axis = (
+        Vector((1.0, 0.0, 0.0))
+        if role == "JOINT_HORIZONTAL"
+        else Vector((0.0, 0.0, 1.0))
+    )
+    tangent_a = (orientation_a @ tangent_axis).normalized()
+    tangent_b = (orientation_b @ tangent_axis).normalized()
+    if tangent_a.dot(connection) < 0.0:
+        tangent_a.negate()
+    if tangent_b.dot(connection) < 0.0:
+        tangent_b.negate()
+    handle_a = tangent_a * span
+    handle_b = tangent_b * span
+    curve_position = (
+        (position_a + position_b) * 0.5
+        + (handle_a - handle_b) * 0.125
+    )
+    curve_tangent = (
+        (position_b - position_a) * 1.5
+        - (handle_a + handle_b) * 0.25
+    )
+    if curve_tangent.length <= 1.0e-8:
+        curve_tangent = connection
+    curve_tangent.normalize()
+
+    normal_a = orientation_a @ Vector((0.0, 1.0, 0.0))
+    normal_b = orientation_b @ Vector((0.0, 1.0, 0.0))
+    if normal_a.dot(normal_b) < 0.0:
+        normal_a.negate()
+
+    normal = normal_a + normal_b
+    candidates = (
+        normal,
+        normal_b,
+        orientation_b @ Vector((1.0, 0.0, 0.0)),
+        orientation_b @ Vector((0.0, 0.0, 1.0)),
+    )
+    for candidate in candidates:
+        normal = candidate - curve_tangent * candidate.dot(curve_tangent)
+        if normal.length > 1.0e-8:
+            break
+    else:
+        normal = curve_tangent.orthogonal()
+    normal.normalize()
+
+    if role == "JOINT_HORIZONTAL":
+        axis_x = curve_tangent
+        axis_y = normal
+        axis_z = axis_x.cross(axis_y).normalized()
+    else:
+        axis_z = curve_tangent
+        axis_y = normal
+        axis_x = axis_y.cross(axis_z).normalized()
+    world_matrix = Matrix((axis_x, axis_y, axis_z)).transposed().to_4x4()
+    world_matrix.translation = curve_position
+    local_matrix = parent.matrix_world.inverted_safe() @ world_matrix
+    return local_matrix.to_translation(), local_matrix.to_euler("YXZ")
 
 
 def _joint_names_from_rigid_b(rigid_b, role):
@@ -762,14 +929,14 @@ def _apply_stable_long_skirt_preset(settings):
         "spring_linear": (0.0, 800.0, 0.0),
         "spring_angular": (12.0, 5.0, 5.0),
         "horizontal_limit_linear_lower": (0.0, 0.0, 0.0),
-        "horizontal_limit_linear_upper": (0.02, 0.0, 0.0),
+        "horizontal_limit_linear_upper": (0.0, 0.0, 0.0),
         "horizontal_limit_angular_lower": tuple(
             math.radians(value) for value in (-10.0, -3.0, -5.0)
         ),
         "horizontal_limit_angular_upper": tuple(
             math.radians(value) for value in (10.0, 3.0, 5.0)
         ),
-        "horizontal_spring_linear": (120.0, 0.0, 0.0),
+        "horizontal_spring_linear": (0.0, 0.0, 0.0),
         "horizontal_spring_angular": (0.8, 1.5, 4.0),
     }
     joint_end_values = {
@@ -784,14 +951,14 @@ def _apply_stable_long_skirt_preset(settings):
         "spring_linear": (0.0, 250.0, 0.0),
         "spring_angular": (4.0, 2.0, 2.0),
         "horizontal_limit_linear_lower": (0.0, 0.0, 0.0),
-        "horizontal_limit_linear_upper": (0.03, 0.0, 0.0),
+        "horizontal_limit_linear_upper": (0.0, 0.0, 0.0),
         "horizontal_limit_angular_lower": tuple(
             math.radians(value) for value in (-18.0, -5.0, -12.0)
         ),
         "horizontal_limit_angular_upper": tuple(
             math.radians(value) for value in (18.0, 5.0, 12.0)
         ),
-        "horizontal_spring_linear": (40.0, 0.0, 0.0),
+        "horizontal_spring_linear": (0.0, 0.0, 0.0),
         "horizontal_spring_angular": (0.25, 0.5, 1.5),
     }
     for name, value in joint_values.items():
@@ -802,9 +969,9 @@ def _apply_stable_long_skirt_preset(settings):
         "limit_angular": (True, False, False),
         "spring_linear": (False, True, False),
         "spring_angular": (True, True, True),
-        "horizontal_limit_linear": (True, False, False),
+        "horizontal_limit_linear": (False, False, False),
         "horizontal_limit_angular": (True, True, True),
-        "horizontal_spring_linear": (True, False, False),
+        "horizontal_spring_linear": (False, False, False),
         "horizontal_spring_angular": (True, True, True),
     }
     for name, value in joint_interpolation.items():
@@ -978,18 +1145,24 @@ def create_proxy_physics(context, proxy_object, settings):
             for column, following in _column_pairs(column_groups, closed):
                 shared_bones = min(row_counts[column], row_counts[following]) - 1
                 for row in range(shared_bones):
-                    geometry = _segment_geometry(
-                        grid, column, row, closed, column_groups
-                    )
+                    rigid_a = rigid_map[(column, row)]
+                    rigid_b = rigid_map[(following, row)]
                     joint_descriptors.append(
                         (
                             "JOINT_HORIZONTAL",
                             column,
                             row,
-                            rigid_map[(column, row)],
-                            rigid_map[(following, row)],
+                            rigid_a,
+                            rigid_b,
                             _horizontal_joint_location(grid, column, following, row),
-                            geometry["rotation"],
+                            _horizontal_joint_rotation(
+                                grid,
+                                column,
+                                following,
+                                row,
+                                rigid_a,
+                                rigid_b,
+                            ),
                             _rigid_interpolation_factor(row, row_counts),
                         )
                     )
@@ -1048,11 +1221,154 @@ def create_proxy_physics(context, proxy_object, settings):
     return len(rigid_map), len(joint_descriptors)
 
 
+def _joint_apply_protected(settings):
+    return any(
+        getattr(settings, name)
+        for name in (
+            "protect_apply_joint_location",
+            "protect_apply_joint_rotation",
+            "protect_apply_joint_parameters",
+        )
+    )
+
+
+def _reconcile_horizontal_joints(
+    context,
+    proxy_object,
+    root,
+    FnModel,
+    FnRigidBody,
+    objects,
+    grid,
+    row_counts,
+    column_groups,
+    closed,
+    settings,
+):
+    if _joint_apply_protected(settings):
+        return objects, 0, 0, 0
+
+    rigid_map = {
+        (
+            int(obj.get("surface_proxy_column", -1)),
+            int(obj.get("surface_proxy_row", -1)),
+        ): obj
+        for obj in objects
+        if obj.get("surface_proxy_role") == "RIGID"
+    }
+    desired = {}
+    unavailable = set()
+    if settings.create_horizontal_joints:
+        for column, following in _column_pairs(column_groups, closed):
+            shared_bones = min(row_counts[column], row_counts[following]) - 1
+            for row in range(shared_bones):
+                key = (column, following, row)
+                if (
+                    (column, row) not in rigid_map
+                    or (following, row) not in rigid_map
+                ):
+                    unavailable.add(key)
+                else:
+                    desired[key] = None
+    existing = {}
+    remove = []
+    for obj in objects:
+        if obj.get("surface_proxy_role") != "JOINT_HORIZONTAL":
+            continue
+        if obj.get("surface_proxy_manual_joint"):
+            continue
+        column = int(obj.get("surface_proxy_column", -1))
+        row = int(obj.get("surface_proxy_row", -1))
+        following = int(
+            obj.get(
+                "surface_proxy_following_column",
+                _following_column(column_groups, column, closed),
+            )
+        )
+        key = (column, following, row)
+        if key in unavailable:
+            continue
+        if key in desired and key not in existing:
+            existing[key] = obj
+        else:
+            remove.append(obj)
+
+    missing = [key for key in desired if key not in existing]
+    created = []
+    if missing:
+        joint_group = FnModel.ensure_joint_group_object(context, root)
+        created = FnRigidBody.new_joint_objects(
+            context,
+            joint_group,
+            len(missing),
+            FnModel.get_empty_display_size(root),
+        )
+        try:
+            for joint, (column, following, row) in zip(created, missing):
+                rigid_a = rigid_map[(column, row)]
+                rigid_b = rigid_map[(following, row)]
+                factor = _rigid_interpolation_factor(row, row_counts)
+                joint_args = _joint_vectors(settings, "JOINT_HORIZONTAL", factor)
+                joint_name, joint_name_e = _joint_names_from_rigid_b(
+                    rigid_b,
+                    "JOINT_HORIZONTAL",
+                )
+                FnRigidBody.setup_joint_object(
+                    obj=joint,
+                    name=joint_name,
+                    name_e=joint_name_e,
+                    location=_horizontal_joint_location(
+                        grid,
+                        column,
+                        following,
+                        row,
+                    ),
+                    rotation=_horizontal_joint_rotation(
+                        grid,
+                        column,
+                        following,
+                        row,
+                        rigid_a,
+                        rigid_b,
+                    ),
+                    rigid_a=rigid_a,
+                    rigid_b=rigid_b,
+                    maximum_location=joint_args[0],
+                    minimum_location=joint_args[1],
+                    maximum_rotation=joint_args[2],
+                    minimum_rotation=joint_args[3],
+                    spring_angular=joint_args[4],
+                    spring_linear=joint_args[5],
+                )
+                _mark_physics_object(
+                    joint,
+                    proxy_object,
+                    "JOINT_HORIZONTAL",
+                    column,
+                    row,
+                )
+                joint["surface_proxy_following_column"] = following
+        except Exception:
+            for joint in created:
+                if joint.name in bpy.data.objects:
+                    bpy.data.objects.remove(joint, do_unlink=True)
+            raise
+
+    current = [obj for obj in objects if obj not in remove]
+    for joint in remove:
+        if joint.name in bpy.data.objects:
+            bpy.data.objects.remove(joint, do_unlink=True)
+    if created or remove:
+        normalize_mmd_indices(root, FnModel, kinds=("JOINT",))
+    current.extend(created)
+    return current, len(created), len(remove), len(unavailable)
+
+
 def update_proxy_physics(context, proxy_object, settings):
     armature = _proxy_armature(proxy_object)
     prefix, row_counts = _proxy_structure(proxy_object, armature)
     root = _resolve_root(context, settings.mmd_root, proxy_object)
-    FnModel, _FnRigidBody, _rigid_module = _mmd_api()
+    FnModel, FnRigidBody, _rigid_module = _mmd_api()
     if FnModel.find_armature_object(root) != armature:
         raise ProxyBuildError("代理 Armature 不属于指定的 MMD 模型")
     objects = _proxy_physics_objects(proxy_object)
@@ -1061,6 +1377,24 @@ def update_proxy_physics(context, proxy_object, settings):
     closed = bool(proxy_object.get("surface_proxy_closed", True))
     grid = _proxy_grid(proxy_object, armature, row_counts)
     column_groups = _column_groups(proxy_object, len(row_counts))
+    (
+        objects,
+        horizontal_created,
+        horizontal_removed,
+        horizontal_skipped,
+    ) = _reconcile_horizontal_joints(
+        context,
+        proxy_object,
+        root,
+        FnModel,
+        FnRigidBody,
+        objects,
+        grid,
+        row_counts,
+        column_groups,
+        closed,
+        settings,
+    )
     rigid_count = 0
     joint_count = 0
     for obj in objects:
@@ -1075,36 +1409,62 @@ def update_proxy_physics(context, proxy_object, settings):
             geometry = _segment_geometry(
                 grid, column, row, closed, column_groups
             )
-            obj.location = geometry["location"]
-            obj.rotation_euler = geometry["rotation"]
-            obj.mmd_rigid.shape = settings.rigid_shape
-            obj.mmd_rigid.size = _rigid_size(settings.rigid_shape, geometry, settings, factor)
-            obj.mmd_rigid.type = (
-                settings.top_rigid_type if row == 0 else settings.body_rigid_type
-            )
-            obj.mmd_rigid.collision_group_number = settings.collision_group_number
-            obj.mmd_rigid.collision_group_mask = list(settings.collision_group_mask)
-            obj.rigid_body.mass = _interpolated_scalar(settings, "mass", factor)
-            obj.rigid_body.friction = _interpolated_scalar(
-                settings, "friction", factor
-            )
-            obj.rigid_body.restitution = _interpolated_scalar(
-                settings, "restitution", factor
-            )
-            obj.rigid_body.linear_damping = _interpolated_scalar(
-                settings, "linear_damping", factor
-            )
-            obj.rigid_body.angular_damping = _interpolated_scalar(
-                settings, "angular_damping", factor
-            )
+            if not settings.protect_apply_location:
+                obj.location = geometry["location"]
+            if not settings.protect_apply_rotation:
+                obj.rotation_euler = geometry["rotation"]
+            if not settings.protect_apply_shape:
+                obj.mmd_rigid.shape = settings.rigid_shape
+            if not settings.protect_apply_size:
+                obj.mmd_rigid.size = _rigid_size(
+                    settings.rigid_shape,
+                    geometry,
+                    settings,
+                    factor,
+                )
+            if not settings.protect_apply_type:
+                obj.mmd_rigid.type = (
+                    settings.top_rigid_type
+                    if row == 0
+                    else settings.body_rigid_type
+                )
+            if not settings.protect_apply_collision:
+                obj.mmd_rigid.collision_group_number = (
+                    settings.collision_group_number
+                )
+                obj.mmd_rigid.collision_group_mask = list(
+                    settings.collision_group_mask
+                )
+            if not settings.protect_apply_dynamics:
+                obj.rigid_body.mass = _interpolated_scalar(
+                    settings, "mass", factor
+                )
+                obj.rigid_body.friction = _interpolated_scalar(
+                    settings, "friction", factor
+                )
+                obj.rigid_body.restitution = _interpolated_scalar(
+                    settings, "restitution", factor
+                )
+                obj.rigid_body.linear_damping = _interpolated_scalar(
+                    settings, "linear_damping", factor
+                )
+                obj.rigid_body.angular_damping = _interpolated_scalar(
+                    settings, "angular_damping", factor
+                )
             if abs(float(obj.get("surface_proxy_bone_length", 0.0)) - geometry["length"]) > 1.0e-8:
                 obj["surface_proxy_bone_length"] = geometry["length"]
             stored_normal = Vector(obj.get("surface_proxy_normal", geometry["normal"]))
-            if (stored_normal - geometry["normal"]).length > 1.0e-8:
+            if (
+                "surface_proxy_normal" not in obj
+                or (stored_normal - geometry["normal"]).length > 1.0e-8
+            ):
                 obj["surface_proxy_normal"] = list(geometry["normal"])
             rigid_count += 1
         elif role.startswith("JOINT_"):
-            if role in {"JOINT_ANCHOR", "JOINT_VERTICAL"}:
+            manual_joint = bool(obj.get("surface_proxy_manual_joint"))
+            if manual_joint:
+                factor = float(obj.get("surface_proxy_manual_joint_factor", 0.0))
+            elif role in {"JOINT_ANCHOR", "JOINT_VERTICAL"}:
                 factor = (
                     0.0
                     if role == "JOINT_ANCHOR"
@@ -1123,15 +1483,33 @@ def update_proxy_physics(context, proxy_object, settings):
                 factor = _rigid_interpolation_factor(row, row_counts)
             joint_args = _joint_vectors(settings, role, factor)
             constraint = obj.rigid_body_constraint
-            if role in {"JOINT_ANCHOR", "JOINT_VERTICAL"}:
+            if (
+                manual_joint
+                and constraint is not None
+                and constraint.object1 is not None
+                and constraint.object2 is not None
+            ):
+                location, rotation = _manual_joint_transform(
+                    constraint.object1,
+                    constraint.object2,
+                    role,
+                    obj.parent,
+                )
+                if not settings.protect_apply_joint_location:
+                    obj.location = location
+                if not settings.protect_apply_joint_rotation:
+                    obj.rotation_euler = rotation
+            elif role in {"JOINT_ANCHOR", "JOINT_VERTICAL"}:
                 name = proxy_bone_name(proxy_object, prefix, column, row)
                 if armature.data.bones.get(name) is None:
                     raise ProxyBuildError(f"缺少代理骨骼：{name}")
                 geometry = _segment_geometry(
                     grid, column, row, closed, column_groups
                 )
-                obj.location = grid[column][row]
-                obj.rotation_euler = geometry["rotation"]
+                if not settings.protect_apply_joint_location:
+                    obj.location = grid[column][row]
+                if not settings.protect_apply_joint_rotation:
+                    obj.rotation_euler = geometry["rotation"]
             elif constraint.object1 is not None and constraint.object2 is not None:
                 following = int(
                     obj.get(
@@ -1139,28 +1517,41 @@ def update_proxy_physics(context, proxy_object, settings):
                         _following_column(column_groups, column, closed),
                     )
                 )
-                geometry = _segment_geometry(
-                    grid, column, row, closed, column_groups
-                )
-                obj.location = _horizontal_joint_location(
-                    grid, column, following, row
-                )
-                obj.rotation_euler = geometry["rotation"]
-            for axis, upper, lower in zip(
-                "xyz", joint_args[0], joint_args[1]
-            ):
-                setattr(constraint, f"limit_lin_{axis}_upper", upper)
-                setattr(constraint, f"limit_lin_{axis}_lower", lower)
-            for axis, upper, lower in zip(
-                "xyz", joint_args[2], joint_args[3]
-            ):
-                setattr(constraint, f"limit_ang_{axis}_upper", upper)
-                setattr(constraint, f"limit_ang_{axis}_lower", lower)
-            obj.mmd_joint.spring_angular = joint_args[4]
-            obj.mmd_joint.spring_linear = joint_args[5]
+                if not settings.protect_apply_joint_location:
+                    obj.location = _horizontal_joint_location(
+                        grid, column, following, row
+                    )
+                if not settings.protect_apply_joint_rotation:
+                    obj.rotation_euler = _horizontal_joint_rotation(
+                        grid,
+                        column,
+                        following,
+                        row,
+                        constraint.object1,
+                        constraint.object2,
+                    )
+            if not settings.protect_apply_joint_parameters:
+                for axis, upper, lower in zip(
+                    "xyz", joint_args[0], joint_args[1]
+                ):
+                    setattr(constraint, f"limit_lin_{axis}_upper", upper)
+                    setattr(constraint, f"limit_lin_{axis}_lower", lower)
+                for axis, upper, lower in zip(
+                    "xyz", joint_args[2], joint_args[3]
+                ):
+                    setattr(constraint, f"limit_ang_{axis}_upper", upper)
+                    setattr(constraint, f"limit_ang_{axis}_lower", lower)
+                obj.mmd_joint.spring_angular = joint_args[4]
+                obj.mmd_joint.spring_linear = joint_args[5]
             joint_count += 1
     _save_proxy_physics_settings(proxy_object, settings)
-    return rigid_count, joint_count
+    return (
+        rigid_count,
+        joint_count,
+        horizontal_created,
+        horizontal_removed,
+        horizontal_skipped,
+    )
 
 
 def sync_proxy_physics_transforms(proxy_object):
@@ -1198,7 +1589,21 @@ def sync_proxy_physics_transforms(proxy_object):
         elif role.startswith("JOINT_"):
             joints.append((obj, role, column, row))
     for obj, role, column, row in joints:
-        if role in {"JOINT_ANCHOR", "JOINT_VERTICAL"}:
+        constraint = obj.rigid_body_constraint
+        if (
+            obj.get("surface_proxy_manual_joint")
+            and constraint is not None
+            and constraint.object1 is not None
+            and constraint.object2 is not None
+        ):
+            location, rotation = _manual_joint_transform(
+                constraint.object1,
+                constraint.object2,
+                role,
+                obj.parent,
+            )
+            geometry = {"rotation": rotation}
+        elif role in {"JOINT_ANCHOR", "JOINT_VERTICAL"}:
             name = proxy_bone_name(proxy_object, prefix, column, row)
             bone = armature.data.bones.get(name)
             if bone is None:
@@ -1216,10 +1621,17 @@ def sync_proxy_physics_transforms(proxy_object):
             )
             if following < 0 or following >= len(row_counts):
                 continue
-            geometry = _segment_geometry(
-                grid, column, row, closed, column_groups
-            )
             location = _horizontal_joint_location(grid, column, following, row)
+            geometry = {
+                "rotation": _horizontal_joint_rotation(
+                    grid,
+                    column,
+                    following,
+                    row,
+                    constraint.object1 if constraint is not None else None,
+                    constraint.object2 if constraint is not None else None,
+                )
+            }
         if (obj.location - location).length > 1.0e-8:
             obj.location = location
         if any(
@@ -1239,6 +1651,7 @@ class SPX_MMD_BrowserItem(PropertyGroup):
     detail: StringProperty()
     armature_name: StringProperty()
     order_index: IntProperty(default=-1)
+    material: PointerProperty(type=bpy.types.Material)
 
 
 class SPX_MMD_DiagnosticItem(PropertyGroup):
@@ -1253,6 +1666,25 @@ class SPX_MMD_DiagnosticItem(PropertyGroup):
     search_text: StringProperty()
 
 
+def _material_table_columns(layout):
+    selection_split = layout.split(factor=0.045, align=True)
+    selection = selection_split.row(align=True)
+    remaining = selection_split.row(align=True)
+    navigation_split = remaining.split(factor=0.955, align=True)
+    content = navigation_split.row(align=True)
+    navigation = navigation_split.row(align=True)
+    order_split = content.split(factor=0.085, align=True)
+    order = order_split.row(align=True)
+    names = order_split.row(align=True)
+    blender_split = names.split(factor=1.0 / 3.0, align=True)
+    blender_name = blender_split.row(align=True)
+    mmd_names = blender_split.row(align=True)
+    mmd_split = mmd_names.split(factor=0.5, align=True)
+    mmd_name = mmd_split.row(align=True)
+    mmd_english_name = mmd_split.row(align=True)
+    return selection, order, blender_name, mmd_name, mmd_english_name, navigation
+
+
 class SPX_UL_MMDItems(UIList):
     def draw_item(
         self,
@@ -1265,6 +1697,34 @@ class SPX_UL_MMDItems(UIList):
         _active_propname,
         _index,
     ):
+        if item.kind == "MATERIAL":
+            row = layout.row(align=True)
+            (
+                selection,
+                order,
+                blender_name,
+                mmd_name,
+                mmd_english_name,
+                navigation,
+            ) = _material_table_columns(row)
+            selection.prop(item, "selected", text="")
+            order.alignment = "CENTER"
+            order.label(text=f"{item.order_index:03d}")
+            material = item.material
+            if material is None:
+                blender_name.label(text="材质已不存在", icon="ERROR")
+                return
+            blender_name.prop(material, "name", text="")
+            mmd_name.prop(material.mmd_material, "name_j", text="")
+            mmd_english_name.prop(material.mmd_material, "name_e", text="")
+            operator = navigation.operator(
+                "surface_proxy.select_mmd_item",
+                text="",
+                icon="RESTRICT_SELECT_OFF",
+            )
+            operator.kind = item.kind
+            operator.target_name = material.name
+            return
         icon = {"BONE": "BONE_DATA", "RIGID": "MESH_UVSPHERE", "JOINT": "CONSTRAINT"}.get(
             item.kind,
             "DOT",
@@ -1288,14 +1748,7 @@ class SPX_UL_MMDItems(UIList):
             return [], []
         flags = [
             self.bitflag_filter_item
-            if (
-                (not search or search in f"{item.label} {item.detail}".casefold())
-                and (
-                    not use_prefix
-                    or item.label.casefold().startswith(prefix)
-                    or item.target_name.casefold().startswith(prefix)
-                )
-            )
+            if _mmd_browser_item_visible(data, item)
             else 0
             for item in items
         ]
@@ -1486,6 +1939,47 @@ def _scan_mmd_diagnostics(settings, root, FnModel):
     rigid_set = set(rigids)
     for rigid in rigids:
         label = rigid.mmd_rigid.name_j or rigid.name
+        if rigid_world_scale_is_invalid(rigid):
+            new_size, repair_reason = rigid_scale_repair_plan(rigid)
+            scale_text = ", ".join(
+                f"{float(value):.6g}"
+                for value in rigid.matrix_world.decompose()[2]
+            )
+            fixable = new_size is not None
+            _add_mmd_diagnostic(
+                settings,
+                "ERROR",
+                "RIGID",
+                rigid.name,
+                f"刚体：{label}",
+                f"非均匀或零缩放会阻止物理预览：({scale_text})",
+                (
+                    "点击工具按钮，把可表示的缩放无损折算进 MMD 刚体尺寸并将对象 Scale 归一。"
+                    if fixable
+                    else f"无法安全自动修复：{repair_reason}。请手动恢复可表示的刚体形状。"
+                ),
+                code="RIGID_SCALE_BAKE" if fixable else "RIGID_SCALE_UNFIXABLE",
+            )
+        elif rigid_object_scale_needs_bake(rigid):
+            new_size, repair_reason = rigid_scale_repair_plan(rigid)
+            scale_text = ", ".join(
+                f"{float(value):.6g}" for value in rigid.scale
+            )
+            fixable = new_size is not None
+            _add_mmd_diagnostic(
+                settings,
+                "WARNING",
+                "RIGID",
+                rigid.name,
+                f"刚体：{label}",
+                f"对象 Scale 未归一，但物理预览仍可运行：({scale_text})",
+                (
+                    "点击工具按钮，把均匀缩放无损折算进 MMD 刚体尺寸并将对象 Scale 归一。"
+                    if fixable
+                    else f"无法安全自动修复：{repair_reason}。请手动归一对象 Scale。"
+                ),
+                code="RIGID_SCALE_NORMALIZE" if fixable else "RIGID_SCALE_UNFIXABLE",
+            )
         if rigid.rigid_body is None:
             _add_mmd_diagnostic(
                 settings,
@@ -1865,7 +2359,13 @@ class SPX_OT_UpdateMMDPhysics(Operator):
     def execute(self, context):
         try:
             settings = context.scene.surface_proxy_creator
-            rigid_count, joint_count = update_proxy_physics(
+            (
+                rigid_count,
+                joint_count,
+                horizontal_created,
+                horizontal_removed,
+                horizontal_skipped,
+            ) = update_proxy_physics(
                 context,
                 _selected_proxy(context, settings),
                 settings,
@@ -1873,7 +2373,14 @@ class SPX_OT_UpdateMMDPhysics(Operator):
         except (ProxyBuildError, RuntimeError, ValueError) as error:
             self.report({"ERROR"}, str(error))
             return {"CANCELLED"}
-        self.report({"INFO"}, f"已更新 {rigid_count} 个刚体、{joint_count} 个 Joint")
+        message = f"已更新 {rigid_count} 个刚体、{joint_count} 个 Joint"
+        if horizontal_created:
+            message += f"；新增 {horizontal_created} 个横 Joint"
+        if horizontal_removed:
+            message += f"；移除 {horizontal_removed} 个横 Joint"
+        if horizontal_skipped:
+            message += f"；跳过 {horizontal_skipped} 个缺少刚体端点的横 Joint"
+        self.report({"INFO"}, message)
         return {"FINISHED"}
 
 
@@ -1912,8 +2419,14 @@ class SPX_OT_RefreshMMDBrowser(Operator):
         except ProxyBuildError as error:
             self.report({"ERROR"}, str(error))
             return {"CANCELLED"}
+        register_material_export_hook()
         checked = {
-            (item.kind, item.target_name)
+            (
+                item.kind,
+                material_identity(item.material)
+                if item.kind == "MATERIAL" and item.material is not None
+                else item.target_name,
+            )
             for item in settings.browser_items
             if item.selected
         }
@@ -1943,7 +2456,23 @@ class SPX_OT_RefreshMMDBrowser(Operator):
                 for column, count in enumerate(row_counts)
                 for row in range(count - 1)
             }
-        if settings.browser_kind == "BONE" and armature is not None:
+        if settings.browser_kind == "MATERIAL":
+            for order_index, material in enumerate(ordered_materials(root, FnModel)):
+                item = settings.browser_items.add()
+                item.kind = "MATERIAL"
+                item.target_name = material.name
+                item.label = material.name
+                item.detail = (
+                    f"{material.mmd_material.name_j} "
+                    f"{material.mmd_material.name_e}"
+                )
+                item.order_index = order_index
+                item.material = material
+                item.selected = (
+                    item.kind,
+                    material_identity(material),
+                ) in checked
+        elif settings.browser_kind == "BONE" and armature is not None:
             bones = [
                 bone
                 for bone in armature.pose.bones
@@ -1983,7 +2512,7 @@ class SPX_OT_RefreshMMDBrowser(Operator):
                 item.label = rigid.mmd_rigid.name_j or rigid.name
                 item.detail = (
                     f"骨骼: {rigid.mmd_rigid.bone or '-'} | "
-                    f"组 {int(rigid.mmd_rigid.collision_group_number) + 1}"
+                    f"组 {int(rigid.mmd_rigid.collision_group_number)}"
                 )
                 item.order_index = order_index
                 item.selected = (item.kind, item.target_name) in checked
@@ -2013,6 +2542,74 @@ class SPX_OT_RefreshMMDBrowser(Operator):
         return {"FINISHED"}
 
 
+def _select_material_objects_in_blender(context, root, FnModel, materials):
+    materials = [material for material in materials if material is not None]
+    if not materials:
+        raise ProxyBuildError("没有可选入 Blender 的材质")
+    if context.object is not None and context.object.mode != "OBJECT":
+        bpy.ops.object.mode_set(mode="OBJECT")
+    bpy.ops.object.select_all(action="DESELECT")
+
+    material_priority = {
+        material: priority for priority, material in enumerate(materials)
+    }
+    active_object = None
+    selected_objects = 0
+    for mesh_object in FnModel.iterate_mesh_objects(root):
+        if mesh_object.name not in context.view_layer.objects:
+            continue
+        used_slot_indices = {
+            polygon.material_index for polygon in mesh_object.data.polygons
+        }
+        slot_priorities = {
+            index: material_priority[material]
+            for index, material in enumerate(mesh_object.data.materials)
+            if index in used_slot_indices and material in material_priority
+        }
+        if not slot_priorities:
+            continue
+        active_slot = max(
+            slot_priorities,
+            key=lambda index: slot_priorities[index],
+        )
+        mesh_object.active_material_index = active_slot
+        mesh_object.hide_set(False)
+        mesh_object.hide_select = False
+        mesh_object.select_set(True)
+        active_object = mesh_object
+        selected_objects += 1
+
+    if active_object is None:
+        raise ProxyBuildError("当前 MMD 模型没有使用所选材质的可见 Mesh")
+    context.view_layer.objects.active = active_object
+    return selected_objects
+
+
+def _selected_materials_from_blender(context, mesh_objects):
+    if context.object is not None and context.object.mode != "OBJECT":
+        bpy.ops.object.mode_set(mode="OBJECT")
+    model_meshes = set(mesh_objects)
+    selected_meshes = [
+        obj
+        for obj in context.selected_objects
+        if obj in model_meshes and obj.type == "MESH"
+    ]
+    selected_materials = {
+        mesh_object.data.materials[index]
+        for mesh_object in selected_meshes
+        for index in {
+            polygon.material_index for polygon in mesh_object.data.polygons
+        }
+        if index < len(mesh_object.data.materials)
+        and mesh_object.data.materials[index] is not None
+    }
+    active_material = None
+    active_object = context.active_object
+    if active_object in model_meshes and active_object.type == "MESH":
+        active_material = active_object.active_material
+    return selected_materials, active_material
+
+
 class SPX_OT_SelectMMDItem(Operator):
     bl_idname = "surface_proxy.select_mmd_item"
     bl_label = "选择 MMD 项目"
@@ -2027,6 +2624,33 @@ class SPX_OT_SelectMMDItem(Operator):
         return self.execute(context)
 
     def execute(self, context):
+        if self.kind == "MATERIAL":
+            settings = context.scene.surface_proxy_creator
+            material = bpy.data.materials.get(self.target_name)
+            if material is None:
+                self.report({"ERROR"}, "材质已不存在")
+                return {"CANCELLED"}
+            try:
+                root = _resolve_root(context, settings.mmd_root)
+                FnModel, _FnRigidBody, _rigid_module = _mmd_api()
+                object_count = _select_material_objects_in_blender(
+                    context,
+                    root,
+                    FnModel,
+                    [material],
+                )
+            except (ProxyBuildError, RuntimeError) as error:
+                self.report({"ERROR"}, str(error))
+                return {"CANCELLED"}
+            for index, item in enumerate(settings.browser_items):
+                if item.kind == "MATERIAL" and item.material == material:
+                    settings.browser_index = index
+                    break
+            self.report(
+                {"INFO"},
+                f"已在 Object Mode 选中 {object_count} 个 Mesh",
+            )
+            return {"FINISHED"}
         if context.object is not None and context.object.mode != "OBJECT":
             bpy.ops.object.mode_set(mode="OBJECT")
         if not self.extend:
@@ -2099,6 +2723,44 @@ class SPX_OT_RepairMMDDiagnostic(Operator):
     diagnostic_message: StringProperty()
 
     def execute(self, context):
+        if self.code in {
+            "RIGID_SCALE_BAKE",
+            "RIGID_SCALE_NORMALIZE",
+            "RIGID_SCALE_UNFIXABLE",
+        }:
+            rigid = bpy.data.objects.get(self.target_name)
+            if rigid is None or getattr(rigid, "mmd_type", "") != "RIGID_BODY":
+                self.report({"ERROR"}, "问题刚体已不存在；请重新运行诊断")
+                return {"CANCELLED"}
+            if not (
+                rigid_world_scale_is_invalid(rigid)
+                or rigid_object_scale_needs_bake(rigid)
+            ):
+                _refresh_mmd_browser_from_changes()
+                self.report({"INFO"}, "该刚体的缩放问题已经消失")
+                return {"FINISHED"}
+            new_size, reason = rigid_scale_repair_plan(rigid)
+            if new_size is None:
+                self.report({"ERROR"}, f"无法安全自动修复：{reason}")
+                return {"CANCELLED"}
+            bake_rigid_object_scale(rigid)
+            context.view_layer.update()
+            if rigid_world_scale_is_invalid(rigid):
+                self.report({"ERROR"}, "尺寸已经折算，但父级仍使刚体保持非均匀缩放")
+                return {"CANCELLED"}
+            if rigid_object_scale_needs_bake(rigid):
+                self.report({"ERROR"}, "尺寸已经折算，但对象 Scale 未能归一")
+                return {"CANCELLED"}
+            if not _refresh_mmd_browser_from_changes():
+                self.report({"ERROR"}, "刚体缩放已修复，但诊断刷新失败；请手动刷新")
+                return {"CANCELLED"}
+            size_text = ", ".join(f"{float(value):.6g}" for value in new_size)
+            self.report(
+                {"INFO"},
+                f"已将缩放折算进 MMD 刚体尺寸：({size_text})",
+            )
+            return {"FINISHED"}
+
         if self.code == "BONE_NAME_EMPTY":
             armature = bpy.data.objects.get(self.armature_name)
             pose_bone = (
@@ -2136,16 +2798,171 @@ def _checked_items(settings, kind=None):
     ]
 
 
+_BONE_SIDE_SUFFIX = re.compile(r"^(?P<body>.*?)[._](?P<side>[LR])$", re.IGNORECASE)
+_BONE_SIDE_PREFIX = re.compile(
+    r"^(?P<side>Left|Right)(?P<body>(?:[._ -].*|[A-Z0-9].*))$",
+)
+_BONE_SIDE_WORD_SUFFIX = re.compile(
+    r"^(?P<body>.*?)(?P<side>Left|Right)$",
+)
+
+
+def _split_bone_name_side(value):
+    text = str(value or "").strip()
+    if not text:
+        return "", ""
+    if text[0] in {"左", "右"}:
+        return text[1:].lstrip("._ -"), "L" if text[0] == "左" else "R"
+    match = _BONE_SIDE_SUFFIX.fullmatch(text)
+    if match:
+        return match.group("body").rstrip("._ -"), match.group("side").upper()
+    match = _BONE_SIDE_PREFIX.fullmatch(text)
+    if match:
+        side = "L" if match.group("side").casefold() == "left" else "R"
+        return match.group("body").lstrip("._ -"), side
+    match = _BONE_SIDE_WORD_SUFFIX.fullmatch(text)
+    if match and match.group("body"):
+        side = "L" if match.group("side").casefold() == "left" else "R"
+        return match.group("body").rstrip("._ -"), side
+    return text, ""
+
+
+def _bone_ai_translation_source(pose_bone):
+    mmd_bone = pose_bone.mmd_bone
+    source_body, side = _split_bone_name_side(mmd_bone.name_j)
+    if not side:
+        _name_e_body, side = _split_bone_name_side(mmd_bone.name_e)
+    if not side:
+        _blender_body, side = _split_bone_name_side(pose_bone.name)
+    return source_body, side
+
+
+def _preflight_bone_ai_rename(FnModel, root, armature, rename_map):
+    active_map = {old: new for old, new in rename_map.items() if old != new}
+    targets = list(active_map.values())
+    if len(targets) != len(set(targets)):
+        raise ProxyBuildError("AI 翻译产生了重复的 Blender 骨骼名")
+
+    existing_bones = set(armature.data.bones.keys())
+    source_bones = set(active_map)
+    collisions = set(targets) & (existing_bones - source_bones)
+    if collisions:
+        raise ProxyBuildError(f"已存在目标 Blender 骨骼名：{sorted(collisions)[0]}")
+
+    expected_groups = []
+    for mesh_object in FnModel.iterate_child_objects(root):
+        if mesh_object.type != "MESH" or mesh_object.mmd_type == "RIGID_BODY":
+            continue
+        existing_groups = {group.name for group in mesh_object.vertex_groups}
+        source_groups = source_bones & existing_groups
+        group_collisions = {
+            active_map[source]
+            for source in source_groups
+            if active_map[source] in existing_groups
+            and active_map[source] not in source_groups
+        }
+        if group_collisions:
+            raise ProxyBuildError(
+                f"网格 {mesh_object.name} 已存在目标顶点组："
+                f"{sorted(group_collisions)[0]}"
+            )
+        expected_groups.append(
+            (
+                mesh_object,
+                {source: active_map[source] for source in source_groups},
+            )
+        )
+    return expected_groups
+
+
+def _rename_ai_bones(FnModel, root, armature, rename_map):
+    active_map = {old: new for old, new in rename_map.items() if old != new}
+    if not active_map:
+        return
+    expected_groups = _preflight_bone_ai_rename(
+        FnModel,
+        root,
+        armature,
+        active_map,
+    )
+    model_module = importlib.import_module("bl_ext.blender_org.mmd_tools.core.model")
+    model = model_module.Model(root)
+
+    reserved_names = set(armature.data.bones.keys()) | set(active_map.values())
+    temporary_names = {}
+    for index, old_name in enumerate(active_map):
+        temporary_name = f"__SPX_AI_BONE_RENAME_{index:04d}__"
+        while temporary_name in reserved_names:
+            temporary_name += "_"
+        reserved_names.add(temporary_name)
+        model.renameBone(old_name, temporary_name)
+        temporary_names[temporary_name] = active_map[old_name]
+    for temporary_name, final_name in temporary_names.items():
+        model.renameBone(temporary_name, final_name)
+
+    for mesh_object, group_map in expected_groups:
+        for old_name, final_name in group_map.items():
+            if (
+                mesh_object.vertex_groups.get(old_name) is not None
+                or mesh_object.vertex_groups.get(final_name) is None
+            ):
+                raise ProxyBuildError(
+                    f"网格 {mesh_object.name} 顶点组未随骨骼重命名：{old_name}"
+                )
+
+
+def _mmd_browser_item_visible(settings, item):
+    search = settings.browser_search.casefold().strip()
+    prefix = settings.browser_prefix.casefold().strip()
+    use_prefix = settings.browser_filter_by_prefix and bool(prefix)
+    if item.kind == "MATERIAL" and item.material is not None:
+        material = item.material
+        names = (
+            material.name,
+            material.mmd_material.name_j,
+            material.mmd_material.name_e,
+        )
+    else:
+        names = (item.label, item.detail, item.target_name)
+    folded_names = tuple(str(name).casefold() for name in names)
+    return (
+        not search or search in " ".join(folded_names)
+    ) and (
+        not use_prefix or any(name.startswith(prefix) for name in folded_names)
+    )
+
+
 class SPX_OT_SetMMDBrowserChecks(Operator):
     bl_idname = "surface_proxy.set_mmd_browser_checks"
     bl_label = "设置批量勾选"
 
     action: EnumProperty(
-        items=(("ALL", "全选", ""), ("NONE", "全不选", ""), ("INVERT", "反选", ""))
+        items=(
+            ("ALL", "全选", ""),
+            ("NONE", "全不选", ""),
+            ("INVERT", "反选", ""),
+            ("RANGE", "区间选组", "补选最前与最后一个已勾选可见项之间的全部项目"),
+        )
     )
 
     def execute(self, context):
-        items = context.scene.surface_proxy_creator.browser_items
+        settings = context.scene.surface_proxy_creator
+        items = settings.browser_items
+        if self.action == "RANGE":
+            visible_items = [item for item in items if _mmd_browser_item_visible(settings, item)]
+            selected_indices = [
+                index for index, item in enumerate(visible_items) if item.selected
+            ]
+            if len(selected_indices) < 2:
+                self.report({"WARNING"}, "区间选组至少需要勾选两个可见项目")
+                return {"CANCELLED"}
+            added = 0
+            for item in visible_items[selected_indices[0] : selected_indices[-1] + 1]:
+                if not item.selected:
+                    item.selected = True
+                    added += 1
+            self.report({"INFO"}, f"已补选区间内 {added} 个项目")
+            return {"FINISHED"}
         for item in items:
             if self.action == "ALL":
                 item.selected = True
@@ -2163,6 +2980,88 @@ def _active_browser_item(settings):
     return settings.browser_items[index]
 
 
+def _bone_mirror_item(source_item, items):
+    armature = bpy.data.objects.get(source_item.armature_name)
+    source = armature.pose.bones.get(source_item.target_name) if armature else None
+    if source is None:
+        return None
+    source_names = (
+        source.name,
+        str(source.mmd_bone.name_j or ""),
+        str(source.mmd_bone.name_e or ""),
+    )
+    mirrored_names = {
+        mirrored_name(name)
+        for name in source_names
+        if name and _side(name) in {"L", "R"}
+    }
+    if not mirrored_names:
+        return None
+    for item in items:
+        if item == source_item or item.armature_name != source_item.armature_name:
+            continue
+        candidate = armature.pose.bones.get(item.target_name)
+        if candidate is None:
+            continue
+        candidate_names = {
+            candidate.name,
+            str(candidate.mmd_bone.name_j or ""),
+            str(candidate.mmd_bone.name_e or ""),
+        }
+        if mirrored_names & candidate_names:
+            return item
+    return None
+
+
+def _add_mirror_browser_checks(context, settings):
+    checked = _checked_items(settings, settings.browser_kind)
+    if not checked:
+        raise ProxyBuildError("请先勾选至少一项")
+    targets = set()
+    if settings.browser_kind == "BONE":
+        for source_item in checked:
+            target_item = _bone_mirror_item(source_item, settings.browser_items)
+            if target_item is not None:
+                targets.add(target_item.target_name)
+    else:
+        root = _resolve_root(context, settings.mmd_root)
+        FnModel, _FnRigidBody, _rigid_module = _mmd_api()
+        armature = FnModel.find_armature_object(root)
+        if armature is None:
+            raise ProxyBuildError("当前 MMD 模型没有骨架")
+        rigids = list(FnModel.iterate_rigid_body_objects(root))
+        joints = list(FnModel.iterate_joint_objects(root))
+        for source_item in checked:
+            source = bpy.data.objects.get(source_item.target_name)
+            if source is None or _source_side(source) not in {"L", "R"}:
+                continue
+            if settings.browser_kind == "RIGID":
+                target = _find_mirror_rigid(source, rigids, armature)
+            else:
+                endpoints = _joint_endpoints(source)
+                if endpoints is None:
+                    continue
+                target_a = _find_mirror_rigid(
+                    endpoints[0], rigids, armature, allow_shared=True
+                )
+                target_b = _find_mirror_rigid(
+                    endpoints[1], rigids, armature, allow_shared=True
+                )
+                target = (
+                    _find_mirror_joint(source, joints, target_a, target_b)
+                    if target_a is not None and target_b is not None
+                    else None
+                )
+            if target is not None:
+                targets.add(target.name)
+    added = 0
+    for item in settings.browser_items:
+        if item.target_name in targets and not item.selected:
+            item.selected = True
+            added += 1
+    return added, len(checked) - len(targets)
+
+
 class SPX_OT_QuickCheckMMDGroup(Operator):
     bl_idname = "surface_proxy.quick_check_mmd_group"
     bl_label = "快速选组"
@@ -2176,11 +3075,23 @@ class SPX_OT_QuickCheckMMDGroup(Operator):
             ("RIGID_GROUP", "相同碰撞组", ""),
             ("RIGID_TYPE", "相同刚体类型", ""),
             ("CONNECTED", "相连物理组", ""),
+            ("MIRROR", "按镜像加选另一边", ""),
         )
     )
 
     def execute(self, context):
         settings = context.scene.surface_proxy_creator
+        if self.mode == "MIRROR":
+            try:
+                added, unmatched = _add_mirror_browser_checks(context, settings)
+            except (ProxyBuildError, RuntimeError, ValueError) as error:
+                self.report({"ERROR"}, str(error))
+                return {"CANCELLED"}
+            self.report(
+                {"INFO"},
+                f"已加选 {added} 个镜像项；{unmatched} 个勾选项没有匹配镜像",
+            )
+            return {"FINISHED"}
         active = _active_browser_item(settings)
         if active is None:
             return {"CANCELLED"}
@@ -2317,6 +3228,10 @@ class SPX_MT_MMDQuickSelect(Menu):
         layout = self.layout
         kind = context.scene.surface_proxy_creator.browser_kind
         layout.operator(SPX_OT_QuickCheckMMDGroup.bl_idname, text="按名称前缀").mode = "PREFIX"
+        layout.operator(
+            SPX_OT_QuickCheckMMDGroup.bl_idname,
+            text="按镜像加选另一边",
+        ).mode = "MIRROR"
         layout.separator()
         if kind == "BONE":
             layout.operator(SPX_OT_QuickCheckMMDGroup.bl_idname, text="当前物体锁定顶点组").mode = "LOCKED_VERTEX_GROUPS"
@@ -2345,6 +3260,111 @@ class SPX_OT_PrefixFromActiveMMDItem(Operator):
         return {"FINISHED"}
 
 
+class SPX_OT_TranslateSelectedBoneNamesWithAI(Operator):
+    bl_idname = "surface_proxy.translate_selected_bone_names_with_ai"
+    bl_label = "AI翻译勾选骨骼日文名"
+    bl_description = (
+        "翻译勾选骨骼的 MMD 日文名，并同步生成 MMD 英文名与 Blender 骨骼名"
+    )
+    bl_options = {"REGISTER", "UNDO"}
+
+    def execute(self, context):
+        settings = context.scene.surface_proxy_creator
+        checked_items = _checked_items(settings, "BONE")
+        if not checked_items:
+            self.report({"ERROR"}, "请先勾选至少一个骨骼")
+            return {"CANCELLED"}
+        try:
+            root = _resolve_root(context, settings.mmd_root)
+            FnModel, _FnRigidBody, _rigid_module = _mmd_api()
+            armature = FnModel.find_armature_object(root)
+            if armature is None:
+                raise ProxyBuildError("当前 MMD 模型没有骨架")
+
+            translation_targets = []
+            skipped = 0
+            seen = set()
+            for item in checked_items:
+                old_name = item.target_name
+                if old_name in seen:
+                    continue
+                seen.add(old_name)
+                pose_bone = armature.pose.bones.get(old_name)
+                if pose_bone is None:
+                    skipped += 1
+                    continue
+                source_body, side = _bone_ai_translation_source(pose_bone)
+                if not source_body:
+                    skipped += 1
+                    continue
+                translation_targets.append((old_name, source_body, side))
+            if not translation_targets:
+                raise ProxyBuildError("勾选骨骼没有可翻译的 MMD 日文名")
+
+            from . import mmd_morph_editor
+
+            preferences = mmd_morph_editor._addon_preferences(context)
+            translations = mmd_morph_editor._request_morph_name_translations(
+                preferences,
+                [source for _old, source, _side in translation_targets],
+                max_characters=14,
+                extra_instruction=(
+                    "Translate only the bone-name body. Do not add Left, Right, "
+                    "_L, _R, .L, .R, or Japanese side prefixes; the client adds "
+                    "the side markers."
+                ),
+            )
+
+            rename_map = {}
+            translated_names = {}
+            for (old_name, _source, side), translation in zip(
+                translation_targets,
+                translations,
+                strict=True,
+            ):
+                base_name, _translated_side = _split_bone_name_side(translation)
+                if not base_name:
+                    raise ProxyBuildError(f"骨骼 {old_name} 的翻译结果为空")
+                if len(base_name) > 14:
+                    raise ProxyBuildError(
+                        f"骨骼 {old_name} 的英文主体超过 14 个字符：{base_name}"
+                    )
+                side_prefix = "左" if side == "L" else "右" if side == "R" else ""
+                mmd_name_j = side_prefix + base_name
+                mmd_name_e = base_name + (f"_{side}" if side else "")
+                blender_name = base_name + (f".{side}" if side else "")
+                rename_map[old_name] = blender_name
+                translated_names[old_name] = (
+                    mmd_name_j,
+                    mmd_name_e,
+                    blender_name,
+                )
+
+            _rename_ai_bones(FnModel, root, armature, rename_map)
+            for old_name, names in translated_names.items():
+                mmd_name_j, mmd_name_e, blender_name = names
+                pose_bone = armature.pose.bones.get(blender_name)
+                if pose_bone is None:
+                    raise ProxyBuildError(f"重命名后找不到骨骼：{blender_name}")
+                pose_bone.mmd_bone.name_j = mmd_name_j
+                pose_bone.mmd_bone.name_e = mmd_name_e
+                for item in checked_items:
+                    if item.target_name == old_name:
+                        item.target_name = blender_name
+                        item.label = blender_name
+
+            bpy.ops.surface_proxy.refresh_mmd_browser()
+        except (ProxyBuildError, ValueError, RuntimeError) as error:
+            self.report({"ERROR"}, str(error))
+            return {"CANCELLED"}
+
+        message = f"已翻译并同步 {len(translation_targets)} 个骨骼名称"
+        if skipped:
+            message += f"；跳过 {skipped} 个无效或空名称骨骼"
+        self.report({"INFO"}, message)
+        return {"FINISHED"}
+
+
 class SPX_OT_SelectCheckedMMDItems(Operator):
     bl_idname = "surface_proxy.select_checked_mmd_items"
     bl_label = "将勾选项选入 Blender"
@@ -2355,6 +3375,24 @@ class SPX_OT_SelectCheckedMMDItems(Operator):
         if not items:
             self.report({"ERROR"}, "没有勾选项目")
             return {"CANCELLED"}
+        if settings.browser_kind == "MATERIAL":
+            try:
+                root = _resolve_root(context, settings.mmd_root)
+                FnModel, _FnRigidBody, _rigid_module = _mmd_api()
+                object_count = _select_material_objects_in_blender(
+                    context,
+                    root,
+                    FnModel,
+                    [item.material for item in items],
+                )
+            except (ProxyBuildError, RuntimeError) as error:
+                self.report({"ERROR"}, str(error))
+                return {"CANCELLED"}
+            self.report(
+                {"INFO"},
+                f"已在 Object Mode 选中 {object_count} 个 Mesh",
+            )
+            return {"FINISHED"}
         if context.object is not None and context.object.mode != "OBJECT":
             bpy.ops.object.mode_set(mode="OBJECT")
         bpy.ops.object.select_all(action="DESELECT")
@@ -2389,6 +3427,46 @@ class SPX_OT_SyncSelectedMMDObjectsToBrowser(Operator):
 
     def execute(self, context):
         settings = context.scene.surface_proxy_creator
+        if settings.browser_kind == "MATERIAL":
+            try:
+                root = _resolve_root(context, settings.mmd_root)
+                FnModel, _FnRigidBody, _rigid_module = _mmd_api()
+                selected_materials, active_material = (
+                    _selected_materials_from_blender(
+                        context,
+                        FnModel.iterate_mesh_objects(root),
+                    )
+                )
+            except ProxyBuildError as error:
+                self.report({"ERROR"}, str(error))
+                return {"CANCELLED"}
+            if not selected_materials:
+                self.report(
+                    {"ERROR"},
+                    "3D 视图中没有选中使用有效材质的 Mesh",
+                )
+                return {"CANCELLED"}
+            bpy.ops.surface_proxy.refresh_mmd_browser()
+            active_index = None
+            matched = 0
+            for index, item in enumerate(settings.browser_items):
+                item.selected = (
+                    item.kind == "MATERIAL" and item.material in selected_materials
+                )
+                if item.selected:
+                    matched += 1
+                if item.kind == "MATERIAL" and item.material == active_material:
+                    active_index = index
+            if active_index is not None:
+                settings.browser_index = active_index
+            if matched != len(selected_materials):
+                self.report(
+                    {"WARNING"},
+                    f"已同步 {matched}/{len(selected_materials)} 个材质；清除搜索或名称前缀过滤可显示其余材质",
+                )
+            else:
+                self.report({"INFO"}, f"已同步 {matched} 个材质到查看器")
+            return {"FINISHED"}
         expected_type = {
             "RIGID": "RIGID_BODY",
             "JOINT": "JOINT",
@@ -2433,19 +3511,148 @@ class SPX_OT_SyncSelectedMMDObjectsToBrowser(Operator):
         return {"FINISHED"}
 
 
-def _missing_mmd_bone_names(blender_name):
-    match = re.match(r"^(.*?)[._]([LR])$", blender_name)
-    if match is None:
-        return blender_name, blender_name
-    base_name, side = match.groups()
-    side_prefix = "左" if side == "L" else "右"
-    return f"{side_prefix}{base_name}", f"{base_name}_{side}"
+def _bones_share_chain(bone_a, bone_b):
+    current = bone_a
+    while current is not None:
+        if current == bone_b:
+            return True
+        current = current.parent
+    current = bone_b
+    while current is not None:
+        if current == bone_a:
+            return True
+        current = current.parent
+    return False
+
+
+class SPX_OT_CreateJointFromCheckedRigids(Operator):
+    bl_idname = "surface_proxy.create_joint_from_checked_rigids"
+    bl_label = "根据所选刚体创建 Joint"
+    bl_description = "使用两个勾选刚体创建 Joint；查看器活动项作为刚体 B，另一个作为刚体 A"
+    bl_options = {"REGISTER", "UNDO"}
+
+    def execute(self, context):
+        settings = context.scene.surface_proxy_creator
+        checked = _checked_items(settings, "RIGID")
+        if len(checked) != 2:
+            self.report({"ERROR"}, "必须且只能勾选两个刚体")
+            return {"CANCELLED"}
+        active = _active_browser_item(settings)
+        if active is None or active.kind != "RIGID" or active not in checked:
+            self.report({"ERROR"}, "请将两个勾选刚体中的一个设为查看器活动项；该项将作为刚体 B")
+            return {"CANCELLED"}
+
+        rigid_b = bpy.data.objects.get(active.target_name)
+        rigid_a_item = next(item for item in checked if item != active)
+        rigid_a = bpy.data.objects.get(rigid_a_item.target_name)
+        if (
+            rigid_a is None
+            or rigid_b is None
+            or rigid_a.mmd_type != "RIGID_BODY"
+            or rigid_b.mmd_type != "RIGID_BODY"
+        ):
+            self.report({"ERROR"}, "勾选的刚体已不存在；请刷新查看器")
+            return {"CANCELLED"}
+
+        proxy_object = settings.physics_proxy
+        if proxy_object is None:
+            self.report({"ERROR"}, "请先指定当前代理网格")
+            return {"CANCELLED"}
+        try:
+            armature = _proxy_armature(proxy_object)
+            root = _resolve_root(context, settings.mmd_root, proxy_object)
+            FnModel, FnRigidBody, _rigid_module = _mmd_api()
+            proxy_objects = set(_proxy_physics_objects(proxy_object))
+            if rigid_a not in proxy_objects or rigid_b not in proxy_objects:
+                raise ProxyBuildError("两个刚体都必须属于当前代理网格")
+            bone_a = armature.data.bones.get(str(rigid_a.mmd_rigid.bone))
+            bone_b = armature.data.bones.get(str(rigid_b.mmd_rigid.bone))
+            if bone_a is None or bone_b is None:
+                raise ProxyBuildError("两个刚体都必须绑定当前代理骨架中的骨骼")
+
+            role = (
+                "JOINT_VERTICAL"
+                if _bones_share_chain(bone_a, bone_b)
+                else "JOINT_HORIZONTAL"
+            )
+            column_a = int(rigid_a.get("surface_proxy_column", -1))
+            column_b = int(rigid_b.get("surface_proxy_column", -1))
+            row_a = int(rigid_a.get("surface_proxy_row", -1))
+            row_b = int(rigid_b.get("surface_proxy_row", -1))
+            if min(column_a, column_b, row_a, row_b) < 0:
+                raise ProxyBuildError("无法读取所选刚体在当前代理中的列/行位置")
+            _prefix, row_counts = _proxy_structure(proxy_object, armature)
+            if role == "JOINT_VERTICAL":
+                column = column_b
+                row = max(row_a, row_b)
+                factor = _joint_interpolation_factor(row, row_counts)
+            else:
+                column = column_a
+                row = row_b
+                factor = _rigid_interpolation_factor(row_b, row_counts)
+
+            joint_group = FnModel.ensure_joint_group_object(context, root)
+            joint = FnRigidBody.new_joint_objects(
+                context,
+                joint_group,
+                1,
+                FnModel.get_empty_display_size(root),
+            )[0]
+            try:
+                location, rotation = _manual_joint_transform(
+                    rigid_a,
+                    rigid_b,
+                    role,
+                    joint_group,
+                )
+                joint_args = _joint_vectors(settings, role, factor)
+                name, name_e = _joint_names_from_rigid_b(rigid_b, role)
+                joint = FnRigidBody.setup_joint_object(
+                    obj=joint,
+                    name=name,
+                    name_e=name_e,
+                    location=location,
+                    rotation=rotation,
+                    rigid_a=rigid_a,
+                    rigid_b=rigid_b,
+                    maximum_location=joint_args[0],
+                    minimum_location=joint_args[1],
+                    maximum_rotation=joint_args[2],
+                    minimum_rotation=joint_args[3],
+                    spring_angular=joint_args[4],
+                    spring_linear=joint_args[5],
+                )
+                _mark_physics_object(joint, proxy_object, role, column, row)
+                joint["surface_proxy_manual_joint"] = True
+                joint["surface_proxy_manual_joint_factor"] = factor
+                if role == "JOINT_HORIZONTAL":
+                    joint["surface_proxy_following_column"] = column_b
+            except Exception:
+                if joint.name in bpy.data.objects:
+                    bpy.data.objects.remove(joint, do_unlink=True)
+                raise
+            normalize_mmd_indices(root, FnModel, kinds=("JOINT",))
+        except (ProxyBuildError, RuntimeError, ValueError) as error:
+            self.report({"ERROR"}, str(error))
+            return {"CANCELLED"}
+
+        bpy.ops.object.select_all(action="DESELECT")
+        joint.hide_set(False)
+        joint.hide_select = False
+        joint.select_set(True)
+        context.view_layer.objects.active = joint
+        role_label = "纵 Joint" if role == "JOINT_VERTICAL" else "横 Joint"
+        self.report(
+            {"INFO"},
+            f"已创建 {role_label}：A={rigid_a.name}，B={rigid_b.name}",
+        )
+        return {"FINISHED"}
 
 
 class SPX_OT_FillMissingMMDBoneNames(Operator):
     bl_idname = "surface_proxy.fill_missing_mmd_bone_names"
-    bl_label = "补全空缺 MMD 名称"
-    bl_description = "按 Blender 骨骼名及 .L/.R、_L/_R 侧向后缀补全空缺的 MMD 名称和英文名称，不覆盖已有内容"
+    bl_label = "补全并标准化 MMD 名称"
+    bl_description = "按 Blender 骨骼名及 .L/.R、_L/_R 侧向后缀填写并标准化 MMD 名称和英文名称"
     bl_options = {"REGISTER", "UNDO"}
 
     scope: EnumProperty(
@@ -2488,26 +3695,136 @@ class SPX_OT_FillMissingMMDBoneNames(Operator):
                 return {"CANCELLED"}
 
         changed_bones = 0
-        changed_fields = 0
         for name in names:
             pose_bone = armature.pose.bones.get(name)
             if pose_bone is None or not hasattr(pose_bone, "mmd_bone"):
                 continue
-            name_j, name_e = _missing_mmd_bone_names(pose_bone.name)
-            changed = False
-            if not pose_bone.mmd_bone.name_j.strip():
+            name_j, name_e = standardized_bone_mmd_names(pose_bone, pose_bone.name)
+            if (
+                pose_bone.mmd_bone.name_j != name_j
+                or pose_bone.mmd_bone.name_e != name_e
+            ):
                 pose_bone.mmd_bone.name_j = name_j
-                changed = True
-                changed_fields += 1
-            if not pose_bone.mmd_bone.name_e.strip():
                 pose_bone.mmd_bone.name_e = name_e
-                changed = True
-                changed_fields += 1
-            changed_bones += int(changed)
+                changed_bones += 1
         self.report(
             {"INFO"},
-            f"已补全 {changed_bones} 根骨骼的 {changed_fields} 个空缺名称字段",
+            f"已标准化 {changed_bones} 根骨骼的 MMD 名称",
         )
+        return {"FINISHED"}
+
+
+def _bone_names_for_physics_sync(armature, bone_name, horizontal=False):
+    pose_bone = armature.pose.bones.get(bone_name)
+    if pose_bone is None:
+        return None
+    suffix = "_H" if horizontal else ""
+    mmd_bone = getattr(pose_bone, "mmd_bone", None)
+    name_j = str(getattr(mmd_bone, "name_j", "") or "").strip()
+    name_e = str(getattr(mmd_bone, "name_e", "") or "").strip()
+    return (
+        f"{pose_bone.name}{suffix}",
+        f"{name_j}{suffix}" if name_j else "",
+        f"{name_e}{suffix}" if name_e else "",
+    )
+
+
+def _checked_bone_names(settings):
+    return {item.target_name for item in _checked_items(settings, "BONE")}
+
+
+class SPX_OT_SyncBoneNamesToRigids(Operator):
+    bl_idname = "surface_proxy.sync_bone_names_to_rigids"
+    bl_label = "将骨骼名称同步到刚体"
+    bl_description = "将勾选骨骼的 Blender 名称、MMD 名称和 MMD 英文名称同步到绑定刚体；空名称保持为空"
+    bl_options = {"REGISTER", "UNDO"}
+
+    def execute(self, context):
+        settings = context.scene.surface_proxy_creator
+        names = _checked_bone_names(settings)
+        if not names:
+            self.report({"ERROR"}, "没有勾选骨骼")
+            return {"CANCELLED"}
+        try:
+            root = _resolve_root(context, settings.mmd_root)
+            FnModel, _FnRigidBody, _rigid_module = _mmd_api()
+            armature = FnModel.find_armature_object(root)
+        except ProxyBuildError as error:
+            self.report({"ERROR"}, str(error))
+            return {"CANCELLED"}
+        if armature is None:
+            self.report({"ERROR"}, "当前 MMD 模型没有骨架")
+            return {"CANCELLED"}
+
+        changed = 0
+        for rigid in FnModel.iterate_rigid_body_objects(root):
+            bone_name = str(getattr(rigid.mmd_rigid, "bone", ""))
+            if bone_name not in names:
+                continue
+            synced = _bone_names_for_physics_sync(armature, bone_name)
+            if synced is None:
+                continue
+            blender_name, name_j, name_e = synced
+            set_ordered_object_name(rigid, blender_name)
+            rigid.mmd_rigid.name_j = name_j
+            rigid.mmd_rigid.name_e = name_e
+            changed += 1
+        bpy.ops.surface_proxy.refresh_mmd_browser()
+        self.report({"INFO"}, f"已将骨骼名称同步到 {changed} 个刚体")
+        return {"FINISHED"}
+
+
+class SPX_OT_SyncBoneNamesToJoints(Operator):
+    bl_idname = "surface_proxy.sync_bone_names_to_joints"
+    bl_label = "将骨骼名称同步到 Joint"
+    bl_description = "按刚体 B 绑定骨骼同步 Blender、MMD 和 MMD 英文名称；自动识别横向 Joint 并保留 _H"
+    bl_options = {"REGISTER", "UNDO"}
+
+    def execute(self, context):
+        settings = context.scene.surface_proxy_creator
+        names = _checked_bone_names(settings)
+        if not names:
+            self.report({"ERROR"}, "没有勾选骨骼")
+            return {"CANCELLED"}
+        try:
+            root = _resolve_root(context, settings.mmd_root)
+            FnModel, _FnRigidBody, _rigid_module = _mmd_api()
+            armature = FnModel.find_armature_object(root)
+            if settings.physics_proxy is not None:
+                associate_existing_proxy_physics(settings.physics_proxy)
+        except ProxyBuildError as error:
+            self.report({"ERROR"}, str(error))
+            return {"CANCELLED"}
+        if armature is None:
+            self.report({"ERROR"}, "当前 MMD 模型没有骨架")
+            return {"CANCELLED"}
+
+        changed = 0
+        skipped = 0
+        for joint in FnModel.iterate_joint_objects(root):
+            constraint = joint.rigid_body_constraint
+            rigid_b = constraint.object2 if constraint is not None else None
+            if rigid_b is None or rigid_b.mmd_type != "RIGID_BODY":
+                skipped += 1
+                continue
+            bone_name = str(getattr(rigid_b.mmd_rigid, "bone", ""))
+            if bone_name not in names:
+                continue
+            horizontal = joint.get("surface_proxy_role") == "JOINT_HORIZONTAL"
+            synced = _bone_names_for_physics_sync(armature, bone_name, horizontal)
+            if synced is None:
+                skipped += 1
+                continue
+            blender_name, name_j, name_e = synced
+            set_ordered_object_name(joint, blender_name, joint=True)
+            joint.mmd_joint.name_j = name_j
+            joint.mmd_joint.name_e = name_e
+            changed += 1
+        bpy.ops.surface_proxy.refresh_mmd_browser()
+        message = f"已将骨骼名称同步到 {changed} 个 Joint"
+        if skipped:
+            message += f"；跳过 {skipped} 个缺少有效刚体 B 或骨骼的 Joint"
+        self.report({"INFO"}, message)
         return {"FINISHED"}
 
 
@@ -2748,11 +4065,11 @@ def _browser_kind_changed(settings, _context):
 
 
 def _get_collision_group_display(settings):
-    return int(settings.collision_group_number) + 1
+    return int(settings.collision_group_number)
 
 
 def _set_collision_group_display(settings, value):
-    settings.collision_group_number = max(0, min(15, int(value) - 1))
+    settings.collision_group_number = max(0, min(15, int(value)))
 
 
 def _get_block_same_collision_group(settings):
@@ -2862,9 +4179,9 @@ def register_settings(cls):
     properties["collision_group_number"] = IntProperty(name="碰撞组", default=0, min=0, max=15)
     properties["collision_group_display"] = IntProperty(
         name="碰撞组",
-        description="显示为 1–16；内部 MMD 索引仍为 0–15",
-        min=1,
-        max=16,
+        description="MMD 碰撞组索引（0–15）",
+        min=0,
+        max=15,
         get=_get_collision_group_display,
         set=_set_collision_group_display,
     )
@@ -2874,6 +4191,46 @@ def register_settings(cls):
         description="把当前碰撞组同时加入不碰撞组，避免同组刚体互相碰撞",
         get=_get_block_same_collision_group,
         set=_set_block_same_collision_group,
+    )
+    properties["protect_apply_location"] = BoolProperty(
+        name="刚体位置",
+        description="应用参数到当前代理时保留刚体的现有位移",
+    )
+    properties["protect_apply_rotation"] = BoolProperty(
+        name="刚体旋转",
+        description="应用参数到当前代理时保留刚体的现有旋转",
+    )
+    properties["protect_apply_joint_location"] = BoolProperty(
+        name="Joint 位置",
+        description="应用参数到当前代理时保留 Joint 的现有位移",
+    )
+    properties["protect_apply_joint_rotation"] = BoolProperty(
+        name="Joint 旋转",
+        description="应用参数到当前代理时保留 Joint 的现有旋转",
+    )
+    properties["protect_apply_shape"] = BoolProperty(
+        name="刚体形状",
+        description="应用参数到当前代理时保留刚体的现有形状",
+    )
+    properties["protect_apply_size"] = BoolProperty(
+        name="刚体尺寸",
+        description="应用参数到当前代理时保留刚体的现有尺寸",
+    )
+    properties["protect_apply_type"] = BoolProperty(
+        name="刚体类型",
+        description="应用参数到当前代理时保留刚体的现有类型",
+    )
+    properties["protect_apply_dynamics"] = BoolProperty(
+        name="刚体演算参数",
+        description="应用参数到当前代理时保留质量、阻尼、弹性和摩擦",
+    )
+    properties["protect_apply_joint_parameters"] = BoolProperty(
+        name="Joint 演算参数",
+        description="应用参数到当前代理时保留 Joint 的移动/旋转限制和弹簧参数",
+    )
+    properties["protect_apply_collision"] = BoolProperty(
+        name="碰撞设置",
+        description="应用参数到当前代理时保留碰撞组和不碰撞组",
     )
     properties["create_horizontal_joints"] = BoolProperty(name="生成横向 Joint", default=True)
     properties["limit_linear_lower"] = FloatVectorProperty(
@@ -3026,6 +4383,7 @@ def register_settings(cls):
     properties["browser_kind"] = EnumProperty(
         name="查看类型",
         items=(
+            ("MATERIAL", "材质", ""),
             ("BONE", "骨骼", ""),
             ("RIGID", "刚体", ""),
             ("JOINT", "Joint", ""),
@@ -3043,6 +4401,11 @@ def register_settings(cls):
     properties["browser_filter_by_prefix"] = BoolProperty(
         name="按前缀过滤",
         description="只显示可见名称或 Blender 名称以“名称前缀”开头的项目；可与当前代理过滤叠加",
+        default=False,
+    )
+    properties["material_order_auto_sync"] = BoolProperty(
+        name="自动同步校对",
+        description="材质顺序改变时，只更新实际换位材质的 ID 及其单材质物体编号；多材质物体不改名",
         default=False,
     )
     properties["browser_search"] = StringProperty(name="搜索")
@@ -3077,9 +4440,45 @@ def _draw_numbered_collision_mask(layout, data, property_name):
                 data,
                 property_name,
                 index=index,
-                text=str(index + 1),
+                text=str(index),
                 toggle=True,
             )
+
+
+def _draw_apply_protection(layout, settings):
+    protection = layout.box()
+    protection.label(text="应用保护（禁止更新）", icon="LOCKED")
+    protection.label(
+        text="勾选项在点击底部“应用参数到当前代理”时保留现有值",
+        icon="INFO",
+    )
+    protection.label(
+        text="不影响“生成”或“同步当前代理刚体和 Joint”",
+        icon="INFO",
+    )
+    protection.label(
+        text="三个 Joint 保护均关闭时，应用会按“生成横向 Joint”增删横 Joint",
+        icon="INFO",
+    )
+    grid = protection.grid_flow(
+        row_major=True,
+        columns=2,
+        even_columns=True,
+        align=True,
+    )
+    for name in (
+        "protect_apply_location",
+        "protect_apply_rotation",
+        "protect_apply_joint_location",
+        "protect_apply_joint_rotation",
+        "protect_apply_shape",
+        "protect_apply_size",
+        "protect_apply_type",
+        "protect_apply_dynamics",
+        "protect_apply_collision",
+        "protect_apply_joint_parameters",
+    ):
+        grid.prop(settings, name)
 
 
 def _interpolation_grid(layout, columns):
@@ -3352,13 +4751,16 @@ def draw_physics_settings(layout, settings, context=None):
         _draw_numbered_collision_mask(
             collision, settings, "collision_group_mask"
         )
+        _draw_apply_protection(page, settings)
     elif settings.physics_tab == "VERTICAL":
         _draw_joint_settings(page, settings, "")
+        _draw_apply_protection(page, settings)
     else:
         page.prop(settings, "create_horizontal_joints")
         horizontal = page.column()
         horizontal.enabled = settings.create_horizontal_joints
         _draw_joint_settings(horizontal, settings, "horizontal_")
+        _draw_apply_protection(page, settings)
     row = box.row(align=True)
     row.operator("surface_proxy.create_mmd_physics", icon="PHYSICS")
     row.operator("surface_proxy.update_mmd_physics", icon="FILE_REFRESH")
@@ -3373,11 +4775,13 @@ def draw_browser(layout, settings):
     ):
         _schedule_mmd_browser_auto_refresh()
     layout.prop(settings, "mmd_root")
-    if settings.browser_kind != "DIAGNOSTIC":
+    if settings.browser_kind in {"BONE", "RIGID", "JOINT"}:
         layout.prop(settings, "physics_proxy", text="代理范围")
         row = layout.row(align=True)
         row.prop(settings, "browser_current_proxy_only")
         row.prop(settings, "browser_filter_by_prefix")
+    elif settings.browser_kind == "MATERIAL":
+        layout.prop(settings, "browser_filter_by_prefix")
     row = layout.row(align=True)
     row.prop(settings, "browser_kind", expand=True)
     row.operator("surface_proxy.refresh_mmd_browser", text="", icon="FILE_REFRESH")
@@ -3424,7 +4828,29 @@ def draw_browser(layout, settings):
         text="",
         icon="EYEDROPPER",
     )
-    layout.template_list(
+    browser_table = layout.row()
+    list_column = browser_table.column()
+    if settings.browser_kind == "MATERIAL":
+        header = list_column.row(align=True)
+        (
+            selection,
+            order,
+            blender_name,
+            mmd_name,
+            mmd_english_name,
+            navigation,
+        ) = _material_table_columns(header)
+        selection.label(text="")
+        for column, text in (
+            (order, "序号"),
+            (blender_name, "Blender 材质名"),
+            (mmd_name, "MMD 名称"),
+            (mmd_english_name, "MMD 英文名"),
+        ):
+            column.alignment = "CENTER"
+            column.label(text=text)
+        navigation.label(text="")
+    list_column.template_list(
         "SPX_UL_MMDItems",
         "",
         settings,
@@ -3433,6 +4859,10 @@ def draw_browser(layout, settings):
         "browser_index",
         rows=10,
     )
+    order_buttons = browser_table.column(align=True)
+    if settings.browser_kind == "MATERIAL":
+        order_buttons.label(text="", icon="BLANK1")
+    draw_mmd_ordering(order_buttons, settings)
     selected_count = len(_checked_items(settings, settings.browser_kind))
     layout.label(
         text=f"当前列表：{len(settings.browser_items)} 项；已勾选：{selected_count} 项"
@@ -3453,8 +4883,26 @@ def draw_browser(layout, settings):
         text="反选",
     )
     operator.action = "INVERT"
-    row.menu(SPX_MT_MMDQuickSelect.bl_idname, text="快速选组", icon="GROUP_BONE")
-    draw_mmd_ordering(layout, settings)
+    operator = row.operator(
+        SPX_OT_SetMMDBrowserChecks.bl_idname,
+        text="区间选组",
+    )
+    operator.action = "RANGE"
+    if settings.browser_kind != "MATERIAL":
+        row.menu(SPX_MT_MMDQuickSelect.bl_idname, text="快速选组", icon="GROUP_BONE")
+    draw_mmd_bone_subdivision(layout, settings)
+    if settings.browser_kind == "MATERIAL":
+        layout.operator(
+            SPX_OT_SelectCheckedMMDItems.bl_idname,
+            icon="RESTRICT_SELECT_OFF",
+        )
+        layout.operator(
+            SPX_OT_SyncSelectedMMDObjectsToBrowser.bl_idname,
+            text="从 3D 视图同步选中材质",
+            icon="UV_SYNC_SELECT",
+        )
+        draw_material_name_sync(layout, settings)
+        return
     row = layout.row(align=True)
     row.operator(
         SPX_OT_SelectCheckedMMDItems.bl_idname,
@@ -3471,6 +4919,16 @@ def draw_browser(layout, settings):
             text=f"从 3D 视图同步选中{object_label}",
             icon="UV_SYNC_SELECT",
         )
+        if settings.browser_kind == "RIGID":
+            joint_box = layout.box()
+            joint_box.operator(
+                SPX_OT_CreateJointFromCheckedRigids.bl_idname,
+                icon="CONSTRAINT_BONE",
+            )
+            joint_box.label(
+                text="只能勾选两个刚体；活动项为 B，另一个为 A",
+                icon="INFO",
+            )
         draw_mirror_tools(layout, settings)
         if settings.browser_kind == "JOINT":
             names_box = layout.box()
@@ -3505,7 +4963,18 @@ def draw_browser(layout, settings):
         restore_box.label(text="支持普通、.L/.R 与 _L/_R 父子骨链", icon="INFO")
         draw_bone_physics_creator(layout, settings)
         names_box = layout.box()
-        names_box.label(text="补全空缺 MMD 骨骼名称", icon="SORTALPHA")
+        names_box.label(text="补全并标准化 MMD 骨骼名称", icon="SORTALPHA")
+        translate_row = names_box.row(align=True)
+        translate_row.operator(
+            SPX_OT_TranslateSelectedBoneNamesWithAI.bl_idname,
+            text="AI翻译勾选骨骼日文名",
+            icon="WORLD",
+        )
+        translate_row.operator(
+            "surface_proxy.morph_ai_settings",
+            text="",
+            icon="PREFERENCES",
+        )
         names_row = names_box.row(align=True)
         operator = names_row.operator(
             SPX_OT_FillMissingMMDBoneNames.bl_idname,
@@ -3517,7 +4986,16 @@ def draw_browser(layout, settings):
             text="补全全部",
         )
         operator.scope = "ALL"
-        names_box.label(text="只填写空字段，不覆盖已有名称", icon="INFO")
+        sync_row = names_box.row(align=True)
+        sync_row.operator(
+            SPX_OT_SyncBoneNamesToRigids.bl_idname,
+            text="骨骼名同步到刚体",
+        )
+        sync_row.operator(
+            SPX_OT_SyncBoneNamesToJoints.bl_idname,
+            text="骨骼名同步到 Joint",
+        )
+        names_box.label(text="镜像骨骼统一左/右与 _L/_R；中英双语主体保持不变", icon="INFO")
         box = layout.box()
         box.label(text="批量清理骨骼", icon="BONE_DATA")
         root = settings.mmd_root
@@ -3546,6 +5024,8 @@ def draw_browser(layout, settings):
 
 
 def _draw_active_mmd_inspector(layout, settings):
+    if settings.browser_kind == "MATERIAL":
+        return
     item = _active_browser_item(settings)
     if item is None:
         return
@@ -3569,7 +5049,7 @@ def _draw_active_mmd_inspector(layout, settings):
             box.prop(mmd_bone, "name_e")
             operator = box.operator(
                 SPX_OT_FillMissingMMDBoneNames.bl_idname,
-                text="补全当前空缺名称",
+                text="补全并标准化当前名称",
                 icon="SORTALPHA",
             )
             operator.scope = "ACTIVE"
@@ -3665,7 +5145,7 @@ def _draw_active_mmd_inspector(layout, settings):
         row.prop(rigid, "type")
         row.prop(rigid, "shape")
         box.prop(rigid, "size")
-        box.prop(rigid, "collision_group_number", text="碰撞组（内部 0–15）")
+        box.prop(rigid, "collision_group_number", text="碰撞组")
         _draw_numbered_collision_mask(box, rigid, "collision_group_mask")
         body = obj.rigid_body
         if body is not None:
@@ -3720,7 +5200,7 @@ def _draw_mmd_list_context_menu(self, context):
     )
     if settings.browser_kind == "BONE":
         self.layout.operator(SPX_OT_CleanupCheckedBones.bl_idname, icon="TRASH")
-    else:
+    elif settings.browser_kind != "MATERIAL":
         self.layout.operator(SPX_OT_DeleteCheckedMMDItems.bl_idname, icon="TRASH")
 
 
@@ -3751,9 +5231,13 @@ CLASSES = (
     SPX_OT_QuickCheckMMDGroup,
     SPX_OT_PrefixFromActiveMMDItem,
     SPX_MT_MMDQuickSelect,
+    SPX_OT_TranslateSelectedBoneNamesWithAI,
     SPX_OT_SelectCheckedMMDItems,
     SPX_OT_SyncSelectedMMDObjectsToBrowser,
+    SPX_OT_CreateJointFromCheckedRigids,
     SPX_OT_FillMissingMMDBoneNames,
+    SPX_OT_SyncBoneNamesToRigids,
+    SPX_OT_SyncBoneNamesToJoints,
     SPX_OT_SyncJointNamesFromRigidB,
     *MIRROR_PHYSICS_CLASSES,
     SPX_OT_DeleteCheckedMMDItems,

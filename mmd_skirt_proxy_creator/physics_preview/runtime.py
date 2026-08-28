@@ -13,6 +13,7 @@ import bpy
 from bpy.app.handlers import persistent
 from mathutils import Matrix, Quaternion, Vector
 
+from ..mmd_rigid_scale import uniform_rigid_world_scale
 from .ffi import (
     BodyDesc,
     JointDesc,
@@ -70,11 +71,7 @@ def _tag_view3d_redraw():
 
 
 def _uniform_world_scale(obj, tolerance=1.0e-4):
-    scale = tuple(abs(float(value)) for value in obj.matrix_world.decompose()[2])
-    largest = max(scale)
-    if largest <= 1.0e-8 or max(scale) - min(scale) > largest * tolerance:
-        raise RuntimeError(f"{obj.name} 使用了非均匀或零缩放，无法保持 MMD 刚体语义")
-    return sum(scale) / 3.0
+    return uniform_rigid_world_scale(obj, tolerance)
 
 
 def _supported_import_scale(value, tolerance=1.0e-4):

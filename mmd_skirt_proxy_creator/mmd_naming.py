@@ -4,6 +4,8 @@ import re
 
 _ORDER_PREFIX = re.compile(r"^(?P<prefix>[0-9A-Z]{3}_)(?P<name>.*)$")
 _SIDE_SUFFIX = re.compile(r"^(?P<name>.*?)[._](?P<side>[LR])$")
+_CJK_CHARACTER = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]")
+_ASCII_LETTER = re.compile(r"[A-Za-z]")
 
 
 def normalized_mmd_names(name_j, name_e, blender_name):
@@ -35,6 +37,35 @@ def bone_mmd_names(pose_bone, blender_name):
         getattr(mmd_bone, "name_e", ""),
         blender_name,
     )
+
+
+def standardized_bone_mmd_names(pose_bone, blender_name):
+    mmd_bone = getattr(pose_bone, "mmd_bone", None)
+    current_j = str(getattr(mmd_bone, "name_j", "") or "").strip()
+    current_e = str(getattr(mmd_bone, "name_e", "") or "").strip()
+    blender_match = _SIDE_SUFFIX.match(blender_name)
+    blender_base = blender_match.group("name") if blender_match else blender_name
+    side = blender_match.group("side") if blender_match else ""
+
+    preserve_bilingual_bodies = (
+        bool(_CJK_CHARACTER.search(current_j))
+        and current_e.isascii()
+        and bool(_ASCII_LETTER.search(current_e))
+    )
+    if preserve_bilingual_bodies:
+        name_j = current_j[1:] if current_j.startswith(("左", "右")) else current_j
+        name_e = current_e[1:] if current_e.startswith(("左", "右")) else current_e
+        match_j = _SIDE_SUFFIX.match(name_j)
+        match_e = _SIDE_SUFFIX.match(name_e)
+        name_j = match_j.group("name") if match_j else name_j
+        name_e = match_e.group("name") if match_e else name_e
+    else:
+        name_j = blender_base
+        name_e = blender_base
+
+    if not side:
+        return name_j, name_e
+    return f"{'左' if side == 'L' else '右'}{name_j}", f"{name_e}_{side}"
 
 
 def set_ordered_object_name(obj, base_name, joint=False):

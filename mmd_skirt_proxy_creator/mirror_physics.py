@@ -120,13 +120,19 @@ def _find_mirror_rigid(source, rigids, armature, allow_shared=False):
     name_j, name_e = _rigid_names(source, armature, bone_name)
     source_name_j = str(source.mmd_rigid.name_j or "")
     source_name_e = str(source.mmd_rigid.name_e or "")
+    mirrored_name_j = mirrored_name(source_name_j) if source_name_j else ""
+    mirrored_name_e = mirrored_name(source_name_e) if source_name_e else ""
     if source_name_j:
         candidates = [
-            rigid for rigid in candidates if rigid.mmd_rigid.name_j == name_j
+            rigid
+            for rigid in candidates
+            if rigid.mmd_rigid.name_j in {name_j, mirrored_name_j}
         ]
     elif source_name_e:
         candidates = [
-            rigid for rigid in candidates if rigid.mmd_rigid.name_e == name_e
+            rigid
+            for rigid in candidates
+            if rigid.mmd_rigid.name_e in {name_e, mirrored_name_e}
         ]
     else:
         candidates = [
@@ -141,6 +147,8 @@ def _find_mirror_rigid(source, rigids, armature, allow_shared=False):
         return None
     candidates.sort(
         key=lambda rigid: (
+            bool(mirrored_name_j) and rigid.mmd_rigid.name_j != mirrored_name_j,
+            bool(mirrored_name_e) and rigid.mmd_rigid.name_e != mirrored_name_e,
             rigid.mmd_rigid.name_j != name_j,
             rigid.mmd_rigid.name_e != name_e,
             int(rigid.mmd_rigid.type) != int(source.mmd_rigid.type),
@@ -417,6 +425,28 @@ def _refresh_targets(settings, target_names):
     return visible
 
 
+def _sync_joint_axes_from_rigids(context, settings):
+    from .mmd_physics import _mmd_api, _resolve_root
+
+    sources = _checked_objects(settings, "RIGID")
+    if not sources:
+        raise MirrorPhysicsError("没有勾选刚体")
+    root = _resolve_root(context, settings.mmd_root)
+    FnModel, _FnRigidBody, _rigid_module = _mmd_api()
+    selected = set(sources)
+    synced = 0
+    for joint in FnModel.iterate_joint_objects(root):
+        endpoints = _joint_endpoints(joint)
+        if endpoints is None or endpoints[1] not in selected:
+            continue
+        location, _rotation, scale = joint.matrix_world.decompose()
+        _rigid_location, rigid_rotation, _rigid_scale = endpoints[1].matrix_world.decompose()
+        joint.matrix_world = Matrix.LocRotScale(location, rigid_rotation, scale)
+        synced += 1
+    context.view_layer.update()
+    return synced
+
+
 def _run(context, create):
     from .mmd_physics import _mmd_api, _resolve_root
 
@@ -645,6 +675,26 @@ class SPX_OT_SyncMirroredMMDItems(Operator):
         return {"FINISHED"}
 
 
+class SPX_OT_SyncJointAxesFromRigids(Operator):
+    bl_idname = "surface_proxy.sync_joint_axes_from_rigids"
+    bl_label = "同步刚体轴到关联 Joint"
+    bl_description = "保持 Joint 位置不变，把勾选刚体的当前世界轴向同步到以该刚体为 B 端点的关联 Joint"
+    bl_options = {"REGISTER", "UNDO"}
+
+    def execute(self, context):
+        settings = context.scene.surface_proxy_creator
+        try:
+            synced = _sync_joint_axes_from_rigids(context, settings)
+        except (MirrorPhysicsError, RuntimeError, ValueError) as error:
+            self.report({"ERROR"}, str(error))
+            return {"CANCELLED"}
+        if not synced:
+            self.report({"WARNING"}, "勾选刚体没有以其为 B 端点的关联 Joint")
+            return {"FINISHED"}
+        self.report({"INFO"}, f"已同步 {synced} 个关联 Joint 的轴向")
+        return {"FINISHED"}
+
+
 def draw_mirror_tools(layout, settings):
     if settings.browser_kind not in {"RIGID", "JOINT"}:
         return
@@ -652,7 +702,13 @@ def draw_mirror_tools(layout, settings):
     box = layout.box()
     box.label(text=f"镜像{label}", icon="MOD_MIRROR")
     if settings.browser_kind == "RIGID":
+        box.operator(
+            SPX_OT_SyncJointAxesFromRigids.bl_idname,
+            text="同步勾选刚体轴到关联 Joint",
+            icon="CON_ROTLIKE",
+        )
         box.prop(settings, "mirror_include_joints")
+        box.label(text="同步 Joint 轴后再同步镜像；保持“同时处理关联 Joint”开启", icon="INFO")
     row = box.row(align=True)
     row.operator(
         SPX_OT_CreateMirroredMMDItems.bl_idname,
@@ -665,10 +721,12 @@ def draw_mirror_tools(layout, settings):
         icon="FILE_REFRESH",
     )
     box.label(text="仅处理当前列表已勾选的源项", icon="INFO")
+    box.label(text="支持 .L/.R 与 _L/_R 左右后缀", icon="INFO")
     box.label(text="无左右标识时使用 _M 作为镜像配对后缀", icon="INFO")
 
 
 CLASSES = (
     SPX_OT_CreateMirroredMMDItems,
     SPX_OT_SyncMirroredMMDItems,
+    SPX_OT_SyncJointAxesFromRigids,
 )
