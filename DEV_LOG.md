@@ -1,5 +1,10 @@
 # Development Log
 
+## 2026-08-28 - V0.1.8 Group Morph 失效详情参与清理
+
+- 扩展 Morph 编辑器“清理”的 Group Morph 判定：详情行引用的目标 Morph 已从其它 Tab 删除、并在详情列表显示三角感叹号时，该行不再算作有效详情；已勾选 Group Morph 的全部详情均失效时会被清理。混合包含有效引用与失效引用的 Group Morph 仍整体保留，避免因单条坏引用误删仍有用途的群组。
+- `tests/mmd_morph_editor_regression.py` 新增“Vertex Morph 先清理后 Group 引用变为失效”的顺序回归，并覆盖全失效 Group 可清理、有效与失效混合 Group 保留。Blender 4.4.3 focused regression 输出 `MMD_MORPH_EDITOR_REGRESSION_OK`；`py_compile` 与 `git diff --check` 通过。版本保持 V0.1.8，源码 Junction 直接生效，不打包 ZIP、不 push。
+
 ## 2026-08-28 - V0.1.8 Morph 当前 Tab 空详情清理
 
 - Morph 编辑器的材质、UV、骨骼、顶点、群组五个 Tab 在勾选操作行统一新增“清理”按钮；操作范围严格限定为当前 Tab 的已勾选项，只移除详情为空的 Morph，不再像普通删除按钮那样在无勾选时回退删除活动行。有详情的勾选项保持不变：材质/骨骼/群组按 offset 行判断，顶点按模型中的同名 ShapeKey 判断，UV 同时支持 offset 数据与 `VERTEX_GROUP` 模式下的对应 UV Vertex Group。
