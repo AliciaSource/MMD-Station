@@ -143,8 +143,16 @@ def _find_mirror_rigid(source, rigids, armature, allow_shared=False):
             or rigid.mmd_rigid.name_e == name_e
         ]
     if not candidates:
-        if allow_shared and _source_side(source) is None:
-            return source
+        if allow_shared:
+            source_side = _source_side(source)
+            if source_side is None:
+                return source
+            if source_side == "M":
+                local_x = (
+                    armature.matrix_world.inverted_safe() @ source.matrix_world
+                ).translation.x
+                if abs(local_x) <= 1.0e-5:
+                    return source
         return None
     candidates.sort(
         key=lambda rigid: (

@@ -1,5 +1,10 @@
 # Development Log
 
+## 2026-08-28 - V0.1.8 中线 `_M` 刚体参与镜像 Joint
+
+- 修复“创建镜像 Joint / 同步镜像 Joint”在一端为中线 `_M` 刚体时直接计为跳过的问题。`_M` 仍保留为普通无左右名称的镜像副本标记；但当该刚体确实位于骨架局部 X 中线时，Joint 镜像端点解析现在允许左右两侧共享它，不再因为 `_source_side == "M"` 错误拒绝已有的另一侧端点。
+- `tests/mirror_underscore_suffix_regression.py` 新增中线 `_M` 可共享、非中线 `_M` 不可误共享的边界回归。Blender 4.4.3 focused regression 输出 `MIRROR_UNDERSCORE_SUFFIX_REGRESSION_OK`；另以 `D:\MMD\模型\Alicia\鳴潮-達尼婭\達尼婭\24.blend` 只读载入并在内存中验证 `左Bone_Piao210`：创建得到右侧 Joint，随后同步成功，两个阶段均 `skipped=0`，未保存测试工程。版本保持 V0.1.8，源码 Junction 直接生效，不打包 ZIP、不 push。
+
 ## 2026-08-28 - V0.1.8 单目标 Material Morph 预设免勾选
 
 - 调整 Morph 编辑器材质详情中的“预设：隐藏 / 预设：显示”：当前 Material Morph 只有一个目标时，即使详情行未勾选也会直接对唯一目标应用预设；有两个或以上目标时仍必须至少勾选一行，未勾选会保持原警告并取消操作。按钮悬停说明同步明确单目标与多目标边界。
