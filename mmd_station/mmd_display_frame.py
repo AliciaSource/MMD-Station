@@ -201,7 +201,7 @@ class SPX_UL_DisplayItems(UIList):
         self,
         _context,
         layout,
-        _data,
+        data,
         item,
         _icon,
         _active_data,
@@ -220,6 +220,17 @@ class SPX_UL_DisplayItems(UIList):
         row.prop(item, "type", text="", emboss=False)
         if item.type == "MORPH":
             row.prop(item, "morph_type", text="", emboss=False)
+        elif data.name != "表情":
+            FnModel, _Model = _mmd_api()
+            armature = FnModel.find_armature_object(item.id_data)
+            operator = row.operator(
+                "surface_proxy.select_mmd_item",
+                text="",
+                icon="RESTRICT_SELECT_OFF",
+            )
+            operator.kind = "BONE"
+            operator.target_name = item.name
+            operator.armature_name = armature.name if armature is not None else ""
 
 
 class SPX_OT_RefreshDisplayFrameEditor(Operator):
@@ -554,6 +565,55 @@ class SPX_OT_CleanInvalidDisplayItems(Operator):
         return {"FINISHED"}
 
 
+class SPX_OT_SelectCheckedDisplayBones(Operator):
+    bl_idname = "surface_proxy.select_checked_display_bones"
+    bl_label = "将勾选项选入 Blender"
+    bl_description = "把当前显示枠中已勾选的有效骨骼同步为 Blender Pose Mode 选择"
+    bl_options = {"REGISTER", "UNDO"}
+
+    def execute(self, context):
+        root = _find_root(context, context.scene.surface_proxy_creator)
+        frame = _active_frame(root) if root is not None else None
+        if frame is None or frame.name == "表情":
+            return {"CANCELLED"}
+        checked_names = [
+            item.name
+            for item in frame.data
+            if item.type == "BONE" and getattr(item, ITEM_SELECTED_PROPERTY)
+        ]
+        if not checked_names:
+            self.report({"ERROR"}, "当前显示枠中没有勾选骨骼")
+            return {"CANCELLED"}
+        FnModel, _Model = _mmd_api()
+        armature = FnModel.find_armature_object(root)
+        if armature is None:
+            self.report({"ERROR"}, "找不到当前 MMD 模型的 Armature")
+            return {"CANCELLED"}
+        valid_names = [
+            name for name in checked_names if armature.data.bones.get(name) is not None
+        ]
+        if not valid_names:
+            self.report({"ERROR"}, "勾选骨骼均已失效，请先清理残余显示项")
+            return {"CANCELLED"}
+        if context.object is not None and context.object.mode != "OBJECT":
+            bpy.ops.object.mode_set(mode="OBJECT")
+        bpy.ops.object.select_all(action="DESELECT")
+        armature.hide_set(False)
+        armature.select_set(True)
+        context.view_layer.objects.active = armature
+        bpy.ops.object.mode_set(mode="POSE")
+        selected = set(valid_names)
+        for bone in armature.data.bones:
+            bone.select = bone.name in selected
+        armature.data.bones.active = armature.data.bones[valid_names[-1]]
+        skipped = len(checked_names) - len(valid_names)
+        message = f"已将 {len(valid_names)} 根勾选骨骼选入 Blender"
+        if skipped:
+            message += f"；跳过 {skipped} 个失效项"
+        self.report({"INFO"}, message)
+        return {"FINISHED"}
+
+
 class SPX_OT_ReorderDisplayItems(Operator):
     bl_idname = "surface_proxy.reorder_display_items"
     bl_label = "排序显示项"
@@ -810,6 +870,11 @@ def draw_display_frame_editor(layout, context):
         )
     else:
         layout.operator(
+            "surface_proxy.select_checked_display_bones",
+            text="将勾选项选入 Blender",
+            icon="RESTRICT_SELECT_OFF",
+        )
+        layout.operator(
             "surface_proxy.smart_fill_display_frame_bones",
             text="智能补充未收录的可见骨骼",
             icon="IMPORT",
@@ -869,6 +934,7 @@ CLASSES = (
     SPX_OT_SelectDisplayItems,
     SPX_OT_SelectDisplayInterval,
     SPX_OT_CleanInvalidDisplayItems,
+    SPX_OT_SelectCheckedDisplayBones,
     SPX_OT_ReorderDisplayItems,
     SPX_OT_SmartFillDisplayFrameBones,
     SPX_OT_SmartReorderFacialFrame,

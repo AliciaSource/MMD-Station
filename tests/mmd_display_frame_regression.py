@@ -95,6 +95,11 @@ assert bpy.ops.surface_proxy.clean_invalid_display_items() == {"FINISHED"}
 assert "RenamedBoneResidual" not in {item.name for item in frame.data}
 assert "MissingMorphResidual" not in {item.name for item in frame.data}
 assert {"SelectedBone", "MissingBone"} <= {item.name for item in frame.data}
+assert bpy.ops.surface_proxy.select_checked_display_bones() == {"FINISHED"}
+assert armature.mode == "POSE"
+assert {
+    bone.name for bone in armature.data.bones if bone.select
+} == {"SelectedBone", "MissingBone"}
 
 assert bpy.ops.object.mode_set(mode="OBJECT") == {"FINISHED"}
 add_mesh_with_shape_key(armature, "VertexDetailed")
