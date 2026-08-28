@@ -13,7 +13,7 @@ bpy.ops.preferences.addon_enable(module="bl_ext.blender_org.mmd_tools")
 
 import mmd_station
 from mmd_station import mmd_morph_editor as morph_editor_module
-from bl_ext.blender_org.mmd_tools.core.model import Model
+from bl_ext.blender_org.mmd_tools.core.model import FnModel, Model
 from mmd_station.mmd_morph_editor import (
     DETAIL_SELECTED_PROPERTY,
     OUTPUT_BRIDGE_PROPERTY,
@@ -693,6 +693,35 @@ assert smart_morph.active_data == 1
 assert bpy.ops.surface_proxy.add_morph_offset() == {"CANCELLED"}
 assert len(smart_morph.data) == 5
 
+# Detail interval selection fills only the rows between the first and last
+# checked endpoints and rejects a single endpoint without changing selection.
+assert bpy.ops.surface_proxy.select_morph_details(action="NONE") == {"FINISHED"}
+smart_morph.data[1].spx_morph_detail_selected = True
+smart_morph.data[4].spx_morph_detail_selected = True
+assert bpy.ops.surface_proxy.select_morph_details(action="INTERVAL") == {
+    "FINISHED"
+}
+assert [data.spx_morph_detail_selected for data in smart_morph.data] == [
+    False,
+    True,
+    True,
+    True,
+    True,
+]
+assert bpy.ops.surface_proxy.select_morph_details(action="NONE") == {"FINISHED"}
+smart_morph.data[2].spx_morph_detail_selected = True
+assert bpy.ops.surface_proxy.select_morph_details(action="INTERVAL") == {
+    "CANCELLED"
+}
+assert [data.spx_morph_detail_selected for data in smart_morph.data] == [
+    False,
+    False,
+    True,
+    False,
+    False,
+]
+assert bpy.ops.surface_proxy.select_morph_details(action="NONE") == {"FINISHED"}
+
 # Detail sorting keeps the checked rows stable and retains the blue active row.
 smart_morph.data[2].spx_morph_detail_selected = True
 smart_morph.data[4].spx_morph_detail_selected = True
@@ -831,6 +860,28 @@ assert abs(mesh_b.data.shape_keys.key_blocks["Smile"].value - 0.625) < 1.0e-6
 assert abs(custom_mesh.data.shape_keys.key_blocks["Smile"].value - 0.625) < 1.0e-6
 
 # Vertex detail object buttons select the exact mesh and activate its ShapeKey.
+root.spx_morph_active_index = root.spx_morph_states.find(states["Smile"].uid)
+vertex_targets = [
+    mesh_object
+    for mesh_object in FnModel.iterate_mesh_objects(root)
+    if mesh_object.data.shape_keys.key_blocks.get("Smile") is not None
+]
+assert bpy.ops.surface_proxy.select_morph_details(action="NONE") == {"FINISHED"}
+vertex_targets[0].spx_morph_vertex_target_selected = True
+vertex_targets[-1].spx_morph_vertex_target_selected = True
+assert bpy.ops.surface_proxy.select_morph_details(action="INTERVAL") == {
+    "FINISHED"
+}
+assert all(target.spx_morph_vertex_target_selected for target in vertex_targets)
+assert bpy.ops.surface_proxy.select_morph_details(action="NONE") == {"FINISHED"}
+vertex_targets[1].spx_morph_vertex_target_selected = True
+assert bpy.ops.surface_proxy.select_morph_details(action="INTERVAL") == {
+    "CANCELLED"
+}
+assert [
+    target.spx_morph_vertex_target_selected for target in vertex_targets
+] == [index == 1 for index in range(len(vertex_targets))]
+
 mesh_b.select_set(True)
 result = bpy.ops.surface_proxy.select_vertex_morph_object(
     root_name=root.name,
