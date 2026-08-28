@@ -302,14 +302,18 @@ assert tuple(settings.limit_angular_lower) == (0.0, 0.0, 0.0)
 assert tuple(settings.spring_angular) == (0.0, 0.0, 0.0)
 assert bpy.ops.surface_proxy.apply_stable_long_skirt_preset() == {"FINISHED"}
 assert settings.rigid_shape == "BOX"
-assert settings.mass == 2.0
+assert settings.mass == 12.0
 assert settings.mass_interpolate
-assert math.isclose(settings.mass_end, 0.4, abs_tol=1.0e-7)
-assert math.isclose(settings.rigid_depth_ratio, 0.15, abs_tol=1.0e-7)
+assert math.isclose(settings.mass_end, 1.0, abs_tol=1.0e-7)
+assert math.isclose(settings.rigid_depth_ratio, 0.1, abs_tol=1.0e-7)
 assert settings.rigid_depth_ratio_interpolate
-assert math.isclose(settings.rigid_depth_ratio_end, 0.5, abs_tol=1.0e-7)
-assert math.isclose(settings.linear_damping, 0.995, abs_tol=1.0e-7)
-assert math.isclose(settings.linear_damping_end, 0.99, abs_tol=1.0e-7)
+assert math.isclose(settings.rigid_depth_ratio_end, 0.4, abs_tol=1.0e-7)
+assert math.isclose(settings.linear_damping, 0.99, abs_tol=1.0e-7)
+assert math.isclose(settings.linear_damping_end, 0.9999, abs_tol=1.0e-7)
+assert math.isclose(settings.angular_damping, 0.9999, abs_tol=1.0e-7)
+assert math.isclose(settings.angular_damping_end, 0.99, abs_tol=1.0e-7)
+assert math.isclose(settings.friction, 0.0, abs_tol=1.0e-7)
+assert math.isclose(settings.friction_end, 0.3, abs_tol=1.0e-7)
 assert settings.bl_rna.properties["linear_damping"].precision == 4
 assert settings.bl_rna.properties["linear_damping_end"].precision == 4
 assert settings.bl_rna.properties["angular_damping"].precision == 4
@@ -335,28 +339,31 @@ assert _adaptive_number_text(2.0) == "2.00"
 assert _adaptive_number_text(0.99) == "0.99"
 assert _adaptive_number_text(0.995) == "0.995"
 assert _adaptive_number_text(0.12345) == "0.1235"
-assert settings.adaptive_number_linear_damping == "0.995"
-assert settings.adaptive_number_linear_damping_end == "0.99"
+assert settings.adaptive_number_linear_damping == "0.99"
+assert settings.adaptive_number_linear_damping_end == "0.9999"
 settings.adaptive_number_linear_damping = "0.9876"
 assert math.isclose(settings.linear_damping, 0.9876, abs_tol=1.0e-7)
-settings.linear_damping = 0.995
-assert settings.adaptive_number_limit_angular_lower_0 == "-8.00°"
+settings.linear_damping = 0.99
+assert settings.adaptive_number_limit_angular_lower_0 == "0.00°"
 settings.adaptive_number_limit_angular_lower_0 = "-8.125°"
 assert math.isclose(
     math.degrees(settings.limit_angular_lower[0]), -8.125, abs_tol=1.0e-4
 )
-settings.limit_angular_lower[0] = math.radians(-8.0)
+settings.limit_angular_lower[0] = 0.0
 assert settings.collision_group_number == 5
 assert settings.collision_group_mask[5]
 assert sum(bool(value) for value in settings.collision_group_mask) == 1
-assert tuple(round(math.degrees(value)) for value in settings.limit_angular_lower) == (-8, 0, 0)
-assert tuple(round(math.degrees(value)) for value in settings.limit_angular_upper) == (8, 0, 0)
-assert tuple(round(math.degrees(value)) for value in settings.limit_angular_lower_end) == (-18, -7, -7)
-assert tuple(round(math.degrees(value)) for value in settings.limit_angular_upper_end) == (18, 7, 7)
-assert tuple(settings.limit_angular_interpolate) == (True, False, False)
-assert tuple(settings.spring_linear) == (0.0, 800.0, 0.0)
-assert tuple(settings.spring_linear_end) == (0.0, 250.0, 0.0)
-assert tuple(settings.spring_linear_interpolate) == (False, True, False)
+assert tuple(settings.limit_angular_lower) == (0.0, 0.0, 0.0)
+assert tuple(settings.limit_angular_upper) == (0.0, 0.0, 0.0)
+assert tuple(settings.limit_angular_lower_end) == (0.0, 0.0, 0.0)
+assert tuple(settings.limit_angular_upper_end) == (0.0, 0.0, 0.0)
+assert tuple(settings.limit_angular_interpolate) == (False, False, False)
+assert tuple(settings.spring_linear) == (0.0, 0.0, 0.0)
+assert tuple(settings.spring_linear_end) == (0.0, 0.0, 0.0)
+assert tuple(settings.spring_linear_interpolate) == (False, False, False)
+assert tuple(settings.spring_angular) == (12.0, 5.0, 5.0)
+assert tuple(settings.spring_angular_end) == (4.0, 2.0, 2.0)
+assert tuple(settings.spring_angular_interpolate) == (True, True, True)
 assert tuple(settings.horizontal_limit_linear_lower) == (0.0, 0.0, 0.0)
 assert tuple(settings.horizontal_limit_linear_upper) == (0.0, 0.0, 0.0)
 assert tuple(settings.horizontal_limit_linear_lower_end) == (0.0, 0.0, 0.0)
@@ -366,7 +373,7 @@ assert tuple(round(math.degrees(value)) for value in settings.horizontal_limit_a
 assert tuple(round(math.degrees(value)) for value in settings.horizontal_limit_angular_upper_end) == (18, 5, 12)
 assert tuple(settings.horizontal_limit_angular_interpolate) == (True, True, True)
 assert tuple(settings.horizontal_spring_linear) == (0.0, 0.0, 0.0)
-assert tuple(settings.horizontal_spring_linear_end) == (0.0, 0.0, 0.0)
+assert tuple(settings.horizontal_spring_linear_end) == (0.0, 40.0, 0.0)
 assert tuple(settings.horizontal_spring_linear_interpolate) == (False, False, False)
 assert tuple(round(value, 4) for value in settings.horizontal_spring_angular) == (0.8, 1.5, 4.0)
 assert tuple(round(value, 4) for value in settings.horizontal_spring_angular_end) == (0.25, 0.5, 1.5)
