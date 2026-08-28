@@ -31,7 +31,10 @@ def _mmd_api():
 def _reorder_block(items, selected_items, action, active_item=None):
     selected = set(selected_items)
     if not selected:
-        raise OrderingError("请先勾选要排序的项目")
+        if action in {"TOP", "UP", "DOWN", "BOTTOM"} and active_item in items:
+            selected.add(active_item)
+        else:
+            raise OrderingError("请先勾选要排序的项目")
     if any(item not in items for item in selected):
         raise OrderingError("勾选项目已失效，请刷新列表后重试")
 
@@ -150,6 +153,7 @@ def reorder_mmd_items(settings, kind, checked_names, action, active_name=None):
         active_name,
     )
     desired = _reorder_block(items, selected, action, active)
+    affected_count = len(selected) if selected else 1
     if kind == "BONE":
         if desired == items:
             applied = items
@@ -169,7 +173,7 @@ def reorder_mmd_items(settings, kind, checked_names, action, active_name=None):
         [item.name for item in selected],
         active.name if active is not None else None,
         applied != items,
-        len(selected),
+        affected_count,
     )
 
 
@@ -194,10 +198,10 @@ class SPX_OT_ReorderCheckedMMDItems(Operator):
     @classmethod
     def description(cls, _context, properties):
         return {
-            "TOP": "将勾选项置顶",
-            "UP": "将勾选项上移一位",
-            "DOWN": "将勾选项下移一位",
-            "BOTTOM": "将勾选项置底",
+            "TOP": "将勾选项置顶；未勾选时移动蓝色活动项",
+            "UP": "将勾选项上移一位；未勾选时移动蓝色活动项",
+            "DOWN": "将勾选项下移一位；未勾选时移动蓝色活动项",
+            "BOTTOM": "将勾选项置底；未勾选时移动蓝色活动项",
             "BEFORE": "将勾选项作为一个块插入蓝色活动行之前",
             "AFTER": "将勾选项作为一个块插入蓝色活动行之后",
         }.get(properties.action, cls.bl_description)
@@ -223,7 +227,7 @@ class SPX_OT_ReorderCheckedMMDItems(Operator):
                     else candidate.target_name
                 )
         try:
-            moved_names, active_name, changed, _affected_count = reorder_mmd_items(
+            moved_names, active_name, changed, affected_count = reorder_mmd_items(
                 settings,
                 kind,
                 checked_names,
@@ -246,9 +250,9 @@ class SPX_OT_ReorderCheckedMMDItems(Operator):
             if active_name is not None and item_name == active_name:
                 settings.browser_index = index
         if not changed:
-            self.report({"WARNING"}, "顺序未变化：勾选项已经位于该方向的边界")
+            self.report({"WARNING"}, "顺序未变化：待移动项已经位于该方向的边界")
         else:
-            self.report({"INFO"}, f"已调整 {len(moved_names)} 项的实际 PMX 顺序")
+            self.report({"INFO"}, f"已调整 {affected_count} 项的实际 PMX 顺序")
         return {"FINISHED"}
 
 

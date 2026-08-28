@@ -57,7 +57,7 @@ class FakeFnModel:
             bone.mmd_bone.bone_id = bone_id
 
 
-def run_case(selected_name, action, expected_names):
+def run_case(selected_name, action, expected_names, active_name=None):
     parent = Bone("AParent", -1)
     child = Bone("BChild", -1)
     sibling = Bone("CSibling", -1)
@@ -69,6 +69,8 @@ def run_case(selected_name, action, expected_names):
     root = SimpleNamespace(mmd_root=SimpleNamespace(bone_morphs=[]))
     current = mmd_ordering._bone_order(FakeFnModel, root)[1]
     by_name = {bone.name: bone for bone in current}
+    selected = [by_name[selected_name]] if selected_name is not None else []
+    active_item = by_name.get(active_name)
 
     original_resolve_items = mmd_ordering._resolve_items
     try:
@@ -77,25 +79,41 @@ def run_case(selected_name, action, expected_names):
             object(),
             root,
             list(current),
-            [by_name[selected_name]],
-            None,
+            selected,
+            active_item,
         )
         moved, active, changed, affected_count = mmd_ordering.reorder_mmd_items(
             SimpleNamespace(),
             "BONE",
-            [selected_name],
+            [selected_name] if selected_name is not None else [],
             action,
+            active_name,
         )
     finally:
         mmd_ordering._resolve_items = original_resolve_items
 
     assert [bone.name for bone in mmd_ordering._bone_order(FakeFnModel, root)[1]] == expected_names
-    assert moved == [selected_name]
-    assert active is None
+    assert moved == ([selected_name] if selected_name is not None else [])
+    assert active == active_name
     assert changed
     assert affected_count == 1
 
 
 run_case("BChild", "TOP", ["BChild", "AParent", "CSibling"])
 run_case("AParent", "BOTTOM", ["BChild", "CSibling", "AParent"])
+run_case(None, "TOP", ["BChild", "AParent", "CSibling"], "BChild")
+run_case(None, "BOTTOM", ["BChild", "CSibling", "AParent"], "AParent")
+
+items = ["A", "B", "C", "D"]
+assert mmd_ordering._reorder_block(items, [], "TOP", "C") == ["C", "A", "B", "D"]
+assert mmd_ordering._reorder_block(items, [], "UP", "C") == ["A", "C", "B", "D"]
+assert mmd_ordering._reorder_block(items, [], "DOWN", "B") == ["A", "C", "B", "D"]
+assert mmd_ordering._reorder_block(items, [], "BOTTOM", "B") == ["A", "C", "D", "B"]
+for action in ("BEFORE", "AFTER"):
+    try:
+        mmd_ordering._reorder_block(items, [], action, "C")
+    except mmd_ordering.OrderingError as error:
+        assert str(error) == "请先勾选要排序的项目"
+    else:
+        raise AssertionError(f"{action} must require an explicitly checked block")
 print("MMD_ORDERING_USER_CONTROL_REGRESSION_OK")
