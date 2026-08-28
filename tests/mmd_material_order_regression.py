@@ -14,6 +14,7 @@ import mmd_station
 from bl_ext.blender_org.mmd_tools.core import pmx
 from bl_ext.blender_org.mmd_tools.core.model import FnModel, Model
 from mmd_station.mmd_material_order import (
+    material_identity,
     ordered_materials,
 )
 from mmd_station.mmd_physics import SPX_UL_MMDItems
@@ -109,6 +110,38 @@ assert [item.material for item in settings.browser_items] == [
     material_a,
 ]
 assert [item.order_index for item in settings.browser_items] == [0, 1, 2]
+
+# Blender material copies inherit custom properties. A copied material must
+# receive a new ordering identity instead of replacing its source in the viewer.
+source_identity = material_identity(material_a)
+material_a_copy = material_a.copy()
+material_a_copy.name = "BL_A_Copy"
+assert material_identity(material_a_copy) == source_identity
+copy_mesh = make_mesh("Y_Copy", armature, ((material_a_copy, 15.0),))
+assert ordered_materials(root) == [
+    material_b,
+    material_c,
+    material_a,
+    material_a_copy,
+]
+assert material_identity(material_a) == source_identity
+assert material_identity(material_a_copy) != source_identity
+assert bpy.ops.surface_proxy.refresh_mmd_browser() == {"FINISHED"}
+assert [item.material for item in settings.browser_items] == [
+    material_b,
+    material_c,
+    material_a,
+    material_a_copy,
+]
+bpy.data.objects.remove(copy_mesh, do_unlink=True)
+bpy.data.materials.remove(material_a_copy)
+assert bpy.ops.surface_proxy.refresh_mmd_browser() == {"FINISHED"}
+assert ordered_materials(root) == [material_b, material_c, material_a]
+assert [item.material for item in settings.browser_items] == [
+    material_b,
+    material_c,
+    material_a,
+]
 
 # Match the Morph editor's label-like name fields: the UIList owns single-click
 # row activation, while Blender reserves text editing for double-click.

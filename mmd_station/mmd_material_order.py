@@ -56,11 +56,37 @@ def _read_stored_order(root):
     return [str(identity) for identity in value if identity]
 
 
+def _repair_copied_material_identities(materials):
+    material_set = set(materials)
+    owners = {}
+    repaired_after = {}
+    for material in bpy.data.materials:
+        if material not in material_set:
+            continue
+        identity = material_identity(material)
+        if identity not in owners:
+            owners[identity] = material
+            continue
+        new_identity = uuid.uuid4().hex
+        material[MATERIAL_ID_PROPERTY] = new_identity
+        repaired_after.setdefault(identity, []).append(new_identity)
+    return repaired_after
+
+
 def ordered_materials(root, FnModel=None):
     native = _model_materials_in_native_export_order(root, FnModel)
+    repaired_after = _repair_copied_material_identities(native)
     by_identity = {material_identity(material): material for material in native}
     stored = _read_stored_order(root)
-    identities = [identity for identity in stored if identity in by_identity]
+    identities = []
+    for identity in stored:
+        if identity in by_identity and identity not in identities:
+            identities.append(identity)
+        identities.extend(
+            repaired_identity
+            for repaired_identity in repaired_after.get(identity, ())
+            if repaired_identity in by_identity and repaired_identity not in identities
+        )
     identities.extend(identity for identity in by_identity if identity not in identities)
     encoded = json.dumps(identities, ensure_ascii=True, separators=(",", ":"))
     if root.get(ROOT_ORDER_PROPERTY, "") != encoded:
