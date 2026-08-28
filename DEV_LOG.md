@@ -1,5 +1,10 @@
 # Development Log
 
+## 2026-08-28 - V0.1.8 显示枠失效项目清理
+
+- 在当前显示枠的显示项选择工具条末尾新增“清理”按钮，批量移除因骨骼或 Morph 改名/删除而找不到真实目标的残余显示项。清理仅作用于当前显示枠的失效引用，不删除 Armature Bone、Morph 定义或任何仍可解析的显示项；若模型 Armature 本身不可用则拒绝清理，避免把全部 Bone 引用误判为残余。
+- `tests/mmd_display_frame_regression.py` 覆盖失效 Bone、失效 Morph 与有效 Bone 保留。Blender 4.4.3 focused regression 输出 `MMD_DISPLAY_FRAME_REGRESSION_OK`，`py_compile` 与 `git diff --check` 通过。版本保持 V0.1.8，真实 Blender 4.4 源码 Junction 已直接生效，不打包 ZIP、不 push。
+
 ## 2026-08-28 - V0.1.8 显示枠区间选组补齐
 
 - 补齐显示枠编辑器首版遗漏的“区间选组”：显示枠列表与当前显示项列表的选择工具条现在都与 Morph 编辑器一致，在“全选 / 全不选 / 反选”后提供“区间选组”，以首尾两个已勾选项为端点补选中间全部项目；不足两个端点时明确提示且不改动选择。

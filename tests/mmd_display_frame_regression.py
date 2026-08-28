@@ -84,6 +84,18 @@ setattr(frame.data[-1], ITEM_SELECTED_PROPERTY, True)
 assert bpy.ops.surface_proxy.select_display_interval(target="ITEMS") == {"FINISHED"}
 assert all(getattr(item, ITEM_SELECTED_PROPERTY) for item in frame.data)
 
+invalid_bone = frame.data.add()
+invalid_bone.type = "BONE"
+invalid_bone.name = "RenamedBoneResidual"
+invalid_morph = frame.data.add()
+invalid_morph.type = "MORPH"
+invalid_morph.morph_type = "bone_morphs"
+invalid_morph.name = "MissingMorphResidual"
+assert bpy.ops.surface_proxy.clean_invalid_display_items() == {"FINISHED"}
+assert "RenamedBoneResidual" not in {item.name for item in frame.data}
+assert "MissingMorphResidual" not in {item.name for item in frame.data}
+assert {"SelectedBone", "MissingBone"} <= {item.name for item in frame.data}
+
 assert bpy.ops.object.mode_set(mode="OBJECT") == {"FINISHED"}
 add_mesh_with_shape_key(armature, "VertexDetailed")
 
