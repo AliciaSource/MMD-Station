@@ -60,7 +60,7 @@ assert bpy.ops.surface_proxy.add_display_frame() == {"FINISHED"}
 frame = root.mmd_root.display_item_frames[root.mmd_root.active_display_item_frame]
 frame.name = "追加骨骼"
 frame.name_e = "Additional Bones"
-assert bpy.ops.surface_proxy.add_selected_display_items() == {"FINISHED"}
+assert bpy.ops.surface_proxy.add_selected_pose_bones_to_display_frame() == {"FINISHED"}
 assert [item.name for item in frame.data] == ["SelectedBone"]
 
 assert bpy.ops.surface_proxy.smart_fill_display_frame_bones() == {"FINISHED"}
