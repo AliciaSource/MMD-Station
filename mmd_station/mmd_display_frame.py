@@ -419,41 +419,6 @@ class SPX_OT_AddSelectedDisplayItems(Operator):
         return {"FINISHED"}
 
 
-class SPX_OT_AddSelectedPoseBonesToDisplayFrame(Operator):
-    bl_idname = "surface_proxy.add_selected_pose_bones_to_display_frame"
-    bl_label = "添加姿态模式所选骨骼"
-    bl_description = "将当前 MMD 模型 Armature 在 Pose Mode 中选中的骨骼加入当前显示枠"
-    bl_options = {"REGISTER", "UNDO"}
-
-    def execute(self, context):
-        root = _find_root(context, context.scene.surface_proxy_creator)
-        frame = _active_frame(root) if root is not None else None
-        if frame is None:
-            return {"CANCELLED"}
-        if frame.name == "表情":
-            self.report({"WARNING"}, "表情枠只收录 Morph，请选择其它显示枠")
-            return {"CANCELLED"}
-        FnModel, _Model = _mmd_api()
-        armature = FnModel.find_armature_object(root)
-        if (
-            armature is None
-            or context.active_object != armature
-            or armature.mode != "POSE"
-        ):
-            self.report({"WARNING"}, "请在当前模型 Armature 的 Pose Mode 中选择骨骼")
-            return {"CANCELLED"}
-        bone_names = _selected_bone_names(context, armature)
-        if not bone_names:
-            self.report({"WARNING"}, "姿态模式中没有选中骨骼")
-            return {"CANCELLED"}
-        added = _append_bone_items(frame, bone_names)
-        if not added:
-            self.report({"INFO"}, "所选骨骼已在当前显示枠中")
-            return {"CANCELLED"}
-        self.report({"INFO"}, f"已添加 {added} 根姿态模式所选骨骼")
-        return {"FINISHED"}
-
-
 class SPX_OT_RemoveSelectedDisplayItems(Operator):
     bl_idname = "surface_proxy.remove_selected_display_items"
     bl_label = "删除勾选显示项"
@@ -806,11 +771,6 @@ def draw_display_frame_editor(layout, context):
             text="智能补充未收录的可见骨骼",
             icon="IMPORT",
         )
-        layout.operator(
-            "surface_proxy.add_selected_pose_bones_to_display_frame",
-            text="添加姿态模式所选骨骼",
-            icon="BONE_DATA",
-        )
     _draw_active_item_details(layout, root, frame)
 
 
@@ -862,7 +822,6 @@ CLASSES = (
     SPX_OT_SelectDisplayFrames,
     SPX_OT_ReorderDisplayFrames,
     SPX_OT_AddSelectedDisplayItems,
-    SPX_OT_AddSelectedPoseBonesToDisplayFrame,
     SPX_OT_RemoveSelectedDisplayItems,
     SPX_OT_SelectDisplayItems,
     SPX_OT_SelectDisplayInterval,
