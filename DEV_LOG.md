@@ -1,5 +1,10 @@
 # Development Log
 
+## 2026-08-28 - V0.1.8 Morph 详情减号批量删除语义
+
+- 修正 Material、UV、Bone、Group Morph Offset 详情列表的减号行为：存在任意勾选详情行时，批量删除全部勾选项，不再误删蓝色活动行；没有勾选项时才回退删除蓝色活动行。删除后活动索引落在首个删除位置对应的有效邻近行，并立即重新计算当前 Morph Root。Vertex 详情行是模型中实时汇总的 Mesh/ShapeKey 命中结果，不是独立 Offset 数据，因此仍不显示减号。
+- `tests/mmd_morph_editor_regression.py` 覆盖“勾选优先于活动行”的非连续批量删除，以及清空勾选后的活动行回退删除。Blender 4.4.3 focused regression 输出 `MMD_MORPH_EDITOR_REGRESSION_OK`，`py_compile` 与 `git diff --check` 通过。版本保持 V0.1.8，真实 Blender 4.4 源码 Junction 已直接生效，不打包 ZIP、不 push。
+
 ## 2026-08-28 - V0.1.8 Morph 详情区间选组补齐
 
 - Morph 详情列表的选择工具栏在“全选 / 全不选 / 反选”后补齐“区间选组”。Material、UV、Bone、Group 的 Offset 详情行与 Vertex Morph 的 Mesh/ShapeKey 命中行共用相同语义：以当前详情列表中最前、最后两个已勾选行为端点，补选两者之间的全部详情行；只有一个端点时取消操作并保持原选择不变。
