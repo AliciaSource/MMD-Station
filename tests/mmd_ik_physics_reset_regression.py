@@ -4,7 +4,7 @@ from pathlib import Path
 import bpy
 
 
-REPO = Path(r"D:\MOD\BlenderAddonProjects\MMD-Skirt-Proxy-Creator")
+REPO = Path(r"D:\MOD\BlenderAddonProjects\MMD-Station")
 MMD_TOOLS_PARENT = Path(
     r"C:\Users\A\AppData\Roaming\Blender Foundation\Blender\4.4\extensions\blender_org"
 )
@@ -17,11 +17,11 @@ import mmd_tools
 
 mmd_tools.register()
 
-import mmd_skirt_proxy_creator
-from mmd_skirt_proxy_creator.physics_preview import runtime as physics_runtime
+import mmd_station
+from mmd_station.physics_preview import runtime as physics_runtime
 from mmd_tools.core.pmx.importer import PMXImporter
 
-mmd_skirt_proxy_creator.register()
+mmd_station.register()
 
 
 existing_roots = {

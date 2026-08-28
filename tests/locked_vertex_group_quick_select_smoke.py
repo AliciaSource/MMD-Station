@@ -7,10 +7,10 @@ import bpy
 PROJECT_ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
-import mmd_skirt_proxy_creator
+import mmd_station
 
 
-mmd_skirt_proxy_creator.register()
+mmd_station.register()
 
 armature_data = bpy.data.armatures.new("LockedGroupArmatureData")
 armature = bpy.data.objects.new("LockedGroupArmature", armature_data)

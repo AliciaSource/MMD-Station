@@ -7,7 +7,7 @@ from pathlib import Path
 import bpy
 
 
-REPO = Path(r"D:\MOD\BlenderAddonProjects\MMD-Skirt-Proxy-Creator")
+REPO = Path(r"D:\MOD\BlenderAddonProjects\MMD-Station")
 sys.path.insert(0, r"C:\Users\A\AppData\Roaming\Blender Foundation\Blender\4.4\extensions\blender_org")
 sys.path.insert(0, str(REPO))
 
@@ -15,27 +15,27 @@ import mmd_tools
 
 mmd_tools.register()
 
-import mmd_skirt_proxy_creator
+import mmd_station
 
-mmd_skirt_proxy_creator.register()
+mmd_station.register()
 
 from mmd_tools.core.model import FnModel
 from mmd_tools.core.pmx.importer import PMXImporter
 from mmd_tools.core.vmd.importer import VMDImporter
 from mmd_tools.core import vmd
-from mmd_skirt_proxy_creator.mmd_ik_runtime.evaluator import (
+from mmd_station.mmd_ik_runtime.evaluator import (
     _SESSIONS,
     _depsgraph_update_post,
     is_active,
     replay_live,
     restore_live_input,
 )
-from mmd_skirt_proxy_creator.mmd_ik_runtime.coordinates import blender_pose_matrix
-from mmd_skirt_proxy_creator.mmd_ik_runtime.ffi import NativeBoneSolver
-from mmd_skirt_proxy_creator.mmd_ik_runtime.runtime import (
+from mmd_station.mmd_ik_runtime.coordinates import blender_pose_matrix
+from mmd_station.mmd_ik_runtime.ffi import NativeBoneSolver
+from mmd_station.mmd_ik_runtime.runtime import (
     runtime_state,
 )
-from mmd_skirt_proxy_creator.physics_preview import runtime as physics_runtime
+from mmd_station.physics_preview import runtime as physics_runtime
 
 
 PMX = Path(r"D:\MMD\模型\Alicia\Endfield-Rossi\Endfield-RossiVer1.0_by_Alicia\Rossi Ver1.0.pmx")

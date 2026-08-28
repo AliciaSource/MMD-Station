@@ -21,6 +21,6 @@
 
 输出会复制到：
 
-`mmd_skirt_proxy_creator\physics_preview\bin\win_amd64\mmd_physics_solver.dll`
+`mmd_station\physics_preview\bin\win_amd64\mmd_physics_solver.dll`
 
 未来拆成独立插件时，只需移动 `physics_preview/`、本 crate 与 DLL，不依赖裙面代理生成逻辑。

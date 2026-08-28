@@ -5,7 +5,7 @@ from pathlib import Path
 import bpy
 
 
-REPO = Path(r"D:\MOD\BlenderAddonProjects\MMD-Skirt-Proxy-Creator")
+REPO = Path(r"D:\MOD\BlenderAddonProjects\MMD-Station")
 MMD_TOOLS_PARENT = Path(
     r"C:\Users\A\AppData\Roaming\Blender Foundation\Blender\4.4\extensions\blender_org"
 )
@@ -19,19 +19,19 @@ import mmd_tools
 
 mmd_tools.register()
 
-import mmd_skirt_proxy_creator
+import mmd_station
 
-mmd_skirt_proxy_creator.register()
+mmd_station.register()
 
 from mmd_tools.core.model import FnModel
 from mmd_tools.core.pmx.importer import PMXImporter
 from mmd_tools.core.vmd.importer import VMDImporter
-from mmd_skirt_proxy_creator.mmd_ik_runtime.evaluator import (
+from mmd_station.mmd_ik_runtime.evaluator import (
     _SESSIONS,
     _depsgraph_update_post,
     is_active,
 )
-from mmd_skirt_proxy_creator.mmd_ik_runtime.runtime import runtime_state
+from mmd_station.mmd_ik_runtime.runtime import runtime_state
 
 
 PMXImporter().execute(
@@ -113,7 +113,7 @@ bpy.context.view_layer.update()
 _depsgraph_update_post(bpy.context.scene)
 bpy.ops.ed.undo_push(message="MMD IK authoring edit")
 assert bpy.ops.ed.undo() == {"FINISHED"}
-from mmd_skirt_proxy_creator.mmd_ik_runtime.lifecycle import _rebuild_timer
+from mmd_station.mmd_ik_runtime.lifecycle import _rebuild_timer
 
 _rebuild_timer()
 root = bpy.data.objects.get(root_name)

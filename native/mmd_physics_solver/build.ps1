@@ -10,7 +10,7 @@ $ErrorActionPreference = "Stop"
 
 $crateRoot = $PSScriptRoot
 $projectRoot = Split-Path (Split-Path $crateRoot -Parent) -Parent
-$destination = Join-Path $projectRoot "mmd_skirt_proxy_creator\physics_preview\bin\win_amd64"
+$destination = Join-Path $projectRoot "mmd_station\physics_preview\bin\win_amd64"
 
 if (-not $V120Bin) {
     $visualStudio120 = Join-Path ${env:ProgramFiles(x86)} "Microsoft Visual Studio 12.0"

@@ -2,7 +2,7 @@
 $ErrorActionPreference = "Stop"
 $root = $PSScriptRoot
 $project = Split-Path (Split-Path $root -Parent) -Parent
-$dest = Join-Path $project "mmd_skirt_proxy_creator\mmd_ik_runtime\bin\win_amd64"
+$dest = Join-Path $project "mmd_station\mmd_ik_runtime\bin\win_amd64"
 if (-not $V90Root) { $V90Root = Join-Path $env:TEMP "vcpy27-portable\Microsoft\Visual C++ for Python\9.0" }
 $vc = Join-Path $V90Root "VC"
 $sdk = Join-Path $V90Root "WinSDK"

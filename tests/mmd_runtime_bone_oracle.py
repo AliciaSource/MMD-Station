@@ -16,13 +16,13 @@ sys.path[:0] = [str(MMD_TOOLS_PARENT), str(REPO)]
 import mmd_tools
 
 mmd_tools.register()
-import mmd_skirt_proxy_creator
+import mmd_station
 
-mmd_skirt_proxy_creator.register()
+mmd_station.register()
 
-from mmd_skirt_proxy_creator.mmd_ik_runtime.evaluator import _SESSIONS, start, stop
-from mmd_skirt_proxy_creator.mmd_ik_runtime.runtime import create_runtime
-from mmd_skirt_proxy_creator.physics_preview import runtime as physics_runtime
+from mmd_station.mmd_ik_runtime.evaluator import _SESSIONS, start, stop
+from mmd_station.mmd_ik_runtime.runtime import create_runtime
+from mmd_station.physics_preview import runtime as physics_runtime
 
 
 def main():

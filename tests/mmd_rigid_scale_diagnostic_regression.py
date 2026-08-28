@@ -10,10 +10,10 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 bpy.ops.preferences.addon_enable(module="bl_ext.blender_org.mmd_tools")
 
-import mmd_skirt_proxy_creator
+import mmd_station
 from bl_ext.blender_org.mmd_tools.core.model import Model
-from mmd_skirt_proxy_creator.mmd_physics import _mmd_api
-from mmd_skirt_proxy_creator.mmd_rigid_scale import (
+from mmd_station.mmd_physics import _mmd_api
+from mmd_station.mmd_rigid_scale import (
     rigid_object_scale_needs_bake,
     rigid_world_scale_is_invalid,
     uniform_rigid_world_scale,
@@ -55,7 +55,7 @@ def make_rigid(FnModel, FnRigidBody, rigid_module, root, bone_name, name, shape,
     )
 
 
-mmd_skirt_proxy_creator.register()
+mmd_station.register()
 model = Model.create("RigidScaleDiagnosticRegression", add_root_bone=True)
 root = model.rootObject()
 armature = model.armature()

@@ -17,11 +17,11 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 bpy.ops.preferences.addon_enable(module="bl_ext.blender_org.mmd_tools")
 
-import mmd_skirt_proxy_creator
-import mmd_skirt_proxy_creator.mmd_physics as mmd_physics_module
-from mmd_skirt_proxy_creator import sync as proxy_sync
-from mmd_skirt_proxy_creator.core import _smooth_open_column, grid_faces
-from mmd_skirt_proxy_creator.mmd_physics import (
+import mmd_station
+import mmd_station.mmd_physics as mmd_physics_module
+from mmd_station import sync as proxy_sync
+from mmd_station.core import _smooth_open_column, grid_faces
+from mmd_station.mmd_physics import (
     AUTO_RIGID_DEPTH_SPAN,
     AUTO_RIGID_LENGTH_SPAN,
     AUTO_RIGID_WIDTH_HALF_SPAN,
@@ -39,15 +39,15 @@ from mmd_skirt_proxy_creator.mmd_physics import (
     _segment_geometry,
     draw_physics_settings,
 )
-from mmd_skirt_proxy_creator.mmd_naming import standardized_bone_mmd_names
-from mmd_skirt_proxy_creator.mirror_physics import mirrored_name, mirrored_world_matrix
-from mmd_skirt_proxy_creator.physics_preview.ffi import (
+from mmd_station.mmd_naming import standardized_bone_mmd_names
+from mmd_station.mirror_physics import mirrored_name, mirrored_world_matrix
+from mmd_station.physics_preview.ffi import (
     ABI_VERSION,
     SolverLibrary,
     library_path,
 )
-import mmd_skirt_proxy_creator.physics_preview.runtime as preview_runtime
-from mmd_skirt_proxy_creator.physics_preview.runtime import (
+import mmd_station.physics_preview.runtime as preview_runtime
+from mmd_station.physics_preview.runtime import (
     transform_to_components,
 )
 from bl_ext.blender_org.mmd_tools.core.model import Model
@@ -80,11 +80,12 @@ def write_temporary_motion(path, bone_name, frames):
     path.write_bytes(payload)
 
 
-entry_source = pathlib.Path(mmd_skirt_proxy_creator.__file__).read_text(encoding="utf-8")
+entry_source = pathlib.Path(mmd_station.__file__).read_text(encoding="utf-8")
 assert "?" not in entry_source
-assert mmd_skirt_proxy_creator.SPX_PT_SurfaceProxyCreator.bl_label == "MMD \u4ee3\u7406\u5de5\u5177"
-assert not hasattr(mmd_skirt_proxy_creator, "SPX_PT_MMDPhysicsBrowser")
-assert not hasattr(mmd_skirt_proxy_creator, "SPX_PT_MMDPhysicsPreview")
+assert mmd_station.SPX_PT_SurfaceProxyCreator.bl_label == "MMD Station"
+assert mmd_station.SPX_PT_SurfaceProxyCreator.bl_category == "MMD Station"
+assert not hasattr(mmd_station, "SPX_PT_MMDPhysicsBrowser")
+assert not hasattr(mmd_station, "SPX_PT_MMDPhysicsPreview")
 
 terminal_outlier_column = [
     (0.08 * factor * factor, 0.03 * factor, 1.0 - factor)
@@ -215,7 +216,7 @@ def build_mirror_source_mesh(name, asymmetric=False):
     return obj, side_size
 
 
-mmd_skirt_proxy_creator.register()
+mmd_station.register()
 assert _mmd_browser_depsgraph_update in bpy.app.handlers.depsgraph_update_post
 model = Model.create("MMDProxySmoke", add_root_bone=True)
 model_root = model.rootObject()
@@ -1907,30 +1908,30 @@ class LayoutProbe:
 
 
 workspace_draw_calls = []
-original_draw_physics_settings = mmd_skirt_proxy_creator.draw_physics_settings
-original_draw_browser = mmd_skirt_proxy_creator.draw_browser
-original_draw_preview = mmd_skirt_proxy_creator.draw_preview
+original_draw_physics_settings = mmd_station.draw_physics_settings
+original_draw_browser = mmd_station.draw_browser
+original_draw_preview = mmd_station.draw_preview
 try:
-    mmd_skirt_proxy_creator.draw_physics_settings = (
+    mmd_station.draw_physics_settings = (
         lambda _layout, _settings, _context=None: workspace_draw_calls.append("PROXY")
     )
-    mmd_skirt_proxy_creator.draw_browser = (
+    mmd_station.draw_browser = (
         lambda _layout, _settings: workspace_draw_calls.append("BROWSER")
     )
-    mmd_skirt_proxy_creator.draw_preview = (
+    mmd_station.draw_preview = (
         lambda _layout, _settings: workspace_draw_calls.append("PREVIEW")
     )
     for workspace_tab in ("PROXY", "BROWSER", "PREVIEW"):
         settings.workspace_tab = workspace_tab
         workspace_draw_calls.clear()
         probe = LayoutProbe()
-        mmd_skirt_proxy_creator.draw_workspace(probe, bpy.context)
+        mmd_station.draw_workspace(probe, bpy.context)
         assert workspace_draw_calls == [workspace_tab]
         assert any(name == "workspace_tab" for name, _index, _text in probe.records)
 finally:
-    mmd_skirt_proxy_creator.draw_physics_settings = original_draw_physics_settings
-    mmd_skirt_proxy_creator.draw_browser = original_draw_browser
-    mmd_skirt_proxy_creator.draw_preview = original_draw_preview
+    mmd_station.draw_physics_settings = original_draw_physics_settings
+    mmd_station.draw_browser = original_draw_browser
+    mmd_station.draw_preview = original_draw_preview
 
 
 settings.preview_scope = "MODEL"
@@ -1968,7 +1969,7 @@ assert preview_probe.operators.count("surface_proxy.stop_all_mmd_physics_preview
 assert preview_probe.operators.index(
     "surface_proxy.stop_all_mmd_physics_previews"
 ) < preview_probe.operators.index("surface_proxy.reset_all_mmd_physics_previews")
-import mmd_skirt_proxy_creator.physics_preview.ui as preview_ui
+import mmd_station.physics_preview.ui as preview_ui
 
 original_active_session_info = preview_ui.active_session_info
 original_preview_is_running = preview_ui.is_running
@@ -3470,18 +3471,18 @@ assert (
 )
 
 for forbidden in (
-    "mmd_skirt_proxy_creator.solver",
-    "mmd_skirt_proxy_creator.native_solver",
-    "mmd_skirt_proxy_creator.physics_nodes",
-    "mmd_skirt_proxy_creator.colliders",
+    "mmd_station.solver",
+    "mmd_station.native_solver",
+    "mmd_station.physics_nodes",
+    "mmd_station.colliders",
 ):
     assert forbidden not in sys.modules
 
 print(
-    f"MMD_SKIRT_PROXY_CREATOR_SMOKE_OK top_range={top_range:.9f} "
+    f"MMD_STATION_SMOKE_OK top_range={top_range:.9f} "
     f"rigids={len(rigids)} joints={len(joints)}"
 )
-mmd_skirt_proxy_creator.unregister()
+mmd_station.unregister()
 assert _mmd_browser_depsgraph_update not in bpy.app.handlers.depsgraph_update_post
 assert not bpy.app.timers.is_registered(
     mmd_physics_module._run_mmd_browser_auto_refresh

@@ -1,5 +1,5 @@
 import bpy
-from mmd_skirt_proxy_creator import mmd_ordering
+from mmd_station import mmd_ordering
 
 selected_names = [
     "Bone_Piao160.L",

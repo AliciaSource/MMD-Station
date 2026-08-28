@@ -5,10 +5,10 @@ from pathlib import Path
 from mathutils import Matrix
 
 
-REPO = Path(r"D:\MOD\BlenderAddonProjects\MMD-Skirt-Proxy-Creator")
+REPO = Path(r"D:\MOD\BlenderAddonProjects\MMD-Station")
 sys.path.insert(0, str(REPO))
 
-from mmd_skirt_proxy_creator.physics_preview.runtime import (
+from mmd_station.physics_preview.runtime import (
     _resolve_hierarchical_bone_targets,
 )
 

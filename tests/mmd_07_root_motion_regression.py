@@ -6,7 +6,7 @@ import bpy
 from mathutils import Matrix, Vector
 
 
-REPO = Path(r"D:\MOD\BlenderAddonProjects\MMD-Skirt-Proxy-Creator")
+REPO = Path(r"D:\MOD\BlenderAddonProjects\MMD-Station")
 MMD_TOOLS_PARENT = Path(
     r"C:\Users\A\AppData\Roaming\Blender Foundation\Blender\4.4\extensions\blender_org"
 )
@@ -24,8 +24,8 @@ import mmd_tools
 
 mmd_tools.register()
 
-import mmd_skirt_proxy_creator
-from mmd_skirt_proxy_creator.physics_preview import runtime
+import mmd_station
+from mmd_station.physics_preview import runtime
 
 
 def tick(wall_seconds):
@@ -111,7 +111,7 @@ def run_case(session, move):
     assert_type0_targets(session)
 
 
-mmd_skirt_proxy_creator.register()
+mmd_station.register()
 target = os.environ.get("SPX_TEST_SOLVER_TARGET", "PMX")
 assert target in {"PMX", "MMD"}
 root = bpy.data.objects.get(ROOT_NAME)
@@ -140,7 +140,7 @@ try:
     base_root = root.matrix_world.copy()
     session = runtime.start_preview(bpy.context)[0]
     if os.environ.get("SPX_ENABLE_IK"):
-        from mmd_skirt_proxy_creator.mmd_ik_runtime import evaluator
+        from mmd_station.mmd_ik_runtime import evaluator
 
         assert not evaluator._SESSIONS[root.name].physics_feedback_complete
     run_case(

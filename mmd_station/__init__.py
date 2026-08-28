@@ -1,10 +1,10 @@
 bl_info = {
-    "name": "MMD Skirt Proxy Creator",
-    "author": "MMD Skirt Proxy Creator contributors",
+    "name": "MMD Station",
+    "author": "MMD Station contributors",
     "version": (0, 1, 8),
     "blender": (4, 4, 0),
-    "location": "View3D > Sidebar > MMD代理",
-    "description": "Create and edit fitted skirt proxy surfaces with matching bone columns",
+    "location": "View3D > Sidebar > MMD Station",
+    "description": "Create and edit MMD models, Morphs, physics, and IK workflows",
     "category": "Rigging",
 }
 
@@ -1101,11 +1101,11 @@ def draw_workspace(layout, context):
 
 
 class SPX_PT_SurfaceProxyCreator(Panel):
-    bl_label = "MMD 代理工具"
+    bl_label = "MMD Station"
     bl_idname = "SPX_PT_surface_proxy_creator"
     bl_space_type = "VIEW_3D"
     bl_region_type = "UI"
-    bl_category = "MMD代理"
+    bl_category = "MMD Station"
 
     def draw(self, context):
         draw_workspace(self.layout, context)

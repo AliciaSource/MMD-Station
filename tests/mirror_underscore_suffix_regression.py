@@ -1,7 +1,7 @@
 from types import SimpleNamespace
 
-import mmd_skirt_proxy_creator
-from mmd_skirt_proxy_creator.mirror_physics import (
+import mmd_station
+from mmd_station.mirror_physics import (
     _canonical_sources,
     _find_mirror_rigid,
     _source_side,
@@ -23,7 +23,7 @@ class Rigid:
 
 
 try:
-    mmd_skirt_proxy_creator.register()
+    mmd_station.register()
 except Exception:
     pass
 
@@ -49,4 +49,4 @@ assert _canonical_sources([right, left], lambda item: _find_mirror_rigid(item, [
 
 print("MIRROR_UNDERSCORE_SUFFIX_REGRESSION_OK")
 
-mmd_skirt_proxy_creator.unregister()
+mmd_station.unregister()

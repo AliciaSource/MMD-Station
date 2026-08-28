@@ -11,13 +11,13 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 bpy.ops.preferences.addon_enable(module="bl_ext.blender_org.mmd_tools")
 
-import mmd_skirt_proxy_creator
+import mmd_station
 from bl_ext.blender_org.mmd_tools.core.model import Model
-from mmd_skirt_proxy_creator.mmd_physics import _mmd_api
-from mmd_skirt_proxy_creator.mirror_physics import mirrored_name, mirrored_world_matrix
+from mmd_station.mmd_physics import _mmd_api
+from mmd_station.mirror_physics import mirrored_name, mirrored_world_matrix
 
 
-mmd_skirt_proxy_creator.register()
+mmd_station.register()
 
 
 def assert_matrix_close(actual, expected, tolerance=1.0e-6):
@@ -456,4 +456,4 @@ print(
     f"rigids={len(rigids)} joints={len(joints)} ordered=3"
 )
 
-mmd_skirt_proxy_creator.unregister()
+mmd_station.unregister()
