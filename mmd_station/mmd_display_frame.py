@@ -519,6 +519,41 @@ class SPX_OT_SelectDisplayInterval(Operator):
         return {"FINISHED"}
 
 
+class SPX_OT_CleanInvalidDisplayItems(Operator):
+    bl_idname = "surface_proxy.clean_invalid_display_items"
+    bl_label = "清理失效显示项"
+    bl_description = "移除当前显示枠中找不到对应骨骼或 Morph 的残余显示项"
+    bl_options = {"REGISTER", "UNDO"}
+
+    def execute(self, context):
+        root = _find_root(context, context.scene.surface_proxy_creator)
+        frame = _active_frame(root) if root is not None else None
+        if frame is None:
+            return {"CANCELLED"}
+        FnModel, _Model = _mmd_api()
+        armature = FnModel.find_armature_object(root)
+        if armature is None and any(item.type == "BONE" for item in frame.data):
+            self.report({"ERROR"}, "找不到当前 MMD 模型的 Armature，未执行清理")
+            return {"CANCELLED"}
+        invalid_indices = []
+        for index, item in enumerate(frame.data):
+            if item.type == "BONE":
+                invalid = armature.data.bones.get(item.name) is None
+            else:
+                morphs = getattr(root.mmd_root, item.morph_type, None)
+                invalid = morphs is None or morphs.get(item.name) is None
+            if invalid:
+                invalid_indices.append(index)
+        if not invalid_indices:
+            self.report({"INFO"}, "当前显示枠中没有失效显示项")
+            return {"CANCELLED"}
+        for index in reversed(invalid_indices):
+            frame.data.remove(index)
+        frame.active_item = min(frame.active_item, max(0, len(frame.data) - 1))
+        self.report({"INFO"}, f"已清理 {len(invalid_indices)} 个失效显示项")
+        return {"FINISHED"}
+
+
 class SPX_OT_ReorderDisplayItems(Operator):
     bl_idname = "surface_proxy.reorder_display_items"
     bl_label = "排序显示项"
@@ -658,7 +693,12 @@ def _draw_reorder_buttons(column, operator_idname):
         column.operator(operator_idname, text="", icon=icon).action = action
 
 
-def _draw_selection_buttons(layout, operator_idname, interval_target):
+def _draw_selection_buttons(
+    layout,
+    operator_idname,
+    interval_target,
+    clean_operator_idname="",
+):
     row = layout.row(align=True)
     row.operator(operator_idname, text="全选").action = "ALL"
     row.operator(operator_idname, text="全不选").action = "NONE"
@@ -667,6 +707,8 @@ def _draw_selection_buttons(layout, operator_idname, interval_target):
         SPX_OT_SelectDisplayInterval.bl_idname,
         text="区间选组",
     ).target = interval_target
+    if clean_operator_idname:
+        row.operator(clean_operator_idname, text="清理", icon="TRASH")
 
 
 def _draw_active_item_details(layout, root, frame):
@@ -758,6 +800,7 @@ def draw_display_frame_editor(layout, context):
         layout,
         "surface_proxy.select_display_items",
         "ITEMS",
+        "surface_proxy.clean_invalid_display_items",
     )
     if frame.name == "表情":
         layout.operator(
@@ -825,6 +868,7 @@ CLASSES = (
     SPX_OT_RemoveSelectedDisplayItems,
     SPX_OT_SelectDisplayItems,
     SPX_OT_SelectDisplayInterval,
+    SPX_OT_CleanInvalidDisplayItems,
     SPX_OT_ReorderDisplayItems,
     SPX_OT_SmartFillDisplayFrameBones,
     SPX_OT_SmartReorderFacialFrame,
