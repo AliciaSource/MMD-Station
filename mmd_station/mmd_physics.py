@@ -5206,12 +5206,13 @@ def _draw_browser_material_texture(layout, material):
                 "sphere_texture_type",
                 expand=True,
             )
-    row = _draw_batchable_mmd_material_property(
-        box,
+    toon_row = box.split(factor=0.58, align=True)
+    _draw_batchable_mmd_material_property(
+        toon_row.column(align=True),
         material,
         "is_shared_toon_texture",
     )
-    shared = box.row(align=True)
+    shared = toon_row.column(align=True)
     shared.active = mmd_material.is_shared_toon_texture
     _draw_batchable_mmd_material_property(
         shared,
@@ -5241,35 +5242,57 @@ def _draw_browser_mmd_material(layout, material):
     _draw_batchable_mmd_material_property(box, material, "name_e")
     _draw_batchable_mmd_material_property(box, material, "comment")
     box.label(text="颜色：")
-    _draw_batchable_mmd_material_property(box, material, "diffuse_color")
+    color_row = box.split(factor=0.62, align=True)
     _draw_batchable_mmd_material_property(
-        box,
+        color_row.column(align=True),
+        material,
+        "diffuse_color",
+    )
+    _draw_batchable_mmd_material_property(
+        color_row.column(align=True),
         material,
         "alpha",
         slider=True,
     )
-    _draw_batchable_mmd_material_property(box, material, "specular_color")
+    specular_row = box.split(factor=0.62, align=True)
     _draw_batchable_mmd_material_property(
-        box,
+        specular_row.column(align=True),
+        material,
+        "specular_color",
+    )
+    _draw_batchable_mmd_material_property(
+        specular_row.column(align=True),
         material,
         "shininess",
         slider=True,
     )
     _draw_batchable_mmd_material_property(box, material, "ambient_color")
     box.label(text="阴影：")
-    for property_name in (
-        "is_double_sided",
-        "enabled_drop_shadow",
-        "enabled_self_shadow_map",
-        "enabled_self_shadow",
-        "enabled_toon_edge",
+    for left_property, right_property in (
+        ("is_double_sided", "enabled_drop_shadow"),
+        ("enabled_self_shadow_map", "enabled_self_shadow"),
     ):
-        _draw_batchable_mmd_material_property(box, material, property_name)
-    edge = box.row()
+        shadow_row = box.row(align=True)
+        _draw_batchable_mmd_material_property(
+            shadow_row,
+            material,
+            left_property,
+        )
+        _draw_batchable_mmd_material_property(
+            shadow_row,
+            material,
+            right_property,
+        )
+    _draw_batchable_mmd_material_property(box, material, "enabled_toon_edge")
+    edge = box.split(factor=0.62, align=True)
     edge.active = mmd_material.enabled_toon_edge
-    _draw_batchable_mmd_material_property(edge, material, "edge_color")
     _draw_batchable_mmd_material_property(
-        edge,
+        edge.column(align=True),
+        material,
+        "edge_color",
+    )
+    _draw_batchable_mmd_material_property(
+        edge.column(align=True),
         material,
         "edge_weight",
         slider=True,
