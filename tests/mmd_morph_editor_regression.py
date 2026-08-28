@@ -508,6 +508,51 @@ states = {state.morph_name: state for state in root.spx_morph_states}
 root.spx_morph_active_index = root.spx_morph_states.find(states["Hide"].uid)
 assert bpy.ops.surface_proxy.reorder_morphs(action="BEFORE") == {"CANCELLED"}
 states["Hide"].selected = False
+for state in root.spx_morph_states:
+    state.selected = False
+
+# The four directional moves fall back to the blue active row when nothing is
+# checked. The two anchor moves still require an explicit checked block.
+states = {state.morph_name: state for state in root.spx_morph_states}
+root.spx_morph_active_index = root.spx_morph_states.find(states["FadeMultiply"].uid)
+assert bpy.ops.surface_proxy.reorder_morphs(action="TOP") == {"FINISHED"}
+assert [morph.name for morph in root.mmd_root.material_morphs] == [
+    "FadeMultiply",
+    "ShowHidden",
+    "Hide",
+    "PresetBatch",
+]
+assert bpy.ops.surface_proxy.reorder_morphs(action="DOWN") == {"FINISHED"}
+assert [morph.name for morph in root.mmd_root.material_morphs] == [
+    "ShowHidden",
+    "FadeMultiply",
+    "Hide",
+    "PresetBatch",
+]
+states = {state.morph_name: state for state in root.spx_morph_states}
+root.spx_morph_active_index = root.spx_morph_states.find(states["ShowHidden"].uid)
+assert bpy.ops.surface_proxy.reorder_morphs(action="BOTTOM") == {"FINISHED"}
+assert [morph.name for morph in root.mmd_root.material_morphs] == [
+    "FadeMultiply",
+    "Hide",
+    "PresetBatch",
+    "ShowHidden",
+]
+assert bpy.ops.surface_proxy.reorder_morphs(action="UP") == {"FINISHED"}
+assert [morph.name for morph in root.mmd_root.material_morphs] == [
+    "FadeMultiply",
+    "Hide",
+    "ShowHidden",
+    "PresetBatch",
+]
+order_before_anchor_moves = [
+    morph.name for morph in root.mmd_root.material_morphs
+]
+assert bpy.ops.surface_proxy.reorder_morphs(action="BEFORE") == {"CANCELLED"}
+assert bpy.ops.surface_proxy.reorder_morphs(action="AFTER") == {"CANCELLED"}
+assert [
+    morph.name for morph in root.mmd_root.material_morphs
+] == order_before_anchor_moves
 root.animation_data_clear()
 states = {state.morph_name: state for state in root.spx_morph_states}
 
@@ -627,6 +672,53 @@ assert bpy.ops.surface_proxy.reorder_morph_offsets(action="BEFORE") == {
 smart_morph.data[0].spx_morph_detail_selected = False
 for data in smart_morph.data:
     data.spx_morph_detail_selected = False
+
+# Detail lists use the same implicit active-row fallback for the four
+# directional moves, while anchor moves still require a checked block.
+smart_morph.active_data = 2
+assert bpy.ops.surface_proxy.reorder_morph_offsets(action="TOP") == {"FINISHED"}
+assert [data.material for data in smart_morph.data] == [
+    custom_material.name,
+    hidden_material.name,
+    smart_material_a.name,
+    material.name,
+    smart_material_b.name,
+]
+assert bpy.ops.surface_proxy.reorder_morph_offsets(action="DOWN") == {"FINISHED"}
+assert [data.material for data in smart_morph.data] == [
+    hidden_material.name,
+    custom_material.name,
+    smart_material_a.name,
+    material.name,
+    smart_material_b.name,
+]
+smart_morph.active_data = 0
+assert bpy.ops.surface_proxy.reorder_morph_offsets(action="BOTTOM") == {
+    "FINISHED"
+}
+assert [data.material for data in smart_morph.data] == [
+    custom_material.name,
+    smart_material_a.name,
+    material.name,
+    smart_material_b.name,
+    hidden_material.name,
+]
+assert bpy.ops.surface_proxy.reorder_morph_offsets(action="UP") == {"FINISHED"}
+assert [data.material for data in smart_morph.data] == [
+    custom_material.name,
+    smart_material_a.name,
+    material.name,
+    hidden_material.name,
+    smart_material_b.name,
+]
+detail_order_before_anchor_moves = [data.material for data in smart_morph.data]
+assert bpy.ops.surface_proxy.reorder_morph_offsets(action="BEFORE") == {
+    "CANCELLED"
+}
+assert bpy.ops.surface_proxy.reorder_morph_offsets(action="AFTER") == {
+    "CANCELLED"
+}
+assert [data.material for data in smart_morph.data] == detail_order_before_anchor_moves
 
 # Non-material tabs keep the original empty-offset add behavior.
 root.spx_morph_active_index = root.spx_morph_states.find(states["UVShift"].uid)

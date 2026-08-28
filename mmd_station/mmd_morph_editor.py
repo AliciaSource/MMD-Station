@@ -2036,10 +2036,10 @@ class SPX_OT_ReorderMorphs(Operator):
     @classmethod
     def description(cls, _context, properties):
         return {
-            "TOP": "将勾选 Morph 置顶",
-            "UP": "将勾选 Morph 上移一位",
-            "DOWN": "将勾选 Morph 下移一位",
-            "BOTTOM": "将勾选 Morph 置底",
+            "TOP": "将勾选 Morph 置顶；未勾选时移动蓝色活动项",
+            "UP": "将勾选 Morph 上移一位；未勾选时移动蓝色活动项",
+            "DOWN": "将勾选 Morph 下移一位；未勾选时移动蓝色活动项",
+            "BOTTOM": "将勾选 Morph 置底；未勾选时移动蓝色活动项",
             "BEFORE": "将勾选 Morph 作为一个块插入蓝色活动行之前",
             "AFTER": "将勾选 Morph 作为一个块插入蓝色活动行之后",
         }.get(properties.action, cls.bl_label)
@@ -2053,11 +2053,6 @@ class SPX_OT_ReorderMorphs(Operator):
         type_states = [
             state for state in states if state.morph_type == settings.morph_editor_type
         ]
-        selected = {state.uid for state in type_states if state.selected}
-        if not selected:
-            self.report({"WARNING"}, "请先勾选 Morph")
-            return {"CANCELLED"}
-        order = [state.uid for state in type_states]
         active_uid = (
             states[root.spx_morph_active_index].uid
             if 0 <= root.spx_morph_active_index < len(states)
@@ -2065,6 +2060,14 @@ class SPX_OT_ReorderMorphs(Operator):
             == settings.morph_editor_type
             else ""
         )
+        selected = {state.uid for state in type_states if state.selected}
+        if not selected:
+            if self.action in {"TOP", "UP", "DOWN", "BOTTOM"} and active_uid:
+                selected.add(active_uid)
+            else:
+                self.report({"WARNING"}, "请先勾选 Morph")
+                return {"CANCELLED"}
+        order = [state.uid for state in type_states]
         if self.action == "TOP":
             order = [uid for uid in order if uid in selected] + [
                 uid for uid in order if uid not in selected
@@ -2410,10 +2413,10 @@ class SPX_OT_ReorderMorphOffsets(Operator):
     @classmethod
     def description(cls, _context, properties):
         return {
-            "TOP": "将勾选详情项置顶",
-            "UP": "将勾选详情项上移一位",
-            "DOWN": "将勾选详情项下移一位",
-            "BOTTOM": "将勾选详情项置底",
+            "TOP": "将勾选详情项置顶；未勾选时移动蓝色活动项",
+            "UP": "将勾选详情项上移一位；未勾选时移动蓝色活动项",
+            "DOWN": "将勾选详情项下移一位；未勾选时移动蓝色活动项",
+            "BOTTOM": "将勾选详情项置底；未勾选时移动蓝色活动项",
             "BEFORE": "将勾选详情项作为一个块插入蓝色活动行之前",
             "AFTER": "将勾选详情项作为一个块插入蓝色活动行之后",
         }.get(properties.action, cls.bl_label)
@@ -2428,11 +2431,14 @@ class SPX_OT_ReorderMorphOffsets(Operator):
             for index, data in enumerate(morph.data)
             if bool(getattr(data, DETAIL_SELECTED_PROPERTY, False))
         }
-        if not selected_indices:
-            self.report({"WARNING"}, "请先勾选 Morph 详情项")
-            return {"CANCELLED"}
-
         active_index = min(max(morph.active_data, 0), len(morph.data) - 1)
+        if not selected_indices:
+            if self.action in {"TOP", "UP", "DOWN", "BOTTOM"}:
+                selected_indices.add(active_index)
+            else:
+                self.report({"WARNING"}, "请先勾选 Morph 详情项")
+                return {"CANCELLED"}
+
         order = list(range(len(morph.data)))
         if self.action == "TOP":
             order = [i for i in order if i in selected_indices] + [

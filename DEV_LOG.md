@@ -1,5 +1,10 @@
 # Development Log
 
+## 2026-08-28 - V0.1.8 全局活动项快捷移动
+
+- 统一 MMD Station 的列表移动规则：Morph 主列表、Morph 详情列表及 MMD 查看器的“置顶 / 上移 / 下移 / 置底”在没有任何勾选项时，直接作用于蓝色活动项；存在勾选项时仍按原有稳定块逻辑移动全部勾选项。三处悬停说明同步标明未勾选回退行为。
+- 三处最后两个“插入活动项前 / 后”保持原边界，仍必须至少显式勾选一个项目作为待移动块，不会把活动项本身当作隐式待移动项。`tests/mmd_morph_editor_regression.py` 覆盖 Morph 主列表与详情列表的四向回退及锚点拒绝；`tests/mmd_ordering_user_control_regression.py` 覆盖 MMD 查看器的通用排序规则。Blender 4.4.3 focused regression 输出 `MMD_MORPH_EDITOR_REGRESSION_OK` 与 `MMD_ORDERING_USER_CONTROL_REGRESSION_OK`，`py_compile` 和 `git diff --check` 通过。版本保持 V0.1.8，源码 Junction 直接生效，不打包 ZIP、不 push。
+
 ## 2026-08-28 - V0.1.8 Group Morph 失效详情参与清理
 
 - 扩展 Morph 编辑器“清理”的 Group Morph 判定：详情行引用的目标 Morph 已从其它 Tab 删除、并在详情列表显示三角感叹号时，该行不再算作有效详情；已勾选 Group Morph 的全部详情均失效时会被清理。混合包含有效引用与失效引用的 Group Morph 仍整体保留，避免因单条坏引用误删仍有用途的群组。
