@@ -2693,6 +2693,7 @@ class SPX_OT_SelectMorphDetails(Operator):
             ("ALL", "全选", ""),
             ("NONE", "全不选", ""),
             ("INVERT", "反选", ""),
+            ("INTERVAL", "区间选组", ""),
         ),
         options={"HIDDEN"},
     )
@@ -2716,6 +2717,22 @@ class SPX_OT_SelectMorphDetails(Operator):
             property_name = DETAIL_SELECTED_PROPERTY
         if not targets:
             return {"CANCELLED"}
+        if self.action == "INTERVAL":
+            selected_indices = [
+                index
+                for index, target in enumerate(targets)
+                if getattr(target, property_name)
+            ]
+            if len(selected_indices) < 2:
+                self.report({"WARNING"}, "区间选组至少需要勾选两个详情行")
+                return {"CANCELLED"}
+            added = 0
+            for target in targets[selected_indices[0] : selected_indices[-1] + 1]:
+                if not getattr(target, property_name):
+                    setattr(target, property_name, True)
+                    added += 1
+            self.report({"INFO"}, f"已补选区间内 {added} 个详情行")
+            return {"FINISHED"}
         for target in targets:
             if self.action == "ALL":
                 setattr(target, property_name, True)
@@ -3091,6 +3108,10 @@ def _draw_detail_selection_buttons(layout):
         SPX_OT_SelectMorphDetails.bl_idname,
         text="反选",
     ).action = "INVERT"
+    selection.operator(
+        SPX_OT_SelectMorphDetails.bl_idname,
+        text="区间选组",
+    ).action = "INTERVAL"
 
 
 def _draw_material_details(layout, morph):

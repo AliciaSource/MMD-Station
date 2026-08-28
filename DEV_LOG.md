@@ -1,5 +1,10 @@
 # Development Log
 
+## 2026-08-28 - V0.1.8 Morph 详情区间选组补齐
+
+- Morph 详情列表的选择工具栏在“全选 / 全不选 / 反选”后补齐“区间选组”。Material、UV、Bone、Group 的 Offset 详情行与 Vertex Morph 的 Mesh/ShapeKey 命中行共用相同语义：以当前详情列表中最前、最后两个已勾选行为端点，补选两者之间的全部详情行；只有一个端点时取消操作并保持原选择不变。
+- 实现复用 `surface_proxy.select_morph_details`，未新增重复 Operator；`tests/mmd_morph_editor_regression.py` 覆盖五行 Material 详情的区间补选/单端点拒绝，以及 Vertex 详情的 Mesh 顺序区间补选/单端点拒绝。Blender 4.4.3 focused regression 输出 `MMD_MORPH_EDITOR_REGRESSION_OK`，`py_compile` 与 `git diff --check` 通过。版本保持 V0.1.8，真实 Blender 4.4 源码 Junction 已直接生效，不打包 ZIP、不 push。
+
 ## 2026-08-28 - V0.1.8 显示框同步入口、Morph 阈值清理与材质详情补齐
 
 - 将普通骨骼显示框的“将勾选项选入 Blender”由整行大按钮收纳为选择工具栏末尾的 `RESTRICT_SELECT_OFF` 小图标；作用域与既有行为不变，仍只同步当前显示框中已勾选且有效的骨骼，表情框不显示该入口。
