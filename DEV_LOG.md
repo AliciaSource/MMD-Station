@@ -1,5 +1,11 @@
 # Development Log
 
+## 2026-08-28 - V0.1.8 项目正式更名为 MMD Station
+
+- 插件产品名、N 面板标题与分类统一改为 `MMD Station`；本地项目目录由 `MMD-Skirt-Proxy-Creator` 改为 `MMD-Station`，Python package 由 `mmd_skirt_proxy_creator` 改为 `mmd_station`，README、native build 脚本和测试入口同步使用新路径。为保护旧 `.blend` 工程兼容性，既有 `surface_proxy.*` operator id、`Scene.surface_proxy_creator` 与 `surface_proxy_*` IDProperty 均保持不变。
+- 真实 Blender 4.4 开发安装已迁移为 `addons\mmd_station` Junction，并移除旧 `addons\mmd_skirt_proxy_creator` Junction；原 Morph AI 的基础地址、API Key、模型设置已迁入新 AddonPreferences 并保存，物理预设复制到 `presets\mmd_station\physics`，旧预设目录保留作回退备份。
+- 真实用户配置安装验证输出 `MMD_STATION_INSTALLED_ADDON_OK`，并通过材质顺序、Morph 编辑器、用户排序、刚体缩放诊断、代理创建、镜像命名与完整 headless smoke 等选定回归，最终输出 `MMD_STATION_SELECTED_REGRESSIONS_OK`。版本保持 V0.1.8，不打包 ZIP、不 push；GitHub remote 仓库名仍保持 `MMD-Skirt-Proxy-Creator`，等待单独授权后再改。
+
 ## 2026-08-28 - V0.1.8 MMD 查看器材质与 3D 视图双向选择
 
 - MMD 查看器材质 Tab 的每一行新增与骨骼 Tab 一致的右侧箭头。点击后会在当前 MMD 模型内定位并以 Object Mode 选中所有实际使用该材质的 Mesh，最后一个目标材质同时成为活动 Mesh 的 active material slot；列表活动行同步高亮。表头与材质行共用的列布局同时加入箭头占位，既有序号、Blender 材质名、MMD 名称和 MMD 英文名仍保持对齐。

@@ -21,13 +21,13 @@ if str(REPO) not in sys.path:
 import mmd_tools
 
 mmd_tools.register()
-import mmd_skirt_proxy_creator
+import mmd_station
 
-mmd_skirt_proxy_creator.register()
+mmd_station.register()
 
-from mmd_skirt_proxy_creator.mmd_ik_runtime.ffi import NativeBoneSolver
-from mmd_skirt_proxy_creator.physics_preview.ffi import Quat, Transform, Vec3
-from mmd_skirt_proxy_creator.physics_preview.runtime import PreviewSession, PreviewWorld
+from mmd_station.mmd_ik_runtime.ffi import NativeBoneSolver
+from mmd_station.physics_preview.ffi import Quat, Transform, Vec3
+from mmd_station.physics_preview.runtime import PreviewSession, PreviewWorld
 def bits(values):
     return struct.pack("<7f", *values)
 

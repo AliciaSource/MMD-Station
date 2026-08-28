@@ -18,23 +18,23 @@ if str(REPO) not in sys.path:
 import mmd_tools
 
 mmd_tools.register()
-import mmd_skirt_proxy_creator
+import mmd_station
 
-mmd_skirt_proxy_creator.register()
+mmd_station.register()
 
-from mmd_skirt_proxy_creator.mmd_ik_runtime.coordinates import blender_pose_matrix
-from mmd_skirt_proxy_creator.mmd_ik_runtime.evaluator import (
+from mmd_station.mmd_ik_runtime.coordinates import blender_pose_matrix
+from mmd_station.mmd_ik_runtime.evaluator import (
     _bone_map,
     _infer_scale,
     _mute_generated_constraints,
     _restore_constraints,
 )
-from mmd_skirt_proxy_creator.mmd_ik_runtime.ffi import NativeBoneSolver
-from mmd_skirt_proxy_creator.mmd_ik_runtime.runtime import (
+from mmd_station.mmd_ik_runtime.ffi import NativeBoneSolver
+from mmd_station.mmd_ik_runtime.runtime import (
     canonical_armature,
     create_runtime,
 )
-from mmd_skirt_proxy_creator.physics_preview.runtime import PreviewSession, PreviewWorld
+from mmd_station.physics_preview.runtime import PreviewSession, PreviewWorld
 
 
 def transform_bits(transform):

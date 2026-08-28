@@ -1,6 +1,6 @@
-# MMD Skirt Proxy Creator
+# MMD Station
 
-面向 Blender 4.4 的独立裙面代理创建插件。当前边界只包含：
+面向 Blender 4.4 的一体化 MMD 模型制作与运行预览工具，覆盖代理创建、模型查看与诊断、Morph 编辑、MMD 物理以及 MMD IK。当前功能包括：
 
 - 从 Mesh Edit Mode 选区拟合闭合或开放裙面代理；闭合模式按中心轴做圆柱拟合，开放模式直接沿选区横向主方向分列并在选中表面采样，再用顶部精确锚定、底部异常采样降权的全局三次曲线拟合过滤褶皱、孔洞与不对称轮廓造成的逐层抖动，末端沿全局曲线切线连续延伸。“圆周方向”为 `1` 时生成贴合平滑中线的单列骨链以及全宽为中位骨段长度 `9%` 的极窄十字控制带；控制带提供 Sculpt Mode 所需的面，但不会增加第二列骨骼、刚体或横 Joint。
 - 代理名称以`左`或`右`开头时启用双侧模式，例如`左Skirt`：当前选区作为左侧，插件在局部 X=0 另一侧识别对应布料，并把左右两套控制带创建在同一个代理 Mesh 中；面板仍可独立选择闭合或打开拓扑。完全镜像的原网格会得到严格镜像的控制链并自动启用 Mesh X Mirror；非镜像网格会在另一侧独立拟合、独立计算权重并保持 X Mirror 关闭。Blender 骨骼名使用 `.L/.R`，MMD 日文名使用`左/右`前缀，MMD 英文名使用 `_L/_R` 后缀；左右逻辑组之间不会互相生成面或横 Joint。
@@ -14,7 +14,7 @@
 - `当前代理网格` 是生成、参数应用、手工同步和自动同步的明确作用域；每个代理分别保存物理参数与稳定关联 ID，因此多个代理可以共用同一 MMD Armature，而不会互相覆盖刚体或 Joint。
 - 可开启“骨骼变动后自动同步刚体与 Joint”：代理同步骨骼后，或当前代理所属 Armature 退出 Edit Mode 后，只更新当前代理刚体与 Joint 的位置和旋转；刚体尺寸、形状、类型以及质量、碰撞组、阻尼、Joint 限制等参数保持不变，也不会修改其它代理。
 - `MMD 刚体与 Joint` 采用 `基本 / 刚体 / 纵 Joint / 横 Joint` 页签，不再把全部参数纵向堆叠；代理创建和代理编辑已合并到`基本`页，纵向与横向 Joint 使用互相独立的移动限制、旋转限制和弹簧参数。
-- N 面板只注册一个顶层 `MMD 代理工具` Panel，顶部以横向 Tab 在“代理创建 / MMD 查看器 / 物理预览”三个独立工作区之间切换；切换页面不会重置当前代理、查看器筛选或正在运行的预览状态。“代理创建”页面内部继续保留 `基本 / 刚体 / 纵 Joint / 横 Joint` 二级页签。
+- N 面板只注册一个顶层 `MMD Station` Panel，顶部以横向 Tab 在“代理创建 / MMD 查看器 / Morph 编辑器 / 物理预览 / MMD IK”五个独立工作区之间切换；切换页面不会重置当前代理、查看器筛选或正在运行的预览状态。“代理创建”页面内部继续保留 `基本 / 刚体 / 纵 Joint / 横 Joint` 二级页签。
 - `物理参数预设`提供内置“稳定中长裙”一键填入，并支持把当前刚体、碰撞、纵 Joint、横 Joint及全部补间参数保存为 Blender 用户预设。全部已启用的刚体与 Joint 线性补间统一使用当前代理最长列的全局层深：同一圈层始终取得相同补间系数，短列末端不会提前套用末端值，只有最长列末端达到最终参数。内置方案让纵/横 Joint 的旋转限制和弹簧由腰部向裙摆线性过渡为“上紧下松”；始终为零的移动限制不启用无意义补间。自定义预设跨 `.blend` 持久保存，可从下拉菜单重新载入或删除；预设只填入面板，仍需点击“应用参数到当前代理”才会修改已经生成的物理对象。
 - `基本`页只保留自动同步与手工同步入口；“生成横向 Joint”只在`横 Joint`页出现。骨骼变动后的刚体/Joint 自动同步默认启用。
 - MMD 查看器的骨骼、刚体和 Joint 三页都同时提供“将勾选项选入 Blender”和“从 3D 视图同步选中项目”两个互逆入口。Joint 页另提供“同步刚体 B 名称到 Joint”的“同步勾选 / 同步全部”：纵向与锚定 Joint 直接使用刚体 B 名称，横向 Joint 追加 `_H`。
@@ -50,10 +50,10 @@
 
 真实 Blender 4.4 安装目录使用 Junction，持续桥接独立源码：
 
-`%APPDATA%\Blender Foundation\Blender\4.4\scripts\addons\mmd_skirt_proxy_creator`
+`%APPDATA%\Blender Foundation\Blender\4.4\scripts\addons\mmd_station`
 
 Junction 目标：
 
-`D:\MOD\BlenderAddonProjects\MMD-Skirt-Proxy-Creator\mmd_skirt_proxy_creator`
+`D:\MOD\BlenderAddonProjects\MMD-Station\mmd_station`
 
 旧的 `surface_proxy_creator` 不再桥接 `MMD-Nova-Rebuild`。

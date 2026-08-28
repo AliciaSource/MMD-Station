@@ -17,26 +17,26 @@ import mmd_tools
 
 mmd_tools.register()
 
-import mmd_skirt_proxy_creator
-from mmd_skirt_proxy_creator.mmd_ik_runtime.coordinates import (
+import mmd_station
+from mmd_station.mmd_ik_runtime.coordinates import (
     blender_position_to_mmd,
     blender_rotation_to_mmd_rows,
 )
-from mmd_skirt_proxy_creator.mmd_ik_runtime.evaluator import (
+from mmd_station.mmd_ik_runtime.evaluator import (
     _SESSIONS,
     _bone_map,
     start,
     stop,
 )
-from mmd_skirt_proxy_creator.mmd_ik_runtime.ffi import NativeBoneSolver
-from mmd_skirt_proxy_creator.mmd_ik_runtime.runtime import (
+from mmd_station.mmd_ik_runtime.ffi import NativeBoneSolver
+from mmd_station.mmd_ik_runtime.runtime import (
     canonical_armature,
     create_runtime,
 )
-from mmd_skirt_proxy_creator.physics_preview import runtime as physics_runtime
+from mmd_station.physics_preview import runtime as physics_runtime
 from mmd_tools.core.vmd.importer import VMDImporter
 
-mmd_skirt_proxy_creator.register()
+mmd_station.register()
 
 
 ROTATION_COMPONENTS = (0, 1, 2, 4, 5, 6, 8, 9, 10)

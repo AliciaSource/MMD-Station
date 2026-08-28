@@ -9,23 +9,23 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 bpy.ops.preferences.addon_enable(module="bl_ext.blender_org.mmd_tools")
 
-import mmd_skirt_proxy_creator
+import mmd_station
 
 
-mmd_skirt_proxy_creator.register()
-assert mmd_skirt_proxy_creator._derived_proxy_prefix(
+mmd_station.register()
+assert mmd_station._derived_proxy_prefix(
     ["Bone_Piao031.L", "Bone_Piao032.L"]
 ) == "Bone_Piao"
-assert mmd_skirt_proxy_creator._derived_proxy_prefix(
+assert mmd_station._derived_proxy_prefix(
     ["后发A1.L", "后发A2.L"]
 ) == "后发A"
-assert mmd_skirt_proxy_creator._derived_proxy_prefix(
+assert mmd_station._derived_proxy_prefix(
     ["后发B1.R", "后发B2.R"]
 ) == "后发B"
-assert not mmd_skirt_proxy_creator._derived_proxy_prefix(
+assert not mmd_station._derived_proxy_prefix(
     ["后发A1.L", "后发A2.L", "后发B1.R", "后发B2.R"]
 )
-assert mmd_skirt_proxy_creator._derived_proxy_prefix(
+assert mmd_station._derived_proxy_prefix(
     [
         "Bone_Hair_A1.L",
         "Bone_Hair_A2.L",

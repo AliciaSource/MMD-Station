@@ -10,10 +10,10 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 bpy.ops.preferences.addon_enable(module="bl_ext.blender_org.mmd_tools")
 
-import mmd_skirt_proxy_creator
+import mmd_station
 from bl_ext.blender_org.mmd_tools.core import pmx
 from bl_ext.blender_org.mmd_tools.core.model import FnModel, Model
-from mmd_skirt_proxy_creator.mmd_material_order import (
+from mmd_station.mmd_material_order import (
     ordered_materials,
 )
 
@@ -52,7 +52,7 @@ def make_mesh(name, armature, material_positions):
     return obj
 
 
-mmd_skirt_proxy_creator.register()
+mmd_station.register()
 model = Model.create("MaterialOrderRegression", add_root_bone=True)
 root = model.rootObject()
 armature = model.armature()

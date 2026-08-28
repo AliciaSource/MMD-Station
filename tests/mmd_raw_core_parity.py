@@ -1,11 +1,11 @@
 import json,os,struct,sys,tempfile
 from pathlib import Path
 import bpy
-repo=Path(r'D:\MOD\BlenderAddonProjects\MMD-Skirt-Proxy-Creator');ext=Path(r'C:\Users\A\AppData\Roaming\Blender Foundation\Blender\4.4\extensions\blender_org')
+repo=Path(r'D:\MOD\BlenderAddonProjects\MMD-Station');ext=Path(r'C:\Users\A\AppData\Roaming\Blender Foundation\Blender\4.4\extensions\blender_org')
 sys.path[:0]=[str(ext),str(repo)]
 import mmd_tools;mmd_tools.register()
-import mmd_skirt_proxy_creator;mmd_skirt_proxy_creator.register()
-from mmd_skirt_proxy_creator.physics_preview import runtime
+import mmd_station;mmd_station.register()
+from mmd_station.physics_preview import runtime
 
 def records(path):
  d=Path(path).read_bytes();o=0;out=[]
@@ -55,7 +55,7 @@ trace=records(oracle_trace)
 pairs={}
 for r in trace:pairs.setdefault(r['call'],{})[r['phase']]=r
 import ctypes
-from mmd_skirt_proxy_creator.physics_preview.ffi import default_library
+from mmd_station.physics_preview.ffi import default_library
 plugin_trace=str(Path(tempfile.gettempdir())/'spx_mmd_raw_core_parity.bin')
 try: Path(plugin_trace).unlink()
 except FileNotFoundError: pass
@@ -65,7 +65,7 @@ hook_path=os.environ.get('SPX_MMD_RAW_HOOK',str(repo/'tests'/'tools'/'bin'/'mmd_
 hook=ctypes.WinDLL(hook_path)
 hook.install_for_module.argtypes=(ctypes.c_wchar_p,ctypes.c_ulonglong)
 hook.install_for_module.restype=ctypes.c_int
-dll_path=repo/'mmd_skirt_proxy_creator'/'physics_preview'/'bin'/'win_amd64'/'mmd_physics_solver_mmd.dll'
+dll_path=repo/'mmd_station'/'physics_preview'/'bin'/'win_amd64'/'mmd_physics_solver_mmd.dll'
 vtable_rva=find_vtable_rva(dll_path,'btDiscreteDynamicsWorld')
 print('MMD_RAW_CORE_VTABLE',hex(vtable_rva))
 assert hook.install_for_module('mmd_physics_solver_mmd.dll',vtable_rva)==1

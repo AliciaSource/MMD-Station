@@ -11,10 +11,10 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 bpy.ops.preferences.addon_enable(module="bl_ext.blender_org.mmd_tools")
 
-import mmd_skirt_proxy_creator
-from mmd_skirt_proxy_creator import mmd_morph_editor as morph_editor_module
+import mmd_station
+from mmd_station import mmd_morph_editor as morph_editor_module
 from bl_ext.blender_org.mmd_tools.core.model import Model
-from mmd_skirt_proxy_creator.mmd_morph_editor import (
+from mmd_station.mmd_morph_editor import (
     DETAIL_SELECTED_PROPERTY,
     OUTPUT_BRIDGE_PROPERTY,
     UV_DETAIL_SELECTED_PROPERTY,
@@ -93,7 +93,7 @@ def bridge_nodes(material):
     ]
 
 
-mmd_skirt_proxy_creator.register()
+mmd_station.register()
 model = Model.create("MorphEditorRegression", add_root_bone=True)
 root = model.rootObject()
 armature = model.armature()

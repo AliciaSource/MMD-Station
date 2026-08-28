@@ -3,7 +3,7 @@ import time
 from pathlib import Path
 
 
-REPO = Path(r"D:\MOD\BlenderAddonProjects\MMD-Skirt-Proxy-Creator")
+REPO = Path(r"D:\MOD\BlenderAddonProjects\MMD-Station")
 MMD_TOOLS_PARENT = Path(
     r"C:\Users\A\AppData\Roaming\Blender Foundation\Blender\4.4\extensions\blender_org"
 )
@@ -13,7 +13,7 @@ PMX = Path(
 sys.path[:0] = [str(MMD_TOOLS_PARENT), str(REPO)]
 
 from mmd_tools.core import pmx
-from mmd_skirt_proxy_creator.physics_preview.runtime import _read_pmx_physics
+from mmd_station.physics_preview.runtime import _read_pmx_physics
 
 
 start = time.perf_counter()

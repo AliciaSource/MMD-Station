@@ -7,8 +7,8 @@ import bpy
 PROJECT_ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
 
-import mmd_skirt_proxy_creator
-from mmd_skirt_proxy_creator.vertex_group_tools import (
+import mmd_station
+from mmd_station.vertex_group_tools import (
     draw_vertex_group_context_menu,
 )
 
@@ -18,7 +18,7 @@ def existing_menu_extension(_self, _context):
 
 
 bpy.types.MESH_MT_vertex_group_context_menu.append(existing_menu_extension)
-mmd_skirt_proxy_creator.register()
+mmd_station.register()
 
 draw_functions = getattr(
     bpy.types.MESH_MT_vertex_group_context_menu.draw,

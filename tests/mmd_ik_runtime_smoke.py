@@ -8,7 +8,7 @@ from pathlib import Path
 import bpy
 
 
-REPO = Path(r"D:\MOD\BlenderAddonProjects\MMD-Skirt-Proxy-Creator")
+REPO = Path(r"D:\MOD\BlenderAddonProjects\MMD-Station")
 MMD_TOOLS_PARENT = Path(
     r"C:\Users\A\AppData\Roaming\Blender Foundation\Blender\4.4\extensions\blender_org"
 )
@@ -24,11 +24,11 @@ import mmd_tools
 
 mmd_tools.register()
 
-import mmd_skirt_proxy_creator
-from mmd_skirt_proxy_creator.mmd_ik_runtime.coordinates import blender_pose_matrix
-from mmd_skirt_proxy_creator.mmd_ik_runtime.evaluator import _SESSIONS, is_active
-from mmd_skirt_proxy_creator.mmd_ik_runtime.export_hook import canonical_export
-from mmd_skirt_proxy_creator.mmd_ik_runtime.runtime import (
+import mmd_station
+from mmd_station.mmd_ik_runtime.coordinates import blender_pose_matrix
+from mmd_station.mmd_ik_runtime.evaluator import _SESSIONS, is_active
+from mmd_station.mmd_ik_runtime.export_hook import canonical_export
+from mmd_station.mmd_ik_runtime.runtime import (
     MMDIKRuntimeError,
     OUTPUT_CONSTRAINT_NAME,
     STATE_KEY,
@@ -37,14 +37,14 @@ from mmd_skirt_proxy_creator.mmd_ik_runtime.runtime import (
     runtime_state,
     select_armature,
 )
-from mmd_skirt_proxy_creator.mmd_ik_runtime.ui import _validate_action_vmd
-from mmd_skirt_proxy_creator.physics_preview import runtime as physics_runtime
+from mmd_station.mmd_ik_runtime.ui import _validate_action_vmd
+from mmd_station.physics_preview import runtime as physics_runtime
 from mmd_tools.core.model import FnModel
 from mmd_tools.core.pmx.importer import PMXImporter
 from mmd_tools.core.vmd.importer import VMDImporter
 from mmd_tools.core import pmx
 
-mmd_skirt_proxy_creator.register()
+mmd_station.register()
 
 
 def bone_morph_snapshot(root):
@@ -270,7 +270,7 @@ source_pmx = root.get("spx_mmd_ik_source_pmx")
 try:
     if source_pmx is not None:
         del root["spx_mmd_ik_source_pmx"]
-    from mmd_skirt_proxy_creator.mmd_ik_runtime.evaluator import start_live
+    from mmd_station.mmd_ik_runtime.evaluator import start_live
 
     start_live(root)
     current_model_session = _SESSIONS[root.name]

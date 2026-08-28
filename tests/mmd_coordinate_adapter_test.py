@@ -1,7 +1,7 @@
 import math
 import struct
 
-from mmd_skirt_proxy_creator.mmd_ik_runtime.coordinates import (
+from mmd_station.mmd_ik_runtime.coordinates import (
     blender_head_transform,
     blender_position_to_mmd,
     blender_rotation_to_mmd_rows,

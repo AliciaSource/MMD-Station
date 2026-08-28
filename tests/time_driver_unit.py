@@ -7,7 +7,7 @@ import tempfile
 PROJECT_ROOT = pathlib.Path(__file__).resolve().parents[1]
 MODULE_PATH = (
     PROJECT_ROOT
-    / "mmd_skirt_proxy_creator"
+    / "mmd_station"
     / "physics_preview"
     / "time_driver.py"
 )

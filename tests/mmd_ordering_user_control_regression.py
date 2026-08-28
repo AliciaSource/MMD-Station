@@ -1,6 +1,6 @@
 from types import SimpleNamespace
 
-from mmd_skirt_proxy_creator import mmd_ordering
+from mmd_station import mmd_ordering
 
 
 class Bone:

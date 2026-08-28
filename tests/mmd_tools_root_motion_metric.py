@@ -19,7 +19,7 @@ mmd_tools.register()
 
 from mmd_tools.core.model import FnModel
 from mmd_tools.core.vmd.importer import VMDImporter
-from mmd_skirt_proxy_creator.mmd_ik_runtime.coordinates import blender_pose_matrix
+from mmd_station.mmd_ik_runtime.coordinates import blender_pose_matrix
 
 
 def main():
