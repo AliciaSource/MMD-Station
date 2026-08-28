@@ -1,5 +1,11 @@
 # Development Log
 
+## 2026-08-28 - V0.1.8 MMD 查看器材质详情实际挂载与勾选批量字段同步
+
+- 修复此前虽实现“MMD 纹理 / MMD 材质”绘制函数、但 Material Tab 在 `draw_material_name_sync()` 后提前 `return`，导致真实 MMD Station 面板完全不显示详情的接线错误。Material 分支现在先绘制活动材质的两块详情面板再返回；回归直接执行完整 `draw_browser()` Material 路径，防止只测私有绘制函数却再次漏接真实入口。
+- Blender 原生 `layout.prop` 的 Alt+左键传播只识别当前 UI 上下文中的 Blender selection，不会把 MMD 查看器自定义 UIList 复选框视为 selected datablock，Python API 也不提供属性控件自身的 Alt 点击事件回调。因此采用确定性入口：所有可批量的 MMD Material 字段及球体/Toon 设置右侧新增 `COPYDOWN` 小图标，将活动材质的该字段复制到查看器中全部已勾选材质；`material_id` 保持唯一性，不提供批量复制。没有勾选材质时明确取消，不读取 3D 视图物体选择。
+- `tests/mmd_morph_editor_regression.py` 覆盖真实 Material Tab 到详情面板的调用链、标量 `alpha` 与数组 `diffuse_color` 的勾选批量复制、空勾选拒绝及复制图标绘制。Blender 4.4.3 focused regression 输出 `MMD_MORPH_EDITOR_REGRESSION_OK`，`py_compile` 与 `git diff --check` 通过。版本保持 V0.1.8，真实 Blender 4.4 源码 Junction 已直接生效，不打包 ZIP、不 push；本轮未进行人工 GUI 视觉验收。
+
 ## 2026-08-28 - V0.1.8 Material Morph 详情按真实 PMX 材质顺序添加
 
 - 修正 Material Morph 详情 `+` 在多选 Mesh 时按活动物体优先、再按 `context.selected_objects`/材质槽遍历而导致顺序偏离 PMX 的问题。现在先汇总所选 Mesh 涉及的材质集合，再复用 MMD 查看器与导出链路的 `ordered_materials()` 真实 PMX 顺序过滤候选材质；共享材质仍只添加一次，已存在于当前 Morph 的材质仍跳过。没有实际 PMX 顺序的未使用材质槽保留原能力，但统一追加在具真实顺序的材质之后。

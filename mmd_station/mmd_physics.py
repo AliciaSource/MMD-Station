@@ -2667,6 +2667,66 @@ class SPX_OT_RemoveBrowserMaterialTexture(Operator):
         return {"FINISHED"}
 
 
+_BATCH_EDITABLE_MMD_MATERIAL_PROPERTIES = {
+    "name_j",
+    "name_e",
+    "comment",
+    "diffuse_color",
+    "alpha",
+    "specular_color",
+    "shininess",
+    "ambient_color",
+    "is_double_sided",
+    "enabled_drop_shadow",
+    "enabled_self_shadow_map",
+    "enabled_self_shadow",
+    "enabled_toon_edge",
+    "edge_color",
+    "edge_weight",
+    "sphere_texture_type",
+    "is_shared_toon_texture",
+    "shared_toon_texture",
+    "toon_texture",
+}
+
+
+class SPX_OT_CopyBrowserMaterialPropertyToChecked(Operator):
+    bl_idname = "surface_proxy.copy_browser_material_property_to_checked"
+    bl_label = "复制字段到勾选材质"
+    bl_description = "将活动材质的当前字段复制到 MMD 查看器中全部勾选材质"
+    bl_options = {"REGISTER", "UNDO"}
+
+    material_name: StringProperty(options={"HIDDEN"})
+    property_name: StringProperty(options={"HIDDEN"})
+
+    def execute(self, context):
+        if self.property_name not in _BATCH_EDITABLE_MMD_MATERIAL_PROPERTIES:
+            self.report({"ERROR"}, "该字段不支持批量编辑")
+            return {"CANCELLED"}
+        source_material = bpy.data.materials.get(self.material_name)
+        if source_material is None:
+            self.report({"ERROR"}, "活动材质已不存在")
+            return {"CANCELLED"}
+        settings = context.scene.surface_proxy_creator
+        targets = [
+            item.material
+            for item in _checked_items(settings, "MATERIAL")
+            if item.material is not None
+        ]
+        if not targets:
+            self.report({"WARNING"}, "请先勾选要批量编辑的材质")
+            return {"CANCELLED"}
+        value = getattr(source_material.mmd_material, self.property_name)
+        if hasattr(value, "to_tuple"):
+            value = value.to_tuple()
+        elif not isinstance(value, (str, int, float, bool)) and hasattr(value, "__iter__"):
+            value = tuple(value)
+        for material in targets:
+            setattr(material.mmd_material, self.property_name, value)
+        self.report({"INFO"}, f"已将字段同步到 {len(targets)} 个勾选材质")
+        return {"FINISHED"}
+
+
 class SPX_OT_SelectMMDItem(Operator):
     bl_idname = "surface_proxy.select_mmd_item"
     bl_label = "选择 MMD 项目"
@@ -4960,6 +5020,7 @@ def draw_browser(layout, settings):
             icon="UV_SYNC_SELECT",
         )
         draw_material_name_sync(layout, settings)
+        _draw_active_mmd_inspector(layout, settings)
         return
     row = layout.row(align=True)
     row.operator(
@@ -5081,6 +5142,30 @@ def draw_browser(layout, settings):
     _draw_active_mmd_inspector(layout, settings)
 
 
+def _draw_batchable_mmd_material_property(
+    layout,
+    material,
+    property_name,
+    *,
+    text=None,
+    slider=False,
+    expand=False,
+):
+    row = layout.row(align=True)
+    keywords = {"slider": slider, "expand": expand}
+    if text is not None:
+        keywords["text"] = text
+    row.prop(material.mmd_material, property_name, **keywords)
+    operator = row.operator(
+        SPX_OT_CopyBrowserMaterialPropertyToChecked.bl_idname,
+        text="",
+        icon="COPYDOWN",
+    )
+    operator.material_name = material.name
+    operator.property_name = property_name
+    return row
+
+
 def _draw_browser_material_texture(layout, material):
     material_module = importlib.import_module(
         "bl_ext.blender_org.mmd_tools.core.material"
@@ -5115,53 +5200,80 @@ def _draw_browser_material_texture(layout, material):
             if texture is not None:
                 row.label(text="纹理节点无有效图像", icon="ERROR")
         if texture_kind == "SPHERE":
-            box.row(align=True).prop(
-                mmd_material,
+            _draw_batchable_mmd_material_property(
+                box,
+                material,
                 "sphere_texture_type",
                 expand=True,
             )
-    row = box.row()
-    row.prop(mmd_material, "is_shared_toon_texture")
-    shared = row.row()
+    row = _draw_batchable_mmd_material_property(
+        box,
+        material,
+        "is_shared_toon_texture",
+    )
+    shared = box.row(align=True)
     shared.active = mmd_material.is_shared_toon_texture
-    shared.prop(mmd_material, "shared_toon_texture")
-    custom = box.row()
+    _draw_batchable_mmd_material_property(
+        shared,
+        material,
+        "shared_toon_texture",
+    )
+    custom = box.row(align=True)
     custom.active = not mmd_material.is_shared_toon_texture
-    custom.prop(mmd_material, "toon_texture")
+    _draw_batchable_mmd_material_property(
+        custom,
+        material,
+        "toon_texture",
+    )
 
 
 def _draw_browser_mmd_material(layout, material):
     mmd_material = material.mmd_material
     box = layout.box()
     box.label(text="MMD 材质", icon="MATERIAL")
+    box.label(text="字段右侧复制图标：同步到勾选材质", icon="INFO")
     row = box.row(align=True)
     row.label(text="信息：")
     if not mmd_material.is_id_unique():
         row.label(icon="ERROR")
     row.prop(mmd_material, "material_id", text="ID")
-    box.prop(mmd_material, "name_j")
-    box.prop(mmd_material, "name_e")
-    box.prop(mmd_material, "comment")
+    _draw_batchable_mmd_material_property(box, material, "name_j")
+    _draw_batchable_mmd_material_property(box, material, "name_e")
+    _draw_batchable_mmd_material_property(box, material, "comment")
     box.label(text="颜色：")
-    row = box.row()
-    row.prop(mmd_material, "diffuse_color")
-    row.prop(mmd_material, "alpha", slider=True)
-    row = box.row()
-    row.prop(mmd_material, "specular_color")
-    row.prop(mmd_material, "shininess", slider=True)
-    box.prop(mmd_material, "ambient_color")
+    _draw_batchable_mmd_material_property(box, material, "diffuse_color")
+    _draw_batchable_mmd_material_property(
+        box,
+        material,
+        "alpha",
+        slider=True,
+    )
+    _draw_batchable_mmd_material_property(box, material, "specular_color")
+    _draw_batchable_mmd_material_property(
+        box,
+        material,
+        "shininess",
+        slider=True,
+    )
+    _draw_batchable_mmd_material_property(box, material, "ambient_color")
     box.label(text="阴影：")
-    row = box.row()
-    row.prop(mmd_material, "is_double_sided")
-    row.prop(mmd_material, "enabled_drop_shadow")
-    row = box.row()
-    row.prop(mmd_material, "enabled_self_shadow_map")
-    row.prop(mmd_material, "enabled_self_shadow")
-    box.prop(mmd_material, "enabled_toon_edge")
+    for property_name in (
+        "is_double_sided",
+        "enabled_drop_shadow",
+        "enabled_self_shadow_map",
+        "enabled_self_shadow",
+        "enabled_toon_edge",
+    ):
+        _draw_batchable_mmd_material_property(box, material, property_name)
     edge = box.row()
     edge.active = mmd_material.enabled_toon_edge
-    edge.prop(mmd_material, "edge_color")
-    edge.prop(mmd_material, "edge_weight", slider=True)
+    _draw_batchable_mmd_material_property(edge, material, "edge_color")
+    _draw_batchable_mmd_material_property(
+        edge,
+        material,
+        "edge_weight",
+        slider=True,
+    )
 
 
 def _draw_active_mmd_inspector(layout, settings):
@@ -5384,6 +5496,7 @@ CLASSES = (
     SPX_OT_SyncSelectedMMDObjectsToBrowser,
     SPX_OT_OpenBrowserMaterialTexture,
     SPX_OT_RemoveBrowserMaterialTexture,
+    SPX_OT_CopyBrowserMaterialPropertyToChecked,
     SPX_OT_CreateJointFromCheckedRigids,
     SPX_OT_FillMissingMMDBoneNames,
     SPX_OT_SyncBoneNamesToRigids,

@@ -13,6 +13,7 @@ bpy.ops.preferences.addon_enable(module="bl_ext.blender_org.mmd_tools")
 
 import mmd_station
 from mmd_station import mmd_morph_editor as morph_editor_module
+from mmd_station import mmd_physics as mmd_physics_module
 from bl_ext.blender_org.mmd_tools.core.model import FnModel, Model
 from mmd_station.mmd_material_order import ordered_materials, set_material_order
 from mmd_station.mmd_morph_editor import (
@@ -47,8 +48,20 @@ class InspectorLayoutProbe:
     def column(self, **_kwargs):
         return InspectorLayoutProbe(self.labels, self.properties, self.operators)
 
+    def split(self, **_kwargs):
+        return InspectorLayoutProbe(self.labels, self.properties, self.operators)
+
     def box(self):
         return InspectorLayoutProbe(self.labels, self.properties, self.operators)
+
+    def separator(self, **_kwargs):
+        return None
+
+    def menu(self, *_args, **_kwargs):
+        return None
+
+    def template_list(self, *_args, **_kwargs):
+        return None
 
     def label(self, text="", **_kwargs):
         self.labels.append(text)
@@ -405,6 +418,68 @@ assert {
 assert inspector_probe.operators.count(
     "surface_proxy.open_browser_material_texture"
 ) == 2
+assert "surface_proxy.copy_browser_material_property_to_checked" in (
+    inspector_probe.operators
+)
+
+# The real Material Tab draw path reaches the embedded inspector before its
+# material-only early return.
+inspector_calls = []
+original_inspector_draw = mmd_physics_module._draw_active_mmd_inspector
+mmd_physics_module._draw_active_mmd_inspector = (
+    lambda _layout, _settings: inspector_calls.append(_settings.browser_kind)
+)
+try:
+    mmd_physics_module.draw_browser(InspectorLayoutProbe(), settings)
+finally:
+    mmd_physics_module._draw_active_mmd_inspector = original_inspector_draw
+assert inspector_calls == ["MATERIAL"]
+
+# Field-specific batch copy uses browser checks rather than Blender object
+# selection and supports both scalar and array-valued MMD material properties.
+for browser_item in settings.browser_items:
+    browser_item.selected = browser_item.material in {material, custom_material}
+original_batch_values = {
+    material: (
+        material.mmd_material.alpha,
+        tuple(material.mmd_material.diffuse_color),
+    ),
+    custom_material: (
+        custom_material.mmd_material.alpha,
+        tuple(custom_material.mmd_material.diffuse_color),
+    ),
+}
+material.mmd_material.alpha = 0.375
+custom_material.mmd_material.alpha = 0.875
+assert bpy.ops.surface_proxy.copy_browser_material_property_to_checked(
+    material_name=material.name,
+    property_name="alpha",
+) == {"FINISHED"}
+assert abs(custom_material.mmd_material.alpha - 0.375) < 1.0e-6
+material.mmd_material.diffuse_color = (0.1, 0.2, 0.3)
+custom_material.mmd_material.diffuse_color = (0.8, 0.7, 0.6)
+assert bpy.ops.surface_proxy.copy_browser_material_property_to_checked(
+    material_name=material.name,
+    property_name="diffuse_color",
+) == {"FINISHED"}
+assert max(
+    abs(actual - expected)
+    for actual, expected in zip(
+        custom_material.mmd_material.diffuse_color,
+        (0.1, 0.2, 0.3),
+        strict=True,
+    )
+) < 1.0e-6
+for browser_item in settings.browser_items:
+    browser_item.selected = False
+assert bpy.ops.surface_proxy.copy_browser_material_property_to_checked(
+    material_name=material.name,
+    property_name="alpha",
+) == {"CANCELLED"}
+for batch_material, (alpha, diffuse_color) in original_batch_values.items():
+    batch_material.mmd_material.alpha = alpha
+    batch_material.mmd_material.diffuse_color = diffuse_color
+
 assert bpy.ops.surface_proxy.open_browser_material_texture(
     material_name=material.name,
     texture_kind="MAIN",
