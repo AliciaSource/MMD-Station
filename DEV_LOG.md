@@ -1,5 +1,36 @@
 # Development Log
 
+## 2026-08-28 - V0.1.8 单目标 Material Morph 预设免勾选
+
+- 调整 Morph 编辑器材质详情中的“预设：隐藏 / 预设：显示”：当前 Material Morph 只有一个目标时，即使详情行未勾选也会直接对唯一目标应用预设；有两个或以上目标时仍必须至少勾选一行，未勾选会保持原警告并取消操作。按钮悬停说明同步明确单目标与多目标边界。
+- `tests/mmd_morph_editor_regression.py` 新增单目标未勾选时隐藏、显示两个预设均成功，以及双目标全部未勾选时仍拒绝执行的回归覆盖；Blender 4.4.3 focused regression 输出 `MMD_MORPH_EDITOR_REGRESSION_OK`，`py_compile` 与 `git diff --check` 通过。版本保持 V0.1.8，源码 Junction 直接生效，不打包 ZIP、不 push。
+
+## 2026-08-28 - V0.1.8 ??? MMD ?????????
+
+- ???? Tab ? MMD ????????????????????? `_create_proxy_mesh()`????? Mesh ??????????? `MMD Station Proxies` Collection???????????? Armature ?????? Armature ????? Collection??? MMD Armature ????
+- ????????????????????????? Joint????????? Joint???????? MMD Root ?? Collection?`rigidbodies` / `joints` ?? Empty ??????? `collection_organization.py` ???? Collection ????? `mmd_tools` ?????? Collection ??????????? MMD Root ??
+- ?? `tests/collection_organization_regression.py`?? MMD Root Collection ????? Collection ?????????????????????????????????? `COLLECTION_ORGANIZATION_REGRESSION_OK`?`tests/proxy_creation_no_overwrite_smoke.py` ????????? Collection ????? `PROXY_CREATION_NO_OVERWRITE_OK`?`py_compile` ? `git diff --check` ??????? `headless_smoke.py` ???????????????????????????? `KeyError`?`bone_physics_creator_smoke.py` ????????????????????????? V0.1.8??? Junction ???????? ZIP?? push?
+
+## 2026-08-28 - V0.1.8 Morph 改名面板闪烁与顺序保护
+
+- 修复在 Morph 编辑器列表或详情区改名时整个插件内容消失一帧再刷新的问题。旧 `draw_morph_editor()` 把名称缓存或“表情”Display Frame 的短暂过期与 Morph 增删等结构失效混为一类，统一显示“正在读取 Morph…”并提前结束绘制；现在会独立验证稳定 UID、类型和数量结构，仅名称过期时继续完整绘制，后台 timer 再同步名称，因此文本编辑期间不再撤掉面板。
+- 名称刷新路径不再先依据含旧名称的 Display Frame 重建状态顺序，而是保留现有稳定 UID 顺序、更新 `morph_name` 后再同步各类型 Collection 与“表情”Display Frame，避免改名项被暂时当成新 Morph 并漂到末尾。真正的 Morph 增删、UID 缺失或类型结构变化仍保留“正在读取 Morph…”保护。`tests/mmd_morph_editor_regression.py` 新增改名前后结构可绘制、UID 顺序不变、材质 Collection 位置不变与 Display Frame 名称同步回归；Blender 4.4.3 focused regression 输出 `MMD_MORPH_EDITOR_REGRESSION_OK`。版本保持 V0.1.8，源码 Junction 直接生效，不打包 ZIP、不 push。
+
+## 2026-08-28 - V0.1.8 Group Morph 收集其它 Tab 勾选项
+
+- Group Morph 详情区域的 `全选 / 全不选 / 反选` 下方新增“将其它 Tab 勾选 Morph 加入当前组”。按钮读取材质、UV、骨骼、顶点四个 Tab 中当前已勾选的 Morph，按编辑器状态顺序批量加入当前活动 Group Morph，每个新 offset 的默认权重为 `1.0`；Group Tab 自身不参与收集，避免引入 Group 嵌套和循环。
+- 已存在于当前组内的相同 `morph_type + name` 自动跳过，防止重复叠加；新块插入当前活动详情行下方并激活第一条新增项。无勾选项或勾选项已全部存在时取消并给出明确提示。`tests/mmd_morph_editor_regression.py` 覆盖四类跨 Tab 收集、默认权重、重复去重及二次调用拒绝；Blender 4.4.3 focused regression 输出 `MMD_MORPH_EDITOR_REGRESSION_OK`。版本保持 V0.1.8，源码 Junction 直接生效，不打包 ZIP、不 push。
+
+## 2026-08-28 - V0.1.8 Morph 新增项跟随活动行插入
+
+- 修复 Morph 编辑器右侧 `+` 只调用 Collection `.add()`、导致新 Morph 永远追加到当前类型末尾的问题。新增前现在会记录当前类型的蓝色活动行；创建后将新 Morph 插入该活动项正下方，并把新项设为活动行。没有当前类型的有效活动项时仍安全追加到底部。
+- 插入后继续同步插件状态顺序、各类型 Morph Collection 与“表情”Display Frame，避免界面顺序和实际 PMX Morph 提交顺序分离。`tests/mmd_morph_editor_regression.py` 新增“活动 Material Morph 下方插入、新项激活、Collection/Display Frame 同序及清理恢复”回归；Blender 4.4.3 focused regression 输出 `MMD_MORPH_EDITOR_REGRESSION_OK`。版本保持 V0.1.8，源码 Junction 直接生效，不打包 ZIP、不 push。
+
+## 2026-08-28 - V0.1.8 MMD 查看器材质名称单击选中、双击编辑
+
+- MMD 查看器材质 Tab 的“Blender 材质名”和“MMD 名称”改为与 Morph 编辑器日文名相同的标签式属性绘制：单击交由 `UIList` 激活整行，双击才进入文本编辑，避免用户想切换活动材质时意外改名；“MMD 英文名”保持现有直接编辑行为，其它选择、排序与 3D 视图定位逻辑均未改动。
+- `tests/mmd_material_order_regression.py` 新增 UI 绘制契约断言，确认前两列使用 `emboss=False`、英文名列保持原行为；Blender 4.4.3 `--factory-startup` focused regression 输出 `MMD_MATERIAL_ORDER_REGRESSION_OK`。版本保持 V0.1.8，源码 Junction 直接生效，不打包 ZIP、不 push。
+
 ## 2026-08-28 - V0.1.8 项目正式更名为 MMD Station
 
 - 插件产品名、N 面板标题与分类统一改为 `MMD Station`；本地项目目录由 `MMD-Skirt-Proxy-Creator` 改为 `MMD-Station`，Python package 由 `mmd_skirt_proxy_creator` 改为 `mmd_station`，README、native build 脚本和测试入口同步使用新路径。为保护旧 `.blend` 工程兼容性，既有 `surface_proxy.*` operator id、`Scene.surface_proxy_creator` 与 `surface_proxy_*` IDProperty 均保持不变。

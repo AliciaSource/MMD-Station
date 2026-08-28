@@ -23,7 +23,9 @@ from mmd_station.mmd_morph_editor import (
     _create_uv_morph_preview,
     _migrate_placeholder_animation,
     _morph_state_data_path,
+    _morph_state_structure_is_current,
     _morph_states_are_current,
+    _refresh_morph_state_metadata,
     _preinitialize_imported_morphs,
     _remove_imported_shape_key_curves,
     ensure_morph_states,
@@ -211,12 +213,38 @@ assert hide_data.spx_morph_detail_selected
 assert bone_data.spx_morph_detail_selected
 assert uv_data.spx_morph_detail_selected
 
-# Material presets update every checked detail row and clear stale parameters.
+# A single Material Morph target accepts both presets without being checked.
+root.spx_morph_active_index = root.spx_morph_states.find(states["FadeMultiply"].uid)
+mult_data.spx_morph_detail_selected = False
+assert bpy.ops.surface_proxy.apply_material_morph_preset(preset="HIDE") == {
+    "FINISHED"
+}
+assert mult_data.offset_type == "ADD"
+assert tuple(mult_data.diffuse_color) == (0.0, 0.0, 0.0, -1.0)
+assert tuple(mult_data.edge_color) == (0.0, 0.0, 0.0, -1.0)
+assert not mult_data.spx_morph_detail_selected
+assert bpy.ops.surface_proxy.apply_material_morph_preset(preset="SHOW") == {
+    "FINISHED"
+}
+assert tuple(mult_data.diffuse_color) == (0.0, 0.0, 0.0, 1.0)
+assert tuple(mult_data.edge_color) == (0.0, 0.0, 0.0, 1.0)
+assert not mult_data.spx_morph_detail_selected
+mult_data.offset_type = "MULT"
+mult_data.diffuse_color = (1.0, 1.0, 1.0, 0.5)
+mult_data.edge_color = (1.0, 1.0, 1.0, 0.5)
+morph_editor_module.evaluate_morph_root(root)
+
+# Multiple targets still require at least one checked detail row.
 root.spx_morph_active_index = root.spx_morph_states.find(states["PresetBatch"].uid)
 assert bpy.ops.surface_proxy.select_morph_details(action="ALL") == {"FINISHED"}
 assert all(data.spx_morph_detail_selected for data in preset_morph.data)
 assert bpy.ops.surface_proxy.select_morph_details(action="INVERT") == {"FINISHED"}
 assert not any(data.spx_morph_detail_selected for data in preset_morph.data)
+assert bpy.ops.surface_proxy.apply_material_morph_preset(preset="HIDE") == {
+    "CANCELLED"
+}
+
+# Checked targets receive the preset and stale parameters are cleared.
 assert bpy.ops.surface_proxy.select_morph_details(action="ALL") == {"FINISHED"}
 preset_morph.data[1].spx_morph_detail_selected = False
 assert bpy.ops.surface_proxy.apply_material_morph_preset(preset="HIDE") == {
@@ -286,6 +314,31 @@ assert not _morph_states_are_current(root)
 ensure_morph_states(root)
 assert _morph_states_are_current(root)
 
+# Renaming keeps the stable UID structure drawable while metadata and the
+# facial frame refresh without moving the renamed Morph to the end.
+state_uid_order_before_rename = [state.uid for state in root.spx_morph_states]
+material_order_before_rename = [
+    morph.name for morph in root.mmd_root.material_morphs
+]
+hide_index_before_rename = material_order_before_rename.index("Hide")
+hide_morph.name = "HideRenamed"
+assert not _morph_states_are_current(root)
+assert _morph_state_structure_is_current(root)
+_refresh_morph_state_metadata(root)
+assert _morph_states_are_current(root)
+assert [state.uid for state in root.spx_morph_states] == state_uid_order_before_rename
+assert [morph.name for morph in root.mmd_root.material_morphs][
+    hide_index_before_rename
+] == "HideRenamed"
+assert [
+    item.name
+    for item in root.mmd_root.display_item_frames["表情"].data
+    if item.morph_type == "material_morphs"
+][hide_index_before_rename] == "HideRenamed"
+hide_morph.name = "Hide"
+_refresh_morph_state_metadata(root)
+assert _morph_states_are_current(root)
+
 # Named state paths remain keyframeable and sorting updates the PMX facial frame.
 states["Hide"].keyframe_insert(data_path="value", frame=1)
 hide_path = states["Hide"].path_from_id("value")
@@ -295,6 +348,34 @@ assert any(
 settings = bpy.context.scene.surface_proxy_creator
 settings.morph_editor_root = root
 settings.morph_editor_type = "material_morphs"
+
+# New Morphs are inserted directly below the active row instead of appended.
+states = {state.morph_name: state for state in root.spx_morph_states}
+root.spx_morph_active_index = root.spx_morph_states.find(states["Hide"].uid)
+material_names_before_add = [
+    morph.name for morph in root.mmd_root.material_morphs
+]
+assert bpy.ops.surface_proxy.add_morph() == {"FINISHED"}
+new_state = root.spx_morph_states[root.spx_morph_active_index]
+assert new_state.morph_name == "新建 Morph"
+hide_index = material_names_before_add.index("Hide")
+assert [morph.name for morph in root.mmd_root.material_morphs] == (
+    material_names_before_add[: hide_index + 1]
+    + ["新建 Morph"]
+    + material_names_before_add[hide_index + 1 :]
+)
+assert [
+    item.name
+    for item in root.mmd_root.display_item_frames["表情"].data
+    if item.morph_type == "material_morphs"
+] == [morph.name for morph in root.mmd_root.material_morphs]
+for state in root.spx_morph_states:
+    state.selected = state.uid == new_state.uid
+assert bpy.ops.surface_proxy.remove_selected_morphs() == {"FINISHED"}
+assert [morph.name for morph in root.mmd_root.material_morphs] == (
+    material_names_before_add
+)
+
 material_states = [
     state for state in root.spx_morph_states if state.morph_type == "material_morphs"
 ]
@@ -689,6 +770,46 @@ assert not any(layer.name.startswith("__uv.") for layer in mesh_a.data.uv_layers
 
 # Group Morph evaluation reuses the lazy non-material mmd_tools runtime while
 # Material Morph output remains owned by this add-on.
+collection_group = root.mmd_root.group_morphs.add()
+collection_group.name = "CollectSelected"
+existing_collection_offset = collection_group.data.add()
+existing_collection_offset.morph_type = "material_morphs"
+existing_collection_offset.name = "Hide"
+existing_collection_offset.factor = 0.5
+ensure_morph_states(root)
+states = {state.morph_name: state for state in root.spx_morph_states}
+for state in root.spx_morph_states:
+    state.selected = state.morph_name in {"Hide", "UVShift", "BoneMove", "Smile"}
+root.spx_morph_active_index = root.spx_morph_states.find(
+    states["CollectSelected"].uid
+)
+assert bpy.ops.surface_proxy.collect_selected_morphs_into_group() == {"FINISHED"}
+assert {
+    (data.morph_type, data.name)
+    for data in collection_group.data
+} == {
+    ("material_morphs", "Hide"),
+    ("uv_morphs", "UVShift"),
+    ("bone_morphs", "BoneMove"),
+    ("vertex_morphs", "Smile"),
+}
+assert sum(
+    data.morph_type == "material_morphs" and data.name == "Hide"
+    for data in collection_group.data
+) == 1
+assert all(
+    abs(data.factor - 1.0) < 1.0e-6
+    for data in collection_group.data
+    if (data.morph_type, data.name) != ("material_morphs", "Hide")
+)
+assert bpy.ops.surface_proxy.collect_selected_morphs_into_group() == {"CANCELLED"}
+for state in root.spx_morph_states:
+    state.selected = False
+root.mmd_root.group_morphs.remove(
+    root.mmd_root.group_morphs.find("CollectSelected")
+)
+ensure_morph_states(root)
+
 group_morph = root.mmd_root.group_morphs.add()
 group_morph.name = "GroupHide"
 group_offset = group_morph.data.add()

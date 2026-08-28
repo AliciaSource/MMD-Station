@@ -32,6 +32,7 @@ from .core import (
     grid_faces,
     grid_vertices,
 )
+from .collection_organization import place_proxy_object
 from .sync import CLASSES as SYNC_CLASSES
 from .sync import initialize_proxy_identity
 from .sync import register_services as register_sync_services
@@ -329,6 +330,7 @@ def _create_proxy_mesh(
         polygon.use_smooth = True
     proxy_object = bpy.data.objects.new(f"{prefix}_Surface", mesh)
     context.collection.objects.link(proxy_object)
+    place_proxy_object(context.scene, proxy_object)
     proxy_object.matrix_world = source_object.matrix_world.copy()
     proxy_object.display_type = "WIRE"
     proxy_object.show_in_front = True
@@ -356,6 +358,7 @@ def _ensure_armature(context, source_object, requested_armature, prefix):
     armature_data = bpy.data.armatures.new(f"{prefix}_Rig")
     armature_object = bpy.data.objects.new(f"{prefix}_Rig", armature_data)
     context.collection.objects.link(armature_object)
+    place_proxy_object(context.scene, armature_object)
     armature_object.matrix_world = source_object.matrix_world.copy()
     modifier = source_object.modifiers.new(name=f"{prefix}_Armature", type="ARMATURE")
     modifier.object = armature_object

@@ -4,6 +4,7 @@ import bpy
 from bpy.types import Operator
 from mathutils import Euler, Matrix, Vector
 
+from .collection_organization import place_mmd_objects
 from .mmd_naming import (
     normalize_mmd_indices,
     normalized_mmd_names,
@@ -466,6 +467,7 @@ def _run(context, create):
         bpy.ops.object.mode_set(mode="OBJECT")
     rigid_group = FnModel.ensure_rigid_group_object(context, root)
     joint_group = FnModel.ensure_joint_group_object(context, root)
+    place_mmd_objects(context.scene, root, (rigid_group, joint_group))
     rigids = list(FnModel.iterate_rigid_body_objects(root))
     joints = list(FnModel.iterate_joint_objects(root))
     created_rigids = created_joints = synced_rigids = synced_joints = existing = skipped = 0
@@ -494,6 +496,7 @@ def _run(context, create):
                         rigid_module,
                     )
                     rigids.append(target)
+                    place_mmd_objects(context.scene, root, (target,))
                     created_rigids += 1
                 else:
                     existing += 1
@@ -556,6 +559,7 @@ def _run(context, create):
                             FnRigidBody,
                         )
                         joints.append(target)
+                        place_mmd_objects(context.scene, root, (target,))
                         created_joints += 1
                     else:
                         existing += 1
@@ -601,6 +605,7 @@ def _run(context, create):
                         FnRigidBody,
                     )
                     joints.append(target)
+                    place_mmd_objects(context.scene, root, (target,))
                     created_joints += 1
                 else:
                     existing += 1

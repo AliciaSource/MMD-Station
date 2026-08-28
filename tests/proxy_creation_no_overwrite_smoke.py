@@ -98,6 +98,8 @@ selection_before = set(bpy.context.selected_objects)
 active_before = bpy.context.view_layer.objects.active
 assert bpy.ops.surface_proxy.restore_proxy_from_checked_bones() == {"FINISHED"}
 first_proxy = bpy.data.objects["Bone_Piao_Surface"]
+proxy_collection = bpy.data.collections["MMD Station Proxies"]
+assert tuple(first_proxy.users_collection) == (proxy_collection,)
 assert browser_state() == first_browser_state
 assert settings.physics_proxy == sentinel
 assert set(bpy.context.selected_objects) == selection_before
@@ -121,6 +123,7 @@ select_chain(second_chain)
 second_browser_state = browser_state()
 assert bpy.ops.surface_proxy.restore_proxy_from_checked_bones() == {"FINISHED"}
 second_proxy = bpy.data.objects["Bone_Piao_Surface.001"]
+assert tuple(second_proxy.users_collection) == (proxy_collection,)
 assert browser_state() == second_browser_state
 assert settings.physics_proxy == sentinel
 assert set(bpy.context.selected_objects) == selection_before
@@ -134,6 +137,7 @@ hair_bones = [name for chain in hair_chains for name in chain[:2]]
 select_chain(hair_bones)
 assert bpy.ops.surface_proxy.restore_proxy_from_checked_bones() == {"FINISHED"}
 hair_proxy = bpy.data.objects["Bone_Hair_Surface"]
+assert tuple(hair_proxy.users_collection) == (proxy_collection,)
 assert set(hair_proxy["surface_proxy_bone_names"]) == set(hair_bones)
 
 print("PROXY_CREATION_NO_OVERWRITE_OK")

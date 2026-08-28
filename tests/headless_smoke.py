@@ -385,6 +385,8 @@ result = bpy.ops.surface_proxy.create_skirt_proxy()
 assert result == {"FINISHED"}, result
 
 proxy = bpy.data.objects["SmokeProxy_Surface"]
+proxy_collection = bpy.data.collections["MMD Station Proxies"]
+assert tuple(proxy.users_collection) == (proxy_collection,)
 armature = bpy.data.objects[proxy["surface_proxy_armature"]]
 generated_bones = [
     pose_bone
