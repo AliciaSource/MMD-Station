@@ -1,5 +1,10 @@
 # Development Log
 
+## 2026-08-28 - V0.1.8 显示枠区间选组补齐
+
+- 补齐显示枠编辑器首版遗漏的“区间选组”：显示枠列表与当前显示项列表的选择工具条现在都与 Morph 编辑器一致，在“全选 / 全不选 / 反选”后提供“区间选组”，以首尾两个已勾选项为端点补选中间全部项目；不足两个端点时明确提示且不改动选择。
+- `tests/mmd_display_frame_regression.py` 同时覆盖显示枠和显示项的区间补选。Blender 4.4.3 focused regression 输出 `MMD_DISPLAY_FRAME_REGRESSION_OK`，`py_compile` 与 `git diff --check` 通过。版本保持 V0.1.8，真实 Blender 4.4 源码 Junction 已直接生效，不打包 ZIP、不 push。
+
 ## 2026-08-28 - V0.1.8 PMX 显示枠编辑器与智能整理
 
 - MMD Station 新增独立“显示枠”功能页，直接编辑 `mmd_tools` 原生 `display_item_frames`，提供显示枠日文名/英文名同屏编辑、特殊枠锁定、显示项详情编辑，以及显示枠与显示项两级复选框、加减、稳定块排序、全选/全不选/反选；普通显示枠的加号可把当前 Armature 在 Edit/Pose Mode 中所选骨骼批量写入，表情枠则接收 Morph 编辑器已勾选项。
