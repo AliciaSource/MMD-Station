@@ -1575,6 +1575,75 @@ class SPX_OT_RemoveSelectedMorphs(Operator):
         return {"FINISHED"}
 
 
+def _morph_has_details(root, morph_type, morph):
+    if morph_type == "vertex_morphs":
+        FnModel, _Model = _mmd_api()
+        return any(
+            getattr(mesh_object.data, "shape_keys", None) is not None
+            and mesh_object.data.shape_keys.key_blocks.get(morph.name) is not None
+            for mesh_object in FnModel.iterate_mesh_objects(root)
+        )
+    if morph_type == "uv_morphs" and morph.data_type == "VERTEX_GROUP":
+        FnModel, _Model = _mmd_api()
+        morph_module = importlib.import_module(
+            "bl_ext.blender_org.mmd_tools.core.morph"
+        )
+        return any(
+            any(
+                morph_module.FnMorph.get_uv_morph_vertex_groups(
+                    mesh_object,
+                    morph.name,
+                )
+            )
+            for mesh_object in FnModel.iterate_mesh_objects(root)
+        )
+    return bool(morph.data)
+
+
+class SPX_OT_CleanSelectedEmptyMorphs(Operator):
+    bl_idname = "surface_proxy.clean_selected_empty_morphs"
+    bl_label = "清理空 Morph"
+    bl_description = "移除当前 Tab 已勾选且没有详情内容的 Morph"
+    bl_options = {"REGISTER", "UNDO"}
+
+    def execute(self, context):
+        settings = context.scene.surface_proxy_creator
+        root = _find_root(context, settings)
+        if root is None:
+            return {"CANCELLED"}
+        selected = {
+            state.uid
+            for state in root.spx_morph_states
+            if state.morph_type == settings.morph_editor_type and state.selected
+        }
+        if not selected:
+            self.report({"WARNING"}, "请先勾选当前 Tab 中的 Morph")
+            return {"CANCELLED"}
+
+        morphs = _morph_collection(root, settings.morph_editor_type)
+        removed = 0
+        for index in reversed(range(len(morphs))):
+            morph = morphs[index]
+            if (
+                str(morph.get(MORPH_UID_PROPERTY, "")) in selected
+                and not _morph_has_details(root, settings.morph_editor_type, morph)
+            ):
+                morphs.remove(index)
+                removed += 1
+        if not removed:
+            self.report({"INFO"}, "勾选项中没有可清理的空 Morph")
+            return {"CANCELLED"}
+
+        ensure_morph_states(root)
+        root.spx_morph_active_index = min(
+            root.spx_morph_active_index,
+            max(0, len(root.spx_morph_states) - 1),
+        )
+        _sync_morph_order(root)
+        self.report({"INFO"}, f"已清理 {removed} 个空 Morph")
+        return {"FINISHED"}
+
+
 class SPX_OT_SelectMorphs(Operator):
     bl_idname = "surface_proxy.select_morphs"
     bl_label = "选择 Morph"
@@ -3176,6 +3245,11 @@ def draw_morph_editor(layout, context):
     selection.operator("surface_proxy.select_morphs", text="全不选").action = "NONE"
     selection.operator("surface_proxy.select_morphs", text="反选").action = "INVERT"
     selection.operator(SPX_OT_SelectMorphInterval.bl_idname, text="区间选组")
+    selection.operator(
+        SPX_OT_CleanSelectedEmptyMorphs.bl_idname,
+        text="清理",
+        icon="TRASH",
+    )
     name_tools = layout.row(align=True)
     name_tools.operator(
         SPX_OT_CopyMorphJapaneseNamesToEnglish.bl_idname,
@@ -3312,6 +3386,7 @@ CLASSES = (
     SPX_OT_RefreshMorphEditor,
     SPX_OT_AddMorph,
     SPX_OT_RemoveSelectedMorphs,
+    SPX_OT_CleanSelectedEmptyMorphs,
     SPX_OT_SelectMorphs,
     SPX_OT_SelectMorphInterval,
     SPX_OT_CopyMorphJapaneseNamesToEnglish,

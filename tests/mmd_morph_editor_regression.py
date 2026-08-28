@@ -941,6 +941,69 @@ assert {
 _remove_imported_shape_key_curves(root)
 assert not nla_source.fcurves
 
+# Cleanup is scoped to checked Morphs in the current tab and preserves every
+# checked Morph that still has visible detail content.
+empty_morph_names = {
+    "material_morphs": "EmptyMaterial",
+    "uv_morphs": "EmptyUV",
+    "bone_morphs": "EmptyBone",
+    "vertex_morphs": "EmptyVertex",
+    "group_morphs": "EmptyGroup",
+}
+nonempty_morph_names = {
+    "material_morphs": "Hide",
+    "uv_morphs": "CleanupUVGroupKeep",
+    "bone_morphs": "BoneMove",
+    "vertex_morphs": "Smile",
+    "group_morphs": "CleanupGroupKeep",
+}
+for morph_type, morph_name in empty_morph_names.items():
+    morph = getattr(root.mmd_root, morph_type).add()
+    morph.name = morph_name
+cleanup_uv_keep = root.mmd_root.uv_morphs.add()
+cleanup_uv_keep.name = nonempty_morph_names["uv_morphs"]
+cleanup_uv_keep.data_type = "VERTEX_GROUP"
+mesh_a.vertex_groups.new(name=f"UV_{cleanup_uv_keep.name}+X")
+cleanup_group_keep = root.mmd_root.group_morphs.add()
+cleanup_group_keep.name = nonempty_morph_names["group_morphs"]
+cleanup_group_offset = cleanup_group_keep.data.add()
+cleanup_group_offset.morph_type = "material_morphs"
+cleanup_group_offset.name = "Hide"
+ensure_morph_states(root)
+
+morph_types = list(empty_morph_names)
+for morph_index, morph_type in enumerate(morph_types):
+    empty_name = empty_morph_names[morph_type]
+    settings.morph_editor_type = morph_type
+    for state in root.spx_morph_states:
+        state.selected = (
+            state.morph_type == morph_type
+            and state.morph_name in {empty_name, nonempty_morph_names[morph_type]}
+        )
+    assert bpy.ops.surface_proxy.clean_selected_empty_morphs() == {"FINISHED"}
+    assert getattr(root.mmd_root, morph_type).get(empty_name) is None
+    assert (
+        getattr(root.mmd_root, morph_type).get(nonempty_morph_names[morph_type])
+        is not None
+    )
+    for other_type in morph_types[morph_index + 1 :]:
+        assert (
+            getattr(root.mmd_root, other_type).get(empty_morph_names[other_type])
+            is not None
+        )
+
+for state in root.spx_morph_states:
+    state.selected = False
+settings.morph_editor_type = "material_morphs"
+assert bpy.ops.surface_proxy.clean_selected_empty_morphs() == {"CANCELLED"}
+states_after_cleanup = {state.morph_name: state for state in root.spx_morph_states}
+states_after_cleanup["Hide"].selected = True
+assert bpy.ops.surface_proxy.clean_selected_empty_morphs() == {"CANCELLED"}
+root.mmd_root.group_morphs.remove(
+    root.mmd_root.group_morphs.find(nonempty_morph_names["group_morphs"])
+)
+ensure_morph_states(root)
+
 # MMD Viewer interval selection follows the current filtered list and is shared
 # by every viewer tab that exposes the checked-item list.
 settings.browser_items.clear()
