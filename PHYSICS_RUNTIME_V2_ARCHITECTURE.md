@@ -304,3 +304,5 @@ IK+Physics RUNNING
 ```
 
 禁止在该转换中调用 `stop_preview(..., restore=True)`、重启 world 或用全 Armature pose snapshot 覆盖当前输出。这样 adapter 生命周期、IK output ownership 与全姿态编辑检测不再共享同一个隐式矩阵缓存。完整 Undo/Redo epoch 化仍属于后续 Phase 3；本切片只固化已覆盖的关闭兼容、Clear All、Clear Selected 和持续物理交接。
+
+2026-08-25 的 Clear/F9 候选继续把 Undo/Redo 从隐式矩阵猜测收敛为 `UndoRedoPoseTransaction`：pre 阶段冻结 authored input、完整 presentation 和 selection，post 阶段只有在 native output closure 确认回到冻结 presentation 时，才把冻结的已清空 authored input 重新提交给 selected input controls。该 transaction 解决 input-only IK control 与 native output 在不同 depsgraph 时刻落定造成的混合帧；它仍不等同于完整 worker epoch 化，后者继续保留为后续 Phase 3 工作。

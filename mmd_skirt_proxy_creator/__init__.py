@@ -55,11 +55,21 @@ from .physics_preview import unregister_runtime as unregister_preview_runtime
 from .bone_physics_creator import CLASSES as BONE_PHYSICS_CREATOR_CLASSES
 from .bone_physics_creator import register_settings as register_bone_physics_creator_settings
 from .mmd_ordering import CLASSES as MMD_ORDERING_CLASSES
+from .mmd_material_order import CLASSES as MMD_MATERIAL_ORDER_CLASSES
+from .mmd_material_order import register_export_hook as register_material_export_hook
+from .mmd_material_order import unregister_export_hook as unregister_material_export_hook
+from .mmd_bone_subdivision import CLASSES as MMD_BONE_SUBDIVISION_CLASSES
+from .mmd_bone_subdivision import register_settings as register_bone_subdivision_settings
 from .mmd_ik_runtime import CLASSES as MMD_IK_RUNTIME_CLASSES
 from .mmd_ik_runtime import draw as draw_mmd_ik_runtime
 from .mmd_ik_runtime import register_services as register_mmd_ik_runtime_services
 from .mmd_ik_runtime import register_settings as register_mmd_ik_runtime_settings
 from .mmd_ik_runtime import unregister_services as unregister_mmd_ik_runtime_services
+from .mmd_morph_editor import CLASSES as MMD_MORPH_EDITOR_CLASSES
+from .mmd_morph_editor import draw_morph_editor
+from .mmd_morph_editor import register_services as register_morph_editor_services
+from .mmd_morph_editor import register_settings as register_morph_editor_settings
+from .mmd_morph_editor import unregister_services as unregister_morph_editor_services
 from .vertex_group_tools import CLASSES as VERTEX_GROUP_TOOL_CLASSES
 from .vertex_group_tools import register_menu as register_vertex_group_menu
 from .vertex_group_tools import unregister_menu as unregister_vertex_group_menu
@@ -73,6 +83,7 @@ class SPX_Settings(PropertyGroup):
         items=(
             ("PROXY", "代理创建", "创建和编辑裙面代理、骨骼、刚体与 Joint"),
             ("BROWSER", "MMD 查看器", "查看和编辑 MMD 骨骼、刚体与 Joint"),
+            ("MORPH", "Morph 编辑器", "编辑、排序、预览并为 MMD Morph 设置 Keyframe"),
             ("PREVIEW", "物理预览", "使用 Rust DLL 预览 MMD 物理"),
             ("IK", "MMD IK", "创建不影响 PMX 再导出的 MMD 兼容 IK Runtime"),
         ),
@@ -528,10 +539,15 @@ def _bone_side(name):
 
 def _derived_proxy_prefix(names):
     stems = [_bone_side(name)[0] for name in names]
-    subjects = {
-        re.sub(r"[\s._-]+$", "", re.sub(r"\d+$", "", stem))
-        for stem in stems
-    }
+    subjects = set()
+    for stem in stems:
+        grid_match = re.match(r"^(.+)_[A-Z]+\d+$", stem)
+        subject = (
+            grid_match.group(1)
+            if grid_match
+            else re.sub(r"\d+$", "", stem)
+        )
+        subjects.add(re.sub(r"[\s._-]+$", "", subject))
     subjects.discard("")
     return next(iter(subjects)) if len(subjects) == 1 else ""
 
@@ -1014,7 +1030,7 @@ class SPX_OT_CreateSkirtProxy(Operator):
             armature_object, _created = _ensure_armature(
                 context, source_object, requested_armature, prefix
             )
-            _create_bones(
+            created_bone_names = _create_bones(
                 context,
                 source_object,
                 armature_object,
@@ -1034,6 +1050,7 @@ class SPX_OT_CreateSkirtProxy(Operator):
             proxy_object["surface_proxy_column_groups"] = column_groups
             proxy_object["surface_proxy_column_sides"] = column_sides
             proxy_object["surface_proxy_column_local_indices"] = local_indices
+            proxy_object["surface_proxy_bone_names"] = created_bone_names
             proxy_object["surface_proxy_mirror_mode"] = bool(selected_side)
             proxy_object["surface_proxy_mirror_exact"] = bool(mirror_exact)
             proxy_object.data.use_mirror_x = bool(selected_side and mirror_exact)
@@ -1075,6 +1092,8 @@ def draw_workspace(layout, context):
         draw_physics_settings(layout, settings, context)
     elif settings.workspace_tab == "BROWSER":
         draw_browser(layout, settings)
+    elif settings.workspace_tab == "MORPH":
+        draw_morph_editor(layout, context)
     elif settings.workspace_tab == "PREVIEW":
         draw_preview(layout, settings)
     else:
@@ -1099,7 +1118,10 @@ CLASSES = (
     *SYNC_CLASSES,
     *MMD_PHYSICS_CLASSES[2:],
     *BONE_PHYSICS_CREATOR_CLASSES,
+    *MMD_MATERIAL_ORDER_CLASSES,
     *MMD_ORDERING_CLASSES,
+    *MMD_BONE_SUBDIVISION_CLASSES,
+    *MMD_MORPH_EDITOR_CLASSES,
     *PHYSICS_PREVIEW_CLASSES,
     *MMD_IK_RUNTIME_CLASSES,
     *VERTEX_GROUP_TOOL_CLASSES,
@@ -1114,18 +1136,24 @@ def register():
     register_settings(SPX_Settings)
     register_preview_settings(SPX_Settings)
     register_bone_physics_creator_settings(SPX_Settings)
+    register_bone_subdivision_settings(SPX_Settings)
     register_mmd_ik_runtime_settings(SPX_Settings)
+    register_morph_editor_settings(SPX_Settings)
     for cls in CLASSES:
         bpy.utils.register_class(cls)
     bpy.types.Scene.surface_proxy_creator = PointerProperty(type=SPX_Settings)
+    register_material_export_hook()
     register_sync_services()
     register_browser_auto_refresh()
     register_browser_context_menu()
     register_vertex_group_menu()
     register_mmd_ik_runtime_services()
+    register_morph_editor_services()
 
 
 def unregister():
+    unregister_material_export_hook()
+    unregister_morph_editor_services()
     unregister_mmd_ik_runtime_services()
     unregister_preview_runtime()
     unregister_vertex_group_menu()

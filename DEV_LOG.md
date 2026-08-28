@@ -1,5 +1,263 @@
 # Development Log
 
+## 2026-08-28 - V0.1.8 MMD 查看器材质与 3D 视图双向选择
+
+- MMD 查看器材质 Tab 的每一行新增与骨骼 Tab 一致的右侧箭头。点击后会在当前 MMD 模型内定位并以 Object Mode 选中所有实际使用该材质的 Mesh，最后一个目标材质同时成为活动 Mesh 的 active material slot；列表活动行同步高亮。表头与材质行共用的列布局同时加入箭头占位，既有序号、Blender 材质名、MMD 名称和 MMD 英文名仍保持对齐。
+- 批量选择区下方新增“将勾选项选入 Blender”和“从 3D 视图同步选中材质”。前者只操作 Mesh Object 选择，不进入 Edit Mode、不改面选择；后者从 3D 视图中已选 Mesh 收集其实际被面使用的全部材质，并将 active material 对应列表行设为活动行。所有查找都限制在当前 MMD Root，避免同名或外部 Mesh 干扰。
+- Blender 4.4.3 回归覆盖单材质箭头定位、多材质 Mesh 的 Object Mode 批量选择与反向同步，`MMD_MATERIAL_ORDER_REGRESSION_OK` 通过；全量 Python `py_compile` 与 `git diff --check` 通过。版本保持 V0.1.8，源码 Junction 直接生效，不打包 ZIP、不 push。
+
+## 2026-08-28 - V0.1.8 物理预览刚体缩放诊断与安全修复
+
+- MMD 查看器诊断页现在复用物理预览的同一套世界缩放判定，逐个报告会让预览启动失败的非均匀或零缩放刚体，显示实际 Scale，并区分 `RIGID_SCALE_BAKE` 可安全折算与 `RIGID_SCALE_UNFIXABLE` 不可精确表示两类。另补充 `RIGID_SCALE_NORMALIZE` 警告：对象本地 Scale 为均匀非 1（例如 `(1.092, 1.092, 1.092)`）时不会阻止预览，但仍会进入诊断并可一键折算归一。修复完成后自动重跑诊断；因此不会再出现缩放已被手动改动、诊断页却完全不显示的缺口。
+- 安全修复会把对象缩放无损折算进 `mmd_rigid.size`，再把刚体对象 Scale 归一：Box 支持逐轴折算；Capsule 仅在 X/Y 径向缩放一致且能够得到有效 Radius/Height 时折算；Sphere 仅允许均匀缩放。零缩放、父级非均匀缩放、椭球 Sphere、X/Y 径向不同的 Capsule 均只诊断并明确解释原因，不用近似值伪修复。物理预览的 `_uniform_world_scale` 已改为调用同一共享模块，诊断与启动条件不会漂移。
+- 对用户截图对应的 `D:\MMD\模型\Alicia\鳴潮-達尼婭\達尼婭\20.blend` 做了不保存的只读与内存修复验证：唯一两项阻断异常是 `078_左ひざ2`、`083_右ひざ2`，均为可精确折算的 Capsule Scale `(约 1.057822, 1.057822, 1.0)`；修复后 495 个刚体均能生成物理预览 BodyDesc，标记 `ACTUAL_20_BLEND_RIGID_SCALE_REPAIR_OK 495`。独立 Blender 4.4.3 回归同时覆盖截图中的均匀 `(1.092, 1.092, 1.092)` Box 警告与无损归一、修复前后世界空间边界一致、非均匀 Capsule 折算，以及椭球 Sphere 拒绝，标记 `MMD_RIGID_SCALE_DIAGNOSTIC_REGRESSION_OK`。未保存用户工程，版本保持 V0.1.8，源码 Junction 直接生效，不打包 ZIP、不 push。
+
+## 2026-08-28 - V0.1.8 MMD 查看器骨骼 AI 三轨命名
+
+- MMD 查看器骨骼 Tab 的“补全并标准化 MMD 骨骼名称”区域新增 `AI翻译勾选骨骼日文名` 与共用设置图标。操作读取勾选骨骼当前 `mmd_bone.name_j` 的名称主体并复用 Morph / 材质 AI 的同一份全局 `AddonPreferences`、基础地址、API Key、模型和 OpenAI-compatible 请求实现；骨骼专用 Prompt 不让模型生成左右标记，由本地规则统一落地，避免三套命名约定互相冲突。
+- 输入中的 `左` / `右` 前缀、`.L/.R`、`_L/_R` 与英文 `Left/Right` 前后缀都会先解析为骨骼侧向。翻译后 MMD 日文区域改为仅保留 `左` / `右` 前缀的英文主体（如 `左UpperArm`），MMD 英文名使用 `_L/_R`（如 `UpperArm_L`），Blender 骨骼名使用 `.L/.R`（如 `UpperArm.L`）；无侧向骨骼三处均使用同一英文主体。英文主体上限为 14 字符，确保追加侧向后最终名称仍不超过 16 字符。
+- Blender 骨骼批量改名在写入前检查重复名、未选骨骼冲突与顶点组冲突，再通过临时名完成交换安全的两阶段重命名。该路径沿用 mmd_tools `Model.renameBone`，同步显示枠与顶点组；Bone Morph 等基于 Bone ID 的引用继续指向改名后的骨骼。Blender 4.4.3 回归以模拟 API 验证 `左上臂` 与 `袖子A1.R` 生成三套目标名称，同时确认两个网格顶点组、两个 Bone Morph 引用和查看器勾选状态均保持正确。版本保持 V0.1.8，源码 Junction 直接生效，不打包 ZIP、不 push。
+
+## 2026-08-28 - V0.1.8 MMD 查看器材质 AI 翻译
+
+- MMD 查看器材质 Tab 的名称同步区域新增 `AI翻译勾选材质日文名` 与相邻设置图标。操作按查看器列表顺序收集已勾选且不重复的材质，读取 `mmd_material.name_j`，将翻译结果写回 `mmd_material.name_e`；空日文名不会用 Blender 材质名代替，而是明确跳过并在结果中报告。未勾选材质或全部为空时取消且不改名。
+- 材质翻译直接复用 Morph AI 的同一份全局 `AddonPreferences`、OpenAI-compatible 请求、JSON 整批校验、16 字符上限、紧凑 PascalCase、符号保留以及 `_L/_R/_Up/_Down` 方向后缀规范；材质页设置图标打开的也是同一个全局设置弹窗，因此两处不需要重复填写。Blender 4.4.3 回归以模拟 API 验证两个已勾选材质从 MMD 日文名读取并回填 MMD 英文名，不发送真实网络请求。版本保持 V0.1.8，源码 Junction 直接生效，不打包 ZIP、不 push。
+
+## 2026-08-28 - V0.1.8 Morph AI 方向后缀缩写
+
+- Morph AI 英文名规范不再拼写完整 `Left` / `Right`，左右方向统一使用 `_L` / `_R`，上下方向统一使用 `_Up` / `_Down`；左右或上下即使位于源名称前缀，翻译时也必须移动为后缀。同时存在上下与左右时固定先上下、后左右，例如 `Pupil_Up_R`。Prompt 给出该规则，API 返回后插件再本地提取完整方向词或已有方向后缀并规范化：`LeftEye` → `Eye_L`、`RightEye` → `Eye_R`、`Emo3Left` → `Emo3_L`、`PupilUpRight` → `Pupil_Up_R`、`LeftPupilDown` → `Pupil_Down_L`。
+- 方向缩写会按规范新增下划线，因此符号硬校验从“源与结果符号完全相等”调整为“源名称中的数字、标点和符号必须按原顺序全部保留”，允许结果额外加入方向分隔 `_`，但原有 `+` 被替换为 `-` 等破坏仍会整批拒绝。规范化完成后继续执行最多 16 字符限制。版本保持 V0.1.8，源码 Junction 直接生效，不打包 ZIP、不 push。
+
+## 2026-08-28 - V0.1.8 Morph 与 MMD 查看器区间补选
+
+- Morph 编辑器五个 Tab 的共享选择行均在 `反选` 右侧新增 `区间选组`。当前可见列表至少勾选两个 Morph 后，操作以最前与最后一个已勾选项为端点，将两者之间所有可见行补为勾选；端点外已有勾选保持不变。搜索过滤存在时只沿当前可见结果计算区间，隐藏行不会被意外勾选；少于两个可见端点时取消并提示。
+- MMD 查看器的材质、骨骼、刚体、Joint 页同样在 `反选` 右侧提供 `区间选组`，并复用与 UIList 完全一致的搜索和名称前缀可见性判定；诊断页没有批量勾选列表，因此不显示无效入口。回归覆盖 Morph 完整区间、单端点拒绝，以及 MMD 查看器过滤列表中隐藏行不被补选。版本保持 V0.1.8，源码 Junction 直接生效，不打包 ZIP、不 push。
+
+## 2026-08-28 - V0.1.8 Morph AI 紧凑 PascalCase 英文名
+
+- Morph AI 翻译要求改为不使用空格、每个英文单词首字母大写的紧凑 PascalCase 风格，以在 16 字符限制内保留更多语义。除 Prompt 约束外，插件会在 API 返回后本地将每段连续英文词首字母大写并删除全部空白，再执行既有的符号序列与最大长度硬校验；例如 `cross eyed` 规范为 `CrossEyed`，`+lower eyes` 规范为 `+LowerEyes`，`cross-eyed` 在保留连字符的同时规范为 `Cross-Eyed`。版本保持 V0.1.8，源码 Junction 直接生效，不打包 ZIP、不 push。
+
+## 2026-08-28 - V0.1.8 Morph AI 翻译长度与符号硬校验
+
+- Morph AI 翻译 Prompt 新增硬要求：英文名尽量简短，包含空格和符号在内最多 16 个 Unicode 字符。API 返回后插件再次逐项检查实际长度，并提取原名称与翻译结果中的数字、标点和符号序列进行一致性校验；任何一项超过 16 字符或丢失、替换、调换原符号时，整批翻译取消且不覆盖任何 `name_e`。回归覆盖合法短名称、超长名称拒绝和 `+` 被错误改成 `-` 时的符号拒绝。版本保持 V0.1.8，源码 Junction 直接生效，不打包 ZIP、不 push。
+
+## 2026-08-28 - V0.1.8 Morph AI 基础地址自动补全 V1
+
+- Morph AI 设置中的地址字段改为只填写服务端基础地址，例如 `https://api.example.com`；插件请求时固定自动追加 `/v1/chat/completions`，用户不再填写 `/v1`。设置弹窗打开与确认保存时会把旧配置末尾的 `/v1` 规范化移除；请求构造仍兼容尚未重新保存的旧 `/v1` 配置，保证不会产生重复的 `/v1/v1`。回归覆盖纯基础地址与旧 `/v1/` 地址均生成同一个最终 endpoint。版本保持 V0.1.8，源码 Junction 直接生效，不打包 ZIP、不 push。
+
+## 2026-08-28 - V0.1.8 Morph AI 英文名批量翻译
+
+- Morph 编辑器名称批处理行新增 `AI翻译` 和相邻的设置图标。设置弹窗提供 OpenAI-compatible API 请求地址、隐藏显示的 API Key 与用户自填模型名；地址只填写到 `/v1`，插件调用时自动追加 `/chat/completions`。三项配置存储在插件 `AddonPreferences` 而非 Scene，并在确认设置时保存 Blender 用户首选项，因此不会随新建或切换 `.blend` 工程丢失；相同设置也可在 Blender Add-ons 首选项中编辑。
+- `AI翻译` 只读取当前 Morph 类型 Tab 中已勾选项，将日文或中文 `name` 一次批量提交，并要求模型返回与输入严格等长、顺序一致的 JSON 字符串数组。提示词明确要求保留原名称中的符号、数字、空格、下划线、括号与正负号；仅在整批响应可解析且数量完全匹配时才统一覆盖 `name_e`，避免部分失败或错位污染名称。HTTP、连接、JSON 和数量错误都会保留原英文名并在面板提示。
+- Blender 4.4.3 回归以隔离的模拟 API 覆盖当前 Tab 多选翻译、英文名回填、空选择拒绝及带 Markdown code fence 的 JSON 解析，不发出真实网络请求；`mmd_morph_editor_regression.py` 输出 `MMD_MORPH_EDITOR_REGRESSION_OK`。另以真实安装入口在 `--factory-startup` 下启用插件，确认全局 `AddonPreferences` 及 URL/API Key/模型三项属性可读取，输出 `MORPH_AI_GLOBAL_PREFS_OK`。版本保持 V0.1.8，源码 Junction 直接生效，不打包 ZIP、不 push。
+
+## 2026-08-28 - V0.1.8 Morph 日文名批量同步到英文名
+
+- Morph 编辑器在当前页的 `全选 / 全不选 / 反选` 下方新增 `日文名同步到英文名` 批处理按钮。操作只处理当前 Morph 类型 Tab 中已勾选的行，将每项 `name` 覆盖写入 `name_e`；未勾选任何 Morph 时取消并提示，不影响其它 Tab 或未勾选项。操作支持 Undo。Blender 4.4.3 回归覆盖多项同步与空选择拒绝，`mmd_morph_editor_regression.py` 输出 `MMD_MORPH_EDITOR_REGRESSION_OK`；`python -m py_compile` 与 `git diff --check` 通过。版本保持 V0.1.8，源码 Junction 直接生效，不打包 ZIP、不 push。
+
+## 2026-08-28 - V0.1.8 Morph 详情列表默认八行高度
+
+- Material、UV、Bone、Group 的 Morph Offset 详情列表默认可见行数由 4 行调整为 8 行，使列表主体高度与右侧“增加、删除、置顶、上移、下移、置底、插入活动项前、插入活动项后”八个按钮对齐；三组按钮之间的半行间距保持不变。Vertex 详情不是 Offset `template_list`，不受本次调整影响。版本保持 V0.1.8，源码 Junction 直接生效，不打包 ZIP、不 push。
+
+## 2026-08-28 - V0.1.8 Morph 详情智能材质添加与完整排序
+
+- Material Morph 详情列表的 `+` 改为智能添加：读取当前 MMD Root 内全部已选 Mesh，活动 Mesh 优先，并按每个物体的材质槽顺序收集所有非空材质；共享材质与当前 Morph 已存在材质按材质 datablock 去重，避免重复 offset 造成叠加。新增项写入对应 `related_mesh` / `material`，作为连续块插入蓝色活动详情行下方，并将第一条新增项设为活动行。未选中本模型 Mesh 或没有可新增材质时明确取消并提示。UV、Bone、Group 详情页的 `+` 仍保持新增空 offset 的原逻辑。
+- Material、UV、Bone、Group 的详情列表右侧统一补齐六个移动入口：置顶、上移、下移、置底、插入活动项前、插入活动项后；与主 Morph 列表一致分为“增加/删除”“四向排序”“活动项前后插入”三组。排序只处理已勾选详情行，保持多选块内部顺序与蓝色活动行，活动行属于勾选块时拒绝前后插入。Vertex 详情行是按模型实时汇总的 Mesh/ShapeKey 命中结果，不是可写回 PMX 的 offset 集合，因此不显示无语义的增删/排序入口。
+- Blender 4.4.3 headless 回归覆盖：多选 Mesh 的多材质槽收集、共享材质去重、活动行后插入、重复添加拒绝、其它 Tab 保留空 offset 添加，以及六种详情排序和活动行保护；`mmd_morph_editor_regression.py` 输出 `MMD_MORPH_EDITOR_REGRESSION_OK`，完整 `headless_smoke.py` 输出 `MMD_SKIRT_PROXY_CREATOR_SMOKE_OK`。`python -m py_compile` 与 `git diff --check` 通过。版本保持 V0.1.8，源码 Junction 直接生效，不打包 ZIP、不 push。
+
+## 2026-08-28 - V0.1.8 Material Morph 详情批量显隐预设
+
+- 在 Material Morph 详情面板的运算模式控件上方新增并排的 `预设：隐藏` 与 `预设：显示`，仅批量处理当前 Material Morph 详情列表中已勾选的 offset 行；没有勾选时明确取消并提示，不修改蓝色活动行或其它未勾选行。所有详情列表统一新增 `全选 / 全不选 / 反选`：Material、UV、Bone、Group 操作当前 Morph 的 offset 行，Vertex 操作当前 Morph 命中的 Mesh 行。
+- 两个预设都把运算模式设为 `ADD`，并完整清零 Specular RGB、Shininess、Ambient RGB、Edge Weight、Base/Sphere/Toon Texture RGBA，避免旧参数残留；`隐藏`将 Diffuse Alpha 与 Edge Alpha 设为 `-1`，`显示`将两者设为 `1`，Diffuse/Edge RGB 均为 `0`。应用后立即重新计算当前 Morph Root，使非零滑条下的材质输出同步更新。版本保持 V0.1.8，源码 Junction 直接生效，不打包 ZIP、不 push。
+
+## 2026-08-28 - V0.1.8 Morph 列表统计与选择按钮统一
+
+- 在 Morph 编辑器列表和选择按钮之间新增统计行，显示全部五类 Morph 的总数量、当前类型 Tab 的 Morph 数量，以及当前 Tab 内已勾选数量；统计直接读取现有 `spx_morph_states` 缓存，不触发额外模型扫描或 Runtime 更新。
+- 三个选择按钮与 MMD 查看器统一为相同顺序和文案：`全选 / 全不选 / 反选`。按钮仍只作用于当前 Morph 类型 Tab，因而“已勾选”统计与实际按钮作用范围保持一致。版本保持 V0.1.8，源码 Junction 直接生效，不打包 ZIP、不 push。
+
+## 2026-08-28 - V0.1.8 Group Morph Bone/UV 贡献归零复位
+
+- 修复 Group Morph 从非零降到 `0` 时 Bone Morph 或 UV Morph 可能保持上一帧贡献、无法复位的问题。根因是 Group 更新路径只在当前有效权重中仍存在非零 Bone/UV 值时才调用 `_sync_placeholder_weights()`；当 Group 的最后一份 Bone/UV 贡献恰好归零，`needs_runtime` 变为假，已经存在的 mmd_tools 轻量 Runtime 因而没有收到新的零值，placeholder ShapeKey 和受驱动骨骼继续停在旧值。
+- Group 更新与通用帧更新路径现在区分“是否需要首次创建 Runtime”和“Runtime 是否已经存在”：非零贡献仍按需首次绑定；一旦 Runtime 已存在，无论本次权重是否全部归零，都会同步全部 Bone/UV Morph 的当前有效权重，把消失的 Group 贡献显式写回 `0` 或剩余的直接滑条值。Material 与 Vertex Morph 路径未改。
+- 回归用例将直接 Bone Morph 值保持为 `0.3`，再由 Group 叠加到 `2.7`，随后把 Group 从 `1` 拉回 `0`；断言作为骨骼 Runtime 驱动源的 placeholder Bone Morph 精确回到 `0.3`，不再残留 Group 的 `2.4` 贡献。版本保持 V0.1.8，源码 Junction 直接生效，不打包 ZIP、不 push。
+
+## 2026-08-28 - V0.1.8 Bone Morph 转 Vertex Morph 权重范围收缩
+
+- Morph 编辑器骨骼页的单个转换和批量转换入口不再直接调用 `mmd_tools` 的全模型转换，而由插件先读取当前 Bone Morph 的全部骨骼 offset，并将每个直接引用骨骼的全部递归子孙骨骼纳入影响范围；随后筛选同时满足两项条件的 Mesh：Armature Modifier 指向当前 MMD 骨架，并且至少一个影响范围内的骨骼顶点组包含非零权重。这样父骨 Morph 会正确覆盖仅由子骨或更深后代骨骼加权的网格，同时没有相关层级权重的 Mesh 不再创建 Basis 或目标 ShapeKey。
+- 对命中的 Mesh 继续按顶点级权重裁剪结果：仅直接引用骨骼或其递归子孙骨骼顶点组中具有非零权重的顶点保留转换后坐标，其余顶点通过批量 `foreach_get` / `foreach_set` 强制恢复为 ShapeKey 的 Relative Key 坐标，避免其它当前 Pose 或 Armature 影响混入该 Vertex Morph。Blender ShapeKey 数据块在结构上仍必须为每个 Mesh 顶点保留一个坐标槽，无法变成真正的稀疏数组；本次保证的是无关顶点零差值，因此不会形成有效形变或 PMX Vertex Morph offset。
+- 新增回归场景覆盖“Bone Morph 只移动父骨、Mesh 只有子骨顶点组权重”：四个同骨架 Mesh 中仅一个 Mesh 的一个顶点具有该子骨非零权重，另一个只有父骨同名空顶点组，第三个只有无关骨骼权重，第四个完全无组。实际转换只在首个 Mesh 创建 ShapeKey，且仅该子骨权重顶点产生非零差值，其余两个顶点严格等于 Basis，其它三个 Mesh 均不创建目标 ShapeKey；输出 `MMD_MORPH_EDITOR_REGRESSION_OK`。版本保持 V0.1.8，源码 Junction 直接生效，不打包 ZIP、不 push。
+
+## 2026-08-28 - V0.1.8 Morph 与 MMD 查看器紧凑排序控件
+
+- Morph 编辑器右侧排序列补齐“插入活动项前”和“插入活动项后”，完整顺序固定为：增加、删除、置顶、上移、下移、置底、插入活动项前、插入活动项后。视觉上以半行间距明确分成“增加/删除”“四个方向排序”“活动项前/后插入”三组。新增入口采用 Blender 4.4 原生 `ANCHOR_TOP` / `ANCHOR_BOTTOM` 图标，悬停文案说明实际动作；多个勾选 Morph 会保持原相对顺序作为一个块插入，蓝色活动行作为锚点，活动行同时被勾选时拒绝执行，避免插入位置歧义。
+- MMD 查看器移除占宽的横向排序面板，把置顶、上移、下移、置底、插入活动项前、插入活动项后六个入口改为列表右侧单列小图标，并在四向排序和前后插入之间加入同样的半行分组间距；材质页的按钮列使用 `BLANK1` 空白图标行跳过表头高度：标准 UI 行高确保第一个按钮与第一条表格数据行对齐，图标宽度又将整列约束为窄列，避免空文本 `label` 撑粗或 `align=True` 折叠 `separator`。材质表头与列表保持在同一列，不会因右侧按钮挤压而错位。排序算法、勾选块语义和实际 PMX 顺序写回路径保持不变。
+- Blender 4.4.3 headless 验证通过：`mmd_morph_editor_regression.py`、`mmd_ordering_user_control_regression.py`、`mmd_material_order_regression.py` 与完整 `headless_smoke.py`；完整 smoke 新增 MMD 查看器恰好绘制 6 个紧凑排序入口的断言，并输出 `MMD_SKIRT_PROXY_CREATOR_SMOKE_OK`。`python -m py_compile` 与 `git diff --check` 通过。版本保持 V0.1.8，源码 Junction 直接生效，不打包 ZIP、不 push。
+
+## 2026-08-28 - V0.1.8 Morph 详情目标选择与 Vertex 物体定位
+
+- Vertex Morph 详情中的每个命中 Mesh 行现包含独立复选框、可点击的 Mesh 名称按钮和原有真实 ShapeKey 滑条。点击名称会验证目标仍属于当前 MMD Root、退出可安全退出的编辑模式、取消当前 View Layer 内其它选择、取消目标的临时隐藏、独选并激活该 Mesh，同时把 `active_shape_key_index` 切到当前 Morph 的同名 ShapeKey；不创建 mmd_tools Vertex Binding，也不改变中央直接聚合求值方式。
+- 为后续批处理建立了持久详情选择状态。Material、UV DATA、Bone、Group 的官方 Offset 列表改由插件包装 UIList 绘制，在完整保留 mmd_tools 原行内容与活动索引的同时，在每行最前增加 `spx_morph_detail_selected`；Vertex 与 UV Vertex Group 目标按 Mesh 分别使用 `spx_morph_vertex_target_selected`、`spx_morph_uv_target_selected`，避免切换分类时互相串选。当前只建立选择数据与 UI，不提前实现未经定义的批量操作。
+- UV 详情补全两种数据模式的目标行：`DATA` 模式显示带复选框的 `UVMorphOffset` 列表；`VERTEX_GROUP` 模式按实际 Mesh 聚合对应 `UV_<Morph>[+-][XYZW]` Vertex Group，并显示独立 Mesh 复选框与 Axis 摘要。Material/Bone/Group Offset 的增删、参数编辑和 mmd_tools 辅助图标继续沿用既有入口。
+- `tests/mmd_morph_editor_regression.py` 新增各 Offset 类型选择属性的可写/持久性、Vertex/UV Mesh 选择状态隔离，以及 Vertex 详情按钮独选指定 Mesh并激活同名 ShapeKey 的断言；Blender 4.4.3 headless 继续输出 `MMD_MORPH_EDITOR_REGRESSION_OK`，`python -m py_compile` 与 `git diff --check` 通过。版本保持 V0.1.8，源码 Junction 直接生效，不打包 ZIP、不 push。
+
+## 2026-08-27 - V0.1.8 VMD Morph 自动接管与有符号数值输入
+
+- 本插件现在运行期挂载 `mmd_tools.import_vmd`，不修改 mmd_tools 源码。导入前为被选 MMD Root/模型 Mesh 补齐未绑定的 `.placeholder` Morph 名称，使 mmd_tools 能接收 PMX 中全部 Vertex/Material/Bone/UV/Group Morph 帧；导入结束后把 placeholder ShapeKey FCurve 迁移为 MMD Root 上稳定的 `spx_morph_states["UID"].value` 曲线，并删除 placeholder 与真实 Mesh 上的重复 Morph ShapeKey 曲线。普通 Action 会并入 Root 当前 Action，NLA 会复制对应 strip 时序与混合参数；Blender 4.4 的新 Action 先建立 FCurve、再挂到 Object，避免产生无有效 Action Slot、曲线存在却不播放的空 Layered Action。
+- VMD 导入完成即递归分析所有已导入 Group Morph：若涉及 Bone/UV，立即建立轻量 mmd_tools Runtime；若涉及 Material，立即为实际目标材质安装本插件 Material Output Bridge，并仅在 Edge 通道有有效 Offset 时安装描边 Bridge。随后在当前帧统一求值，因此材质、Bone、UV 不再等播放第一次命中关键帧才初始化。`create_new_action` 同时把未包含在本次 VMD 中的本插件 Morph 状态复位为 `0`，而默认追加导入继续保留其它既有状态。
+- 中央所有 Morph 状态移除 `-10～10` 硬范围，仅保留鼠标滑动的 `soft_min=0` / `soft_max=1`；点击数值框可键入负数或大于 `1` 的有符号值。Group、Material ADD/MULT、Bone、UV 与 Vertex 均按该有符号权重求值；真实 Vertex ShapeKey 在写入前动态放宽其 Blender `slider_min/slider_max`，避免常用负值或大于 `1` 的值被现有 ShapeKey 滑条截断。Material Alpha 最终仍按物理有效范围 `0～1` 输出，负 ADD 权重会在公式中反向为减法/加法；RGB 继续采用既定的近似 Output Bridge 表现。
+- `tests/mmd_morph_editor_regression.py` 新增 FloatProperty 软/硬范围、Vertex `-2.5/3.25` 跨 Mesh 同步与实际 ShapeKey 范围扩展、负 Material ADD RGB、普通 Action/NLA VMD 曲线迁移、稳定 UID Data Path、源 ShapeKey FCurve 清理及导入 Runtime 预初始化断言，输出 `MMD_MORPH_EDITOR_REGRESSION_OK`。另以原 `D:\MMD\模型\Alicia\鳴潮-達尼婭\達尼婭\19.blend` 不保存导入真实 `Motion.vmd`：匹配 35 个 Morph，Root 生成 35 条稳定 UID 曲线，placeholder 残留 Morph 曲线为 0，Runtime Error 为空并输出 `SPX_REAL_VMD_IMPORT_OK`。版本保持 V0.1.8，源码 Junction 直接生效，不打包 ZIP、不 push。
+
+## 2026-08-27 - V0.1.8 Vertex Morph 直接聚合与 UV 预览安全清理
+
+- Vertex Morph 求值改为与 Velo Tools `VELO_ShapeKeyAggItem` 相同的直接聚合模型：以 PMX Vertex Morph 名称查找当前 MMD Root 下全部真实 Mesh 的同名 ShapeKey，并直接写入各自 `key_blocks[name].value`。不再把 Vertex 值写入 mmd_tools `.placeholder`，即使 Bone/UV 后续必须建立官方 Runtime，插件也会删除官方 bind 生成的 Vertex driver 与 `mmd_bind*` 辅助 ShapeKey、解除真实 ShapeKey 的 mute；用户因此可以进入任意单独网格直接调试真实 ShapeKey，下一次中央 Vertex/Group 值变化时再统一同步所有同名贡献对象。已有非 mmd_tools 用户 driver 保留且不由聚合器覆盖。
+- Group Morph 继续由插件计算有效权重，但 Vertex 子项现直接写入真实 ShapeKey，只有 Bone/UV 子项进入 mmd_tools Runtime；纯 Vertex/Material Group 不再仅因自身是 Group 而创建 `.placeholder`。真实 `[HighHeels]` 的 `高跟足*` 在 5 个网格上直接同步为 `1`，官方 Group 与 Vertex slider 均保持 `0`，Bone `上移` 仍正确展开为 `2.400000095`；完整模型真实 Mesh 中不再残留 `mmd_bind*` ShapeKey，单独网格手改 Vertex 值可立即保留。
+- Morph 编辑器 UV 详情的“查看/清除”不再调用 `mmd_tools.view_uv_morph` 与 `mmd_tools.clear_uv_morph_view`，不修改 mmd_tools 本体。插件新增自己的安全预览路径：按活动 UV Morph 创建 `__uv.*` 临时层；清理时先把 Mesh 切换到对应基础 UV 层并更新数据，再按名称快照删除临时层，避免直接删除 UI/UV Editor 当前持有的活动层；按钮 operator 通过 Blender timer 等当前 UI 事件返回后才执行创建或清理，规避 GUI 悬空 RNA。编辑/应用仍沿用 mmd_tools 的数据写回能力，本轮只替换用户报告会闪退的查看/清除入口。
+- `tests/mmd_morph_editor_regression.py` 新增 Bone/UV Runtime 建立后无 Vertex driver/辅助键、单网格独立调试、中央值重新聚合、Group 跨网格直接 Vertex 同步，以及临时 UV 层安全创建/恢复/删除断言，继续输出 `MMD_MORPH_EDITOR_REGRESSION_OK`。原 `19.blend` 临时副本不保存验证：`進肚條-` 可直接写入真实 ShapeKey并单网格改值，`[HighHeels]` 同步 5 个真实 ShapeKey、Bone 权重正确，`絲襪破` 在 `000_Body` 创建并清理 UV 预览后无残留且无 Runtime Error。版本保持 V0.1.8，源码 Junction 直接生效，不打包 ZIP、不 push。
+
+## 2026-08-27 - V0.1.8 Group Morph 原生闪退与展开权重修复
+
+- 修复真实工程拖动组合表情 `[HighHeels]` 时 Blender 4.4.3 直接 `EXCEPTION_ACCESS_VIOLATION`。用户现场 `19.crash.txt` 与复制工程独立复现均显示栈顶为 `IDP_GetPropertyFromGroup -> pyrna_struct_get -> bpy_prop_update_fn`，复制工程在该 Group 首次 `0 -> 0.1` 时确定性闪退。根因有两层：插件在 Property update 内调用 `mmd_tools.bind()` 后，仍继续使用绑定前缓存的 PMX Morph RNA；而 bind 会回写 Bone/Material Morph offset 的内部名称，使旧 RNA 指针失效。旧路径还把插件 Group 值再次写进 mmd_tools Group slider，使同一 Group 同时由官方驱动图和插件递归展开，存在重复求值。
+- Group Morph 现只由插件递归展开为最终 Vertex/Bone/UV/Material 权重；官方 Runtime 只接收展开后的 Vertex/Bone/UV 目标值，Material 继续由插件 Output Bridge 求值，官方 Group 与 Material slider 均不写入。任何首次 bind 返回后立即丢弃绑定前 `morph_lookup` 并从 Root 重新查询，杜绝失效 PropertyGroup 访问。直接 Vertex/Bone/UV 值与 Group 贡献在同一有效权重中合并，Group 归零时也会把目标 Runtime 正确复位。
+- 补充目标 Runtime slider 动态范围扩展。真实 `[HighHeels]` 含 `高跟足* x1`、`高跟鞋1+/2+ x1`、`上移 x2.4`；默认 ShapeKey slider 上限 `1.0` 会把 Bone 权重截断，因此现按实际展开值放宽 `slider_min/slider_max`。原 `19.blend` 的临时副本连续执行 41 个 `0 -> 1 -> 0` 采样不再闪退，后续中位耗时约 `31 ms`；峰值时官方 Group slider 保持 `0`、Vertex 目标为 `1`、Bone 目标为 `2.400000095`，复位后三者目标均为 `0`，原工程未保存。`tests/mmd_morph_editor_regression.py` 新增 Material + Vertex + Bone 混合 Group、官方 Group 不写入、直接值与 Group 权重叠加及大于 1 的 slider 范围断言，继续输出 `MMD_MORPH_EDITOR_REGRESSION_OK`。版本保持 V0.1.8，源码 Junction 直接生效，不打包 ZIP、不 push。
+
+## 2026-08-27 - V0.1.8 Morph 滑条实时性能与基础 Alpha 修复
+
+- 修复 353 个 Morph 的真实工程中中央滑条持续拖动严重卡顿。旧路径每次采样都会完整校验/重建状态索引、扫描 243 个 Vertex Morph × 全部模型 Mesh、重新计算 PMX 材质顺序，并由无条件 depsgraph handler 对插件自身的节点/ShapeKey 更新再次执行全量求值；真实连续探针曾因此运行约 68 秒后触发 Blender `EXCEPTION_ACCESS_VIOLATION`。现按变更类型增量执行：Material 只重新聚合 Material/Group 权重，未绑定的 Vertex 只更新当前 UID 的同名 ShapeKey，Bone/UV 只同步当前官方 Runtime Slider，Group 才同时处理官方非材质 Runtime 与插件 Material 输出；帧切换仍执行完整动画求值。
+- 删除无条件的 Morph depsgraph 全量重算，保留滑条 Property update 与 `frame_change_post` 两个明确入口；后期新增描边仍会在下一次相关滑条/关键帧求值时发现。Morph UID 查找改为每次建立一次字典；官方 Material Binding 清理和非材质 Runtime 完整性检查均增加已完成快速路径；Material Morph 目标材质不再调用只为 PMX 导出顺序服务的昂贵 `ordered_materials()`，改为直接遍历当前 Root Mesh 的实际材质，因为 Morph 求值只需要目标集合、不依赖导出顺序。
+- 修复 ADD 显示类 Material Morph 无效果。真实 `19.blend` 的绳子、配饰、袜子等大量目标材质 authored base Alpha 为 `0`、Morph Offset 为 `ADD +1`；旧公式错误从固定 `1` 起算，导致滑条 `0→1` 的 Output Bridge 始终为 `1`。现按 PMX 基础值计算 `base_alpha × MULT + ADD`，复位也恢复 authored base Alpha；Edge Alpha 独立使用 `mmd_material.edge_color.a`。首次接管还会把直接上游 Shader（包括真实工程的 `mmd_shader`）未连接 Alpha 输入规范为 `1` 并保存原值，由 Output Bridge 独占最终透明度，否则基础 Alpha 为 `0` 的上游 Shader 已经全透明，输出端无法重新显示。
+- 原 `D:\MMD\模型\Alicia\鳴潮-達尼婭\達尼婭\19.blend` 不保存探针确认：Material 连续 21 次求值从单次约 `72–80 ms` 降至约 `9.5 ms`，Vertex 约 `6.9 ms`，Bone 首次建立官方 Runtime 约 `0.57 s`、后续约 `0.49 ms`；`繩子1/繩子1+` 的 base Alpha 均为 `0`，滑条 `0.375` 时两个 Bridge 均为 `0.375`、复位后均为 `0`，上游 `mmd_shader.Alpha` 已规范为 `1`，Runtime Error 为空。`tests/mmd_morph_editor_regression.py` 新增 base Alpha 0 + ADD 显示、上游 Alpha 规范化与复位回归并输出 `MMD_MORPH_EDITOR_REGRESSION_OK`。版本保持 V0.1.8，源码 Junction 直接生效，不保存原工程、不打包 ZIP、不 push。
+
+## 2026-08-27 - V0.1.8 Morph 参数详情与描边独立求值
+
+- Material Morph 详情不再把 RGBA/向量字段画成大块颜色选择器，改为复刻当前 `mmd_tools 4.5.5` Morph Tools 的数值参数布局：相关网格与材质选择、乘算/相加及 0/1 快速初始化、Diffuse RGBA、Specular、Shininess、Ambient、Edge RGBA、Edge Weight、Base/Sphere/Toon Texture Factor 均按独立通道直接编辑。
+- UV 与 Bone 详情改按官方面板的数据模式和操作入口绘制。UV 提供查看/清除、编辑/应用，并根据 `VERTEX_GROUP` 或 Offset 模式显示 Scale/Offset 数量和 UV Index，不再错误地同时展示不适用的 Offset 列表；Bone 提供查看/应用/清除、转换为 Vertex Morph、Bone Offset 列表、Pose Bone 搜索、选择/编辑/更新，以及并列的 Location/Quaternion 数值。中央列表切换类型或活动行时同步官方 `active_morph_type/active_morph`，保证这些 `mmd_tools` operator 操作的是当前行。
+- 描边材质取消“本体最终 Alpha × 描边最终 Alpha”的强制联动。Diffuse RGBA 只求值本体输出，Edge RGBA 只求值 `mmd_edge.*` 输出；只有 Edge 通道产生实际非中性结果时才首次安装描边 Output Bridge，已有描边 Bridge 在 Edge 通道复位时恢复中性。本体隐藏而 Edge Alpha 未设置时，描边保持自己的实际值；后期新增描边材质仍会在后续存在有效 Edge Morph 时被发现并接管。
+- `tests/mmd_morph_editor_regression.py` 更新为断言官方活动 Morph 同步、本体与描边 Alpha 独立、无 Edge 变化不安装描边 Bridge、有效 Edge MULT 才按需安装，以及 Group Morph 不再让本体 Alpha 强制覆盖描边，输出 `MMD_MORPH_EDITOR_REGRESSION_OK`。原 `D:\MMD\模型\Alicia\鳴潮-達尼婭\達尼婭\19.blend` 不保存 GUI 复测确认 Material 数值通道、UV 官方模式和 Bone 官方操作/参数区均正常显示且无面板异常。版本保持 V0.1.8，源码 Junction 直接生效，不打包 ZIP、不 push。
+
+## 2026-08-27 - V0.1.8 材质表头与编辑列对齐
+
+- 修复材质查看器表头依靠多个无约束 `label` 自动分配宽度、而列表行依靠另一套 `split` 比例，导致“序号 / Blender 材质名 / MMD 名称 / MMD 英文名”与下方实际编辑框横向错位的问题。表头和每一行现统一调用同一套五列布局：勾选、序号及三列等宽名称；序号和四个表头显式居中，编辑框继续使用 Blender 原生可编辑文本控件。
+- `python -m py_compile`、`git diff --check` 通过，Blender 4.4.3 focused regression 继续输出 `MMD_MATERIAL_ORDER_REGRESSION_OK`。版本保持 V0.1.8，源码 Junction 直接生效，不打包 ZIP、不 push。
+
+## 2026-08-27 - V0.1.8 Morph 编辑器真实工程空白修复
+
+- 修复真实旧工程进入 `Morph 编辑器` 后只显示 MMD 模型选择行、其余 UI 全部空白的问题。根因不是工程缺少 Morph，而是面板 `draw()` 每次都会无条件回写 `SPX_MorphState.morph_type/morph_name`；Blender 4.4 在 UI 绘制上下文禁止修改 ID 数据，因此以 `Writing to ID classes in this context is not allowed` 中断后续五类页签与列表绘制。
+- 面板绘制现改为纯只读校验 Morph 与 Runtime State 的数量、顺序、稳定 UID、类型和名称；缓存缺失或失效时只登记一次 Blender timer，在当前绘制结束后安全刷新并重绘所有 3D View。`ensure_morph_states()` 同时避免对未变化的类型和名称重复赋值，首次打开尚无缓存的旧工程仍会自动加载，不要求用户手动点刷新。
+- 对原 `D:\MMD\模型\Alicia\鳴潮-達尼婭\達尼婭\19.blend` 进行不保存复现与 UI 验证：目标 Root `合并2` 实际含 Material 34、UV 16、Bone 25、Vertex 243、Group 35，共 353 个 Morph；修复前稳定抓到上述 `draw_morph_editor()` 异常，修复后相同窗口完整显示五类页签、名称开关、搜索、353 项列表及活动项详情，日志不再出现该异常。`tests/mmd_morph_editor_regression.py` 新增缓存新鲜/失效/重建断言并继续输出 `MMD_MORPH_EDITOR_REGRESSION_OK`。版本保持 V0.1.8，源码 Junction 直接生效，不保存原工程、不打包 ZIP、不 push。
+
+## 2026-08-27 - V0.1.8 Morph 编辑器与通用 Material Output 接管
+
+- 在顶层 `MMD 查看器` 与 `物理预览` 之间新增 `Morph 编辑器`，直接读取当前 `mmd_tools 4.5.5` 支持的 Material、UV、Bone、Vertex、Group 五类 Morph。每类列表提供日文名/英文名开关、搜索、逐行勾选、全选/反选、稳定块置顶/上移/下移/置底、新增/删除、分类编辑和中央可动画滑条；活动项下方复用官方 Offset UIList 并直接编辑各类 Morph 数据。每个 Morph 在原 PropertyGroup 上获得稳定 UUID，MMD Root 保存具名 Runtime State，关键帧路径不依赖可变 Morph 名称；排序同步各类型 Collection 和“表情”Display Frame，使 UI 顺序继续参与实际 PMX Morph 提交顺序。
+- Vertex Morph 中央滑条同步当前模型全部 Mesh 的同名 ShapeKey，不再要求用户逐物体调整。Bone/UV/Group 首次产生值时按需建立官方非材质 Runtime：临时阻止 `_MaterialMorph.setup_morph_nodes()`，保留 `mmd_tools` 的 Bone/UV/Group 驱动能力，同时移除可能已有的 `mmd_bind*` Material Morph 节点，避免官方每个 Offset 一条节点链与新后端重复求值。Group Morph 在插件侧递归展开到 Material Morph，循环引用安全停止；滑条和关键帧由 frame/depsgraph handler 继续求值。
+- Material Morph 第一次实际影响某材质时，才在该材质每个已连接的 `Material Output.Surface` 前插入一个共享 `SPX_MaterialMorphOutput`；同一输出后续只更新输入，不反复增删节点。上游 Shader 保持原样，因此 MMD Shader、Principled BSDF、Emission 和用户自制 Shader Group 使用同一路径。所有非零 Material/Group Morph 先按材质聚合：`MULT` 乘积与 `ADD` 和分开累计后统一得到 Alpha，负 `ADD` 自然作为减法；RGB 映射为通用 Tint/Emission 视觉染色，不宣称精确 PMX 光照语义。
+- `mmd_edge.<本体材质名>` 作为本体材质的附属描边处理：本体和已存在描边同步接管；描边未创建时不报错，后期创建、改名或重新生成后，下一次滑条、关键帧或 depsgraph 求值会通过本体稳定材质 ID + 当前名称重新发现并补装一次。描边最终 Alpha 固定为“本体最终 Alpha × 描边自身最终 Alpha”，本体隐藏时不会残留浮空轮廓。新增 `tests/mmd_morph_editor_regression.py`，覆盖具名关键帧路径、Morph 排序与 Facial Frame、三个 Mesh 同名 ShapeKey 同步、Principled 与自制 Shader Group 首次接管、节点不重复、Alpha `MULT+ADD`、RGB 输入、后建 Emission 描边自动补装、本体主导描边隐藏、关键帧帧切换、Bone/Group 轻量 Runtime 及官方 Material 节点未回流；输出 `MMD_MORPH_EDITOR_REGRESSION_OK`。现有 `mmd_material_order_regression.py` 与完整 `headless_smoke.py` 继续通过；版本保持 V0.1.8，源码 Junction 直接生效，不打包 ZIP、不 push。
+
+## 2026-08-27 - V0.1.8 材质顺序增量自动校对
+
+- 材质页在手动校对与按材质拆分旁新增“自动同步”开关，默认关闭。旧模型首次仍须执行一次完整“校对材质 ID 与物体编号”；初始化完成后，每次调整 PMX 材质顺序都会比较变更前后的完整顺序，只处理材质实际发生换位的 index。因此单材质移动、多个连续或非连续勾选材质作为稳定块置顶/上移/下移/置底/插入均使用同一逻辑，不依赖“只有一个材质在移动”的假设。
+- 增量路径只改写变动 index 上材质的 `mmd_material.material_id`、这些材质及外部冲突材质的 Material Morph 引用，以及实际使用受影响材质的单材质 Mesh 三位前缀；顺序未变位置上的材质和单材质 Mesh 不重写，多材质 Mesh 名称始终不动。材质集合新增/移除或旧 ID 尚未完成首次校对时不猜测增量基线，保留新查看器顺序并要求手动完整校对。
+- 扩展 `tests/mmd_material_order_regression.py`：在四材质顺序中同时勾选两个材质作为稳定块上移及下移，断言所有实际换位材质的 ID 与单材质物体前缀同步、未换位第四材质的故意自定义前缀不被重写、多材质守卫对象名称不变，并在移除临时第四材质后完整校对恢复原导出 fixture。Blender 4.4.3 headless 输出 `MMD_MATERIAL_ORDER_REGRESSION_OK`，`mmd_ordering_user_control_regression.py` 输出 `MMD_ORDERING_USER_CONTROL_REGRESSION_OK`，完整 smoke 继续输出 `MMD_SKIRT_PROXY_CREATOR_SMOKE_OK top_range=0.235911131 rigids=48 joints=96`；`python -m py_compile`、`git diff --check` 与 UTF-8/no-BOM 检查通过。版本保持 V0.1.8，源码 Junction 直接生效，不打包 ZIP、不 push。
+
+## 2026-08-27 - V0.1.8 材质 ID、物体编号校对与定向拆分
+
+- 澄清查看器顺序与 `mmd_material.material_id` 的语义差异：查看器和 PMX material table 都从 `000` / index `0` 开始；官方 `FnMaterial.material_id` 则是 Blender 文件内跨模型使用的全局材质关联 ID，旧导入材质保持 `-1` 属于尚未分配，第一次经官方属性访问时会从全局现有最大 ID 的下一位分配。因此查看器第 `009` 项出现 ID `19` 不是从 `10` 起算，也不是前一轮材质顺序代码写成 `19`，而是官方全局分配器此前已有 `0–18`。
+- 材质页新增“校对材质 ID 与物体编号”：按当前查看器顺序把当前模型材质 ID 明确写成 0-based `0…N-1`，同时更新 Material Morph data 的关联 ID。首轮曾在其它模型或残留材质占用目标 ID 时整体取消，真实旧工程因此报告 `AnalHook.001` 等 `0–85` 冲突；现改为先把这些外部冲突材质迁移到全局现有最大 ID 之后，再同步所有 MMD Root 中指向它们的 Material Morph ID，当前模型仍可完成 `0…N-1` 校对且不制造全局重复 ID。模型内只对实际使用一个材质的 Mesh 调用官方 `MoveObject.set_index()` 写入三位前缀；使用多个材质的 Mesh 名称完全不动，其材质序号仍被单材质物体自然跳过，形成拆分用预留编号。
+- 校对按钮旁新增“按材质拆分（保留法向）”：使用官方 `utils.separateByMaterials(..., keep_normals=True)`、ShapeKey 清理、UV Morph 清理和 Material Morph related-mesh 更新流程，但不调用官方会遍历并重编号全部模型 Mesh 的尾段。插件只识别活动目标 Mesh 本次保留下来的原对象和新拆出的对象，并按各自唯一材质的查看器顺序写入预留编号；其它 Mesh 名称不变。
+- 扩展 `tests/mmd_material_order_regression.py`：用 `0/1/2` 断言当前模型材质 ID 校对，并用额外 `ID=0` 外部材质复现冲突、断言其被安全迁移到 `>=3`；同时验证单材质物体成为 `000_...`、多材质物体校对时保持原名、拆分后两个目标物体进入 `001_...` / `002_...`、其它物体名不变、临时 `mmd_normal` 属性已清除且导出/重导入顺序仍一致。Blender 4.4.3 headless 输出 `MMD_MATERIAL_ORDER_REGRESSION_OK`，完整 `headless_smoke.py` 继续输出 `MMD_SKIRT_PROXY_CREATOR_SMOKE_OK top_range=0.235911131 rigids=48 joints=96`；版本保持 V0.1.8，源码 Junction 直接生效，不打包 ZIP、不 push。
+
+## 2026-08-27 - V0.1.8 PMX 材质真实顺序查看与导出接管
+
+- 调查确认官方 `mmd_tools` 的默认 PMX 材质顺序不读取材质名前缀，也不直接读取 `mmd_material.material_id`：导出器先按 Blender Mesh 物体名排序，再按各 Mesh 中实际被面使用的材质槽索引遍历，同一材质第一次出现的位置决定最终 PMX 材质顺序。因此合并/拆分 Mesh、改变物体名或重排材质槽会让顺序漂移。
+- 在 `MMD 查看器` 的骨骼左侧新增“材质”页。列表按插件维护并实际提交给 PMX 的顺序显示，每行提供勾选框、三位顺序编号以及可直接编辑的三列：Blender 材质名、MMD 名称、MMD 英文名；复用现有稳定块置顶/上移/下移/置底/插入操作。下方新增“Blender 名同步到 MMD 中/英文名”和“MMD 名同步到 Blender 材质名”两个模型级批量入口。
+- 新增模型级持久材质身份与顺序。每个材质使用独立稳定 ID，MMD Root 保存该模型自己的 ID 顺序；插件挂载 `PMXImporter.__importMaterials`，在官方按 PMX material table 创建完材质时立即记录原文件顺序，而不是等用户合并 Mesh 后再从物体名猜测。材质改名、Mesh 合并/拆分或跨物体复用不会丢失顺序，新出现且实际被面使用的材质按官方当前默认顺序追加，已不再使用的材质自动从有效列表移除。
+- 通过 monkey-patch 挂载接管官方 `mmd_tools` PMX 导入/导出，不修改其核心源码：官方完成 Mesh/材质收集后、导出 Material Morph 前，插件同步重排 PMX material 表与对应连续 face blocks，并关闭会覆盖手工顺序的官方距离式 `sort_materials`。新增 `tests/mmd_material_order_regression.py`，覆盖跨两个 Mesh 的默认首次出现顺序、材质页单材质置顶、材质改名后稳定身份、双向名称同步、以 `sort_materials=True` 调用官方导出仍得到插件指定 `PMX_B, PMX_C, PMX_A`，以及重新导入该 PMX 后自动保存同一顺序；Blender 4.4.3 headless 输出 `MMD_MATERIAL_ORDER_REGRESSION_OK`，完整 `headless_smoke.py` 输出 `MMD_SKIRT_PROXY_CREATOR_SMOKE_OK top_range=0.235911131 rigids=48 joints=96`，现有 `mmd_ordering_user_control_regression.py` 继续通过，`python -m py_compile` 通过。版本保持 V0.1.8，源码 Junction 直接生效，不打包 ZIP、不 push。
+
+## 2026-08-27 - V0.1.8 稳定中长裙横 Joint 位移锁定
+
+- 修正内置“稳定中长裙”物理参数预设：横 Joint 的起始/末端三轴移动下限、移动上限和移动弹簧全部设为 `0`，同时关闭横 Joint 移动限制与移动弹簧的三轴补间。横 Joint 因此只保留既有旋转限制和旋转弹簧，不再允许刚体 A/B 沿 Joint 局部轴发生相对平移；纵 Joint、刚体及碰撞参数未改。
+- 更新 Blender 4.4.3 headless smoke 的预设回归断言，确认横 Joint 移动上下限、移动弹簧及其末端值全部为零，两个补间开关均为三轴关闭；完整 smoke 输出 `MMD_SKIRT_PROXY_CREATOR_SMOKE_OK top_range=0.235911131 rigids=48 joints=96`，`python -m py_compile` 通过。版本保持 V0.1.8，源码 Junction 直接生效，不打包 ZIP、不 push。
+
+## 2026-08-27 - V0.1.8 横 Joint Y 轴正反面统一
+
+- 修复“应用参数到当前代理”补建的规则横 Joint 在背面头发代理上 Y 轴与相连刚体及纵 Joint 相反的问题。横 Joint 的 X/Z 几何轴仍由代理网格计算，不复制刚体 rotation；Y 轴正反面优先读取两端刚体保存的 `surface_proxy_normal`，旧物理首次接管缺少该字段时才回退到刚体当前局部 Y。两端参考先统一方向并对 Z 正交化；若网格法线反向，则同时翻转 X/Y，保持 Z 纵向、正交关系和右手坐标系不变。纵 Joint 算法未改。
+- 首次生成、应用时补建、应用时更新和“同步当前代理刚体和 Joint”现统一调用同一套横 Joint 轴构造。Blender 4.4.3 完整 headless smoke 新增背面网格与刚体正面参考相反时的定向回归，并验证横 Joint Y 与两端刚体保存法线同向、Z 不翻转、矩阵行列式为正，以及刚体 rotation 受保护且被任意改动时仍依据代理保存法线恢复；最终输出 `MMD_SKIRT_PROXY_CREATOR_SMOKE_OK top_range=0.235911131 rigids=48 joints=96`。版本保持 V0.1.8，源码 Junction 直接生效，不打包 ZIP、不 push。
+
+## 2026-08-26 - V0.1.8 从所选刚体创建手动 Joint
+
+- 在 MMD 查看器的刚体页、列表操作区下方新增“根据所选刚体创建 Joint”。入口要求且只允许勾选两个属于当前代理的刚体；查看器活动项固定作为刚体 B，另一个勾选项作为刚体 A。通过两刚体绑定骨骼的祖先/后代关系判定类型：处于同一条骨链时创建纵 Joint，分属两条骨链时创建横 Joint；纵 Joint 直接使用刚体 B 名称，横 Joint 保留 `_H` 后缀。
+- 手动 Joint 的位置不再直接取刚体 A/B 世界位置中点。横 Joint 读取两刚体局部 X 轴、纵 Joint 读取两刚体局部 Z 轴作为两端切线，统一朝向 A→B 后以刚体间距作为切线柄长度，构造三次 Hermite 曲线；Joint 位于曲线 `t=0.5`，横向 X 轴或纵向 Z 轴使用该点的曲线切线。两端朝向一致时，切线贡献在中点互相抵消，位置自然退化为直线中点；朝向不同时则按曲率向外偏移。Y 轴继续由两刚体局部 Y 轴同向平均后对曲线切线正交化，并以刚体 B 的正反面朝向为基准，再构造右手正交坐标系。最终转换回 Joint 父级的 Blender 局部坐标，不提前进行 MMD 坐标换轴。
+- 新建对象写入 `surface_proxy_manual_joint` 标记和创建时的参数补间位置。“应用参数到当前代理”与“同步当前代理刚体和 Joint”会根据当前 A/B 刚体重新计算其曲线位置和轴线，并按纵/横 Joint 页参数更新限制与弹簧；横 Joint 自动补建/清理明确跳过手动标记，因此不合规则网格槽位的手动横 Joint不会被删除，而未标记的错误、重复或多余规则横 Joint仍沿用原清理逻辑。Blender 4.4.3 完整 headless smoke 覆盖同链纵 Joint、跨链非规则横 Joint、活动项=B、朝向不同产生非直线曲率中点、朝向一致退化为直线中点、曲线切线轴、Y 轴正反面、应用参数后保留，以及规则横 Joint 数量不变，输出 `MMD_SKIRT_PROXY_CREATOR_SMOKE_OK top_range=0.235911131 rigids=48 joints=96`；`python -m py_compile` 通过。版本保持 V0.1.8，源码 Junction 直接生效，不打包 ZIP、不 push。
+
+## 2026-08-26 - V0.1.8 应用保护跟随代理网格
+
+- 将“应用保护（禁止更新）”的 10 个开关纳入代理网格自身保存的物理设置。执行“生成 MMD 刚体和 Joint”或“应用参数到当前代理”时，会把当前保护状态写入当前代理；切换“当前代理网格”时，会和质量、尺寸、Joint 参数等现有设置一起自动恢复该代理自己的保护状态，因此不同代理可以维持不同的勾选组合。旧代理或尚未保存保护字段的新代理按属性默认值恢复，即全部关闭。
+- 保护状态使用独立的 `APPLY_PROTECTION_SETTING_NAMES` 合并到代理读写列表，没有加入自定义物理参数预设的 `PHYSICS_SETTING_NAMES`，因此加载/保存参数预设不会意外改变保护状态。Blender 4.4.3 完整 headless smoke 新增两个代理分别保存、切换并恢复相反保护组合的回归，随后复位测试状态并继续通过全部旧用例，输出 `MMD_SKIRT_PROXY_CREATOR_SMOKE_OK top_range=0.235911131 rigids=48 joints=96`；`python -m py_compile` 通过。版本保持 V0.1.8，源码 Junction 直接生效，不打包 ZIP、不 push。
+
+## 2026-08-26 - V0.1.8 横 Joint 纯代理网格轴线
+
+- 横 Joint 不再读取任一刚体的 location 或 rotation，也不再直接套用单列纵向骨段坐标系。现完全使用代理网格四个控制点：两侧骨段中点连线作为横向 X 轴，两侧骨段方向的平均值作为纵向参考 Z 轴，正交化后叉乘得到 Y 轴；首次生成、应用参数时补建缺失横 Joint、更新既有横 Joint 三条路径统一使用该 Blender 局部坐标系。PMX 导出时仍由 `mmd_tools` 统一完成 MMD 坐标转换，插件不提前交换轴。
+- 纵 Joint 与锚定 Joint 保持既有算法不变：由当前代理网格单列骨段方向、同层相邻列切线和朝外表面法线构建坐标系，本就不复制骨骼 roll 或刚体 rotation。只要“Joint 旋转保护”关闭，纵/横 Joint 都会分别按自身几何规则重算；刚体位置和刚体旋转即使同时受保护，也不会影响横 Joint 轴线更新。完整 Blender 4.4.3 headless smoke 覆盖刚体 A/B 的 location 与 rotation 同时被改乱并保护时横 Joint 仍恢复到原代理网格轴线，继续输出 `MMD_SKIRT_PROXY_CREATOR_SMOKE_OK`。真实 `D:\MMD\模型\Alicia\鳴潮-達尼婭\達尼婭\12.blend` 非保存复测识别 36 个横 Joint，全部与纯代理网格期望旋转完全一致，最大旋转误差 `0`，48 个刚体最大矩阵变化 `0`，输出 `SPX_REAL_12_HORIZONTAL_GRID_AXES_OK`；版本保持 V0.1.8，源码 Junction 直接生效，不保存原工程、不打包 ZIP、不 push。
+
+## 2026-08-26 - V0.1.8 骨骼改名后重复识别代理修复
+
+- 修复骨骼改名后“识别或恢复所选代理”可能第一次按位置恢复成功、再次点击却报“没有找到与所选网格匹配的代理骨链”的问题。根因是位置恢复会把代理保存的精确骨名更新为新名称；下一次识别判定这些名称全部有效后，旧代码却只在“保存身份无效”时加入位置恢复候选，没有为“保存身份有效”建立任何候选。现新增精确保存身份布局：按代理保存的列行数和骨名顺序直接恢复骨链，校验连续父子层级，并优先沿用有效顶点映射；只有精确身份失效时才回退到既有位置匹配。
+- 完整 Blender 4.4.3 headless smoke 新增“骨骼改名后连续识别两次”回归并继续输出 `MMD_SKIRT_PROXY_CREATOR_SMOKE_OK`。对真实 `D:\MMD\模型\Alicia\鳴潮-達尼婭\達尼婭\12.blend` 的 `Bone_Hair_Surface` 做非保存复测：保存身份为 4 列、每列 14 个控制点、52 根 `Bone_Hair_A/B*.L/R` 骨骼，位置布局与精确身份路径均成功，最终输出 `IDENTIFY_OK Bone_Hair [14, 14, 14, 14]`。按用户要求完整撤销同轮尚未验收的横 Joint 旋转源码与测试改动；版本保持 V0.1.8，源码 Junction 直接生效，不保存原工程、不打包 ZIP、不 push。
+
+## 2026-08-26 - V0.1.8 骨骼名称同步到刚体与 Joint
+
+- 在 MMD 查看器骨骼页的“补全并标准化 MMD 骨骼名称”区域新增“骨骼名同步到刚体”和“骨骼名同步到 Joint”。两个入口均只处理查看器已勾选骨骼：刚体按绑定骨骼重置 Blender 名称主体、MMD 名称和 MMD 英文名称；Joint 按刚体 B 绑定骨骼同步同三项。Blender 对象名沿用既有三位 PMX 顺序前缀，只将前缀后的主体复位为骨骼 Blender 名；骨骼的 MMD 日文或英文字段为空时，对应刚体/Joint 字段明确清空，不以其它名称回填。
+- Joint 同步前会对当前代理重新执行既有物理关联：通过两端刚体 A/B 所绑定代理骨骼的列、行关系识别纵向、横向和锚定 Joint，因此旧 Joint 不要求由插件创建，也不依赖原有插件标记。横向 Joint 的 Blender 名称主体、非空 MMD 名称和非空 MMD 英文名称统一保留 `_H` 后缀；纵向和锚定 Joint 不追加。Blender 4.4.3 完整 headless smoke 删除横 Joint 元数据后验证自动重新识别，并覆盖 PMX 顺序前缀保留、刚体同步、横/锚 Joint 同步及空英文字段清空，输出 `MMD_SKIRT_PROXY_CREATOR_SMOKE_OK top_range=0.235911131 rigids=48 joints=96`；`python -m py_compile` 与 `git diff --check` 通过。版本保持 V0.1.8，源码 Junction 直接生效，不打包 ZIP、不 push。
+
+## 2026-08-26 - V0.1.8 刚体与 Joint 参数应用保护
+
+- 在代理创建的“刚体”页签、“碰撞”区域下新增“应用保护（禁止更新）”，并在刚体、纵 Joint、横 Joint 三个页签共同显示。保护项按五行排列：刚体位置/旋转、Joint 位置/旋转、刚体形状/尺寸、刚体类型/刚体演算参数、碰撞设置/Joint 演算参数；其中 Joint 演算参数只保护移动/旋转限制及弹簧，位置与旋转由独立开关控制。保护默认关闭，只作用于底部“应用参数到当前代理”；首次生成与独立的刚体/Joint 同步路径保持原行为。
+- “应用参数到当前代理”现在会在三个 Joint 保护均关闭时，根据“生成横向 Joint”补建缺失横 Joint或移除现有横 Joint，只调整当前代理的横向结构，不重建刚体和纵 Joint；任一 Joint 保护开启时保持现有 Joint 结构。旧物理对象不要求由插件创建：先按刚体绑定的代理骨骼恢复列/行，再通过 Joint 两端刚体 A/B 的同列相邻行或同行相邻列关系识别纵/横 Joint，端点反向同样支持；无法唯一识别的对象不猜测、不删除。对于代理网格有对应槽位、但旧物理缺少刚体端点的横 Joint，只跳过该位置并在结果中报告数量，不再中止其它参数应用。Blender 4.4.3 headless 回归覆盖无插件元数据的既有物理自动接管、保护开启时不移除、保护关闭后移除与重新补建，以及缺失刚体端点时跳过后继续、端点恢复后补建；真实 `D:\MMD\模型\Alicia\鳴潮-達尼婭\達尼婭\11.blend` 非保存探针确认 4 列代理各有 13 个刚体槽位，但旧物理每列缺末端第 13 个刚体，共 48/52 个刚体；非保存调用实际 operator 成功新增 31 个横 Joint、跳过最后一行 3 个无端点横 Joint，最终识别 36 个横 Joint，输出 `SPX_REAL_11_PARTIAL_HORIZONTAL_OK 36`。版本保持 V0.1.8，源码 Junction 直接生效，不保存原工程、不打包 ZIP、不 push。
+
+## 2026-08-26 - V0.1.8 下划线字母列号代理识别
+
+- 修复从 MMD 查看器勾选骨骼创建代理时，将 `Bone_Hair_A1.L`、`Bone_Hair_B1.R` 中 `_A/_B` 列号误当作主体名称一部分的问题。名称符合 `主体_大写字母列号+数字行号` 时，现在统一提取 `主体` 作为代理前缀；无下划线的 `后发A1/后发B1` 仍保持为不同主体，避免放宽到不相关骨链。补充回归断言覆盖 A/B 左右骨链共同生成同一 `Bone_Hair` 主体；版本保持 V0.1.8，源码 Junction 直接生效，不打包 ZIP、不 push。
+
+## 2026-08-26 - V0.1.8 撤回未通过验收的飘带预设
+
+- 按用户决定移除“填入：轻盈复位飘带”按钮、专用 operator、参数函数及对应 smoke 断言。标准 PMX 刚体与 Joint 参数无法精确表达“静止严格保持原姿势、运动时才启用物理”，因此不保留容易产生错误预期的近似预设；既有“稳定中长裙”预设及本轮其它碰撞组、镜像命名等改动均不受影响。版本保持 V0.1.8，源码 Junction 直接生效，不打包 ZIP、不 push。
+
+## 2026-08-25 - V0.1.8 骨骼改名后按位置恢复代理
+
+- 修复“识别或恢复所选代理”仍依赖 `<前缀>_Cxx_Rxx` 骨名的问题。代理保存的精确骨骼身份仍全部存在时继续优先使用该身份；只有保存骨名因改名而失效时，才将保存的控制顶点转换到 Armature 局部空间，并按每段 head/tail 位置与连续父子层级逐列重建真实骨链，恢复后把当前骨名重新写入代理元数据。多个骨链位置重合且无法唯一判断时拒绝猜测。
+- 同时修复新建代理期间 depsgraph 自动识别可能抢在新骨创建完成前写入同位置旧骨名的问题：正式创建结束后始终保存 `_create_bones()` 返回的精确骨名。新增 headless 回归覆盖完整骨链改名、位置恢复、恢复后的代理驱动骨骼同步，以及两个位置相近代理的身份隔离；Blender 4.4.3 完整 smoke 输出 `MMD_SKIRT_PROXY_CREATOR_SMOKE_OK`。
+- 使用真实 `D:\MMD\模型\Alicia\鳴潮-達尼婭\達尼婭\09.blend` 非保存调用面板同一 operator，`Bone_Piao_Surface.005` 成功按位置恢复为 `Bone_Piao228.L`、`Bone_Piao229.L`、`Bone_Piao228.R`、`Bone_Piao229.R`，输出 `SPX_REAL_09_RENAME_RESTORE_OK`。`python -m py_compile` 与 `git diff --check` 通过；版本保持 V0.1.8，源码 Junction 已直接生效，不保存工程、不打包 ZIP、不 push。
+
+## 2026-08-25 - V0.1.8 快速选择按镜像加选
+
+- 在骨骼、刚体和 Joint 查看器的“快速选组”中新增“按镜像加选另一边”。操作以当前全部勾选项为源，只追加镜像项、不清除或替换原勾选；可同时处理多项，并报告新增数与无匹配数。
+- 骨骼配对同时检查 Blender 名、MMD 名称和英文名称，识别 `左/右` 前缀、`.L/.R` 与 `_L/_R`；刚体复用绑定骨骼镜像配对，Joint 通过两端刚体的镜像关系精确寻找对应项，避免 PMX 顺序前缀或重复显示名造成误选。Blender 4.4.3 完整 headless smoke 覆盖三种左右写法以及 Bone/Rigid/Joint 三个列表，分别输出 `已加选 3/1/1 个镜像项`，并继续通过 `MMD_SKIRT_PROXY_CREATOR_SMOKE_OK`、`python -m py_compile` 与 `git diff --check`。版本保持 V0.1.8，源码 Junction 直接生效，不打包 ZIP、不 push。
+
+## 2026-08-25 - V0.1.8 刚体轴同步到 Joint 与镜像联动
+
+- 在刚体查看器的镜像工具区新增“同步勾选刚体轴到关联 Joint”。操作保持 Joint 的世界位置与缩放不变，只把勾选刚体的当前世界旋转轴复制给以该刚体为 B 端点的关联 Joint；没有关联 Joint 时给出明确提示，不改其它对象。
+- 既有“同步镜像刚体”路径本就会在“同时处理关联 Joint”开启时镜像复制刚体与关联 Joint 的完整世界变换，本轮补充操作顺序提示并加入端到端回归：先旋转左侧刚体，再同步源 Joint 轴，最后同步镜像，断言源 Joint 位置不变、轴向与刚体一致，右侧刚体与 Joint 均等于源侧的 Armature 局部 X 镜像。Blender 4.4.3 完整 headless smoke、`python -m py_compile` 与 `git diff --check` 通过。版本保持 V0.1.8，源码 Junction 直接生效，不打包 ZIP、不 push。
+
+## 2026-08-25 - V0.1.8 MMD 骨骼名称补全入口标准化
+
+- 将骨骼查看器的“补全勾选”“补全全部”和活动项“补全当前”三个入口统一升级为全字段标准化：以 Blender 骨骼名的 `.L/.R`、`_L/_R` 为镜像侧权威来源，MMD 名称写成 `左/右 + 主体`，英文名称写成 `主体_L/_R`；非镜像骨骼正常按 Blender 骨骼名填写。普通已有字段也会重建，不再因非空而跳过。
+- 对“中文 MMD 名称 + 英文名称”保留双方各自的主体，只移除旧的 `左/右`、`.L/.R`、`_L/_R` 标记并按 Blender 侧重新写入，避免把正式双语命名覆盖成同一个 Blender 名。完整 Blender 4.4.3 headless smoke 通过，原 `08.blend` 非保存探针确认 `Bone_Piao222.L`、`Bone_Piao231.L` 从 `Bone_Piao*_L/Bone_Piao*_L` 规范为 `左Bone_Piao*/Bone_Piao*_L`；`python -m py_compile` 与 `git diff --check` 通过。版本保持 V0.1.8，源码 Junction 直接生效，不保存原工程、不打包 ZIP、不 push。
+
+## 2026-08-25 - V0.1.8 二次 Clear + F9 仅选中重做错位修复候选
+
+- 用户确认 `baseline-20260825-ik-physics-handoff` 的其余问题均已修复后，报告唯一剩余序列：启用 MMD IK 兼容，第一次 Clear 后在 F9 取消“仅选中”可正常归零；再次移动足 IK、第二次 Clear，再在 F9 勾回“仅选中”时，视口会闪回，IK 控制骨残留在移动位置，而 IK 链已按清空输入复位。先在用户原 `D:\MMD\模型\Alicia\鳴潮-達尼婭\達尼婭\06.blend` 建立失败回归：目标 `足ＩＫ.L` 是 authored input control、并不属于 35 根 native output bones；重放 F9 最终时序中的“output 已恢复清空展示、selected control 仍残留 Undo 前矩阵”后，修复前稳定得到 `ik_input_error=0.0500000007`。
+- 根因是 Undo/Redo resume 只保留一个隐式 `input_basis` 并在 post 阶段重新猜测 Clear：判断要求“所有保存输入为 identity，且当前选骨也为 identity”。F9 重做过程中 output closure 与 input-only IK control 可在不同 depsgraph 时刻落定；一旦当前 control 暂时仍是 Undo 前矩阵，旧逻辑便把该残留矩阵重新采集为 authored input，形成“控制器在旧位置、链条按清空状态复位”的混合帧。
+- 新增显式 `UndoRedoPoseTransaction`，在 `undo_pre/redo_pre` 同时冻结 authored `input_basis`、完整 `presented_basis` 与选骨名称。resume 不再只看当前选骨：若 transaction 证明进入 Undo 前的输入已经全部清空，并且当前 native output closure 已回到 transaction 的清空展示，则以冻结的 authored input 为唯一真值，主动把 selected input controls 写回该基线，再重置 solver 并统一求值。普通 Undo/Redo 若 output presentation 没有回到清空快照，仍按当前 Blender pose 重建输入，不会被误判为 F9 Clear 重做。
+- 新增 `tests/mmd_ik_clear_f9_second_cycle_regression.py`，在原 `06.blend` 完整覆盖“Clear Selected → F9 Clear All → 移动 IK → Clear All → F9 Clear Selected”，并显式注入真实视口观察到的最后一拍 stale selected replay。修复后 normal IK、IK+PMX、IK+MMD 三组均为 `ik_input_error=0`、`ik_display_error=0`、`chain_error=0`，移动量约 `0.0500 m`；`MMD_IK_PHYSICS_CLEAR_REPEAT_REGRESSION_OK`、Clear User Transforms、Transform modal、physics feedback/reset、IK/Physics handoff、35-bone scoped ownership、高跟鞋与 runtime smoke 均继续通过。版本保持 V0.1.8，不修改三个 DLL、不打包、不 push，真实 GUI F9 操作仍等待用户重启 Blender 后验收。
+
+## 2026-08-25 - V0.1.8 镜像 `_L/_R` 已有刚体配对修复
+
+- 镜像核心的后缀解析原本已支持 `.L/.R` 与 `_L/_R`，但当前真实 `05.blend` 非保存探针发现已有刚体配对仍有一处漏点：`Bone_Piao222_L` 能正确解析为左侧并映射到骨骼 `Bone_Piao222.R`，随后 `_rigid_names()` 却将候选日文名规范化为 `右Bone_Piao222`，导致实际已有的 `name_j = Bone_Piao222_R` 被过滤。现改为配对时同时接受原始后缀镜像名与规范化 MMD 名，排序时优先原始镜像名；创建新对象时的既有规范化命名规则不变。
+- 新增 `tests/mirror_underscore_suffix_regression.py`，覆盖截图对应形式的 `Bone_Piao222_L/Bone_Piao222_R` 名称、`.L/.R` 绑定骨、双向已有刚体查找以及左右两侧同时勾选时只处理左侧一次，输出 `MIRROR_UNDERSCORE_SUFFIX_REGRESSION_OK`；再以原 `05.blend` 非保存验证真实对象成功配对，输出 `MIRROR_UNDERSCORE_SUFFIX_REAL_MODEL_OK Bone_Piao222_L Bone_Piao222.L Bone_Piao222_R Bone_Piao222.R`。面板同步明确标注两套后缀均受支持。版本保持 V0.1.8，源码 Junction 直接生效，不打包 ZIP、不 push。
+
+## 2026-08-25 - V0.1.8 碰撞组编号统一为 0–15
+
+- 将“代理创建”“MMD 查看器活动项属性”与刚体浏览详情中的碰撞组显示统一为 MMD 内部索引 `0–15`：碰撞组数值不再额外显示为 `1–16`，两行“不碰撞组”按钮也改为 `0–15`。底层 `collision_group_number` / `collision_group_mask` 数据及 physics runtime 语义未改动；更新对应 headless UI 断言并完成针对性验证。版本保持 V0.1.8，源码 Junction 直接生效，不打包 ZIP、不 push。
+
 ## 2026-08-25 - V0.1.8 IK / Physics 所有权交接验收基线
 
 - 用户在真实 Blender 4.4 工程中确认关闭 MMD IK 兼容时的 physics 原地 handoff、刚体/物理骨保持以及其余相关回归均已修复，批准当前实现晋升为本地安全基线 `baseline-20260825-ik-physics-handoff`。该基线保留 `input_basis` / IK-owned `output_basis` / full-pose `presented_basis` 三层所有权，以及不重启 physics world 的 `RuntimeAdapterHandoff`；仍明确不包含随后报告的二次 Clear + F9“仅选中”重做错位修复。
@@ -11,13 +269,19 @@
 - 新增最小两级全 type 2 回归 `tests/type2_chain_translation_regression.py`：修复前稳定失败，子骨保持 `(0, 1, 0)`；修复后随父骨 90° 旋转到约 `(-1, 0, 0)`，输出 `TYPE2_CHAIN_TRANSLATION_REGRESSION_OK error=1.40579497e-07`。同步把既有 type 2 断言从错误的“绝对位置等于 DLL 动画位置”改为“相对父骨的局部动画平移保持不变”。
 - 新增真实工程回归 `tests/mmd_06_type2_chain_translation_regression.py`，以 Blender 4.4.3 无保存加载上述 `06.blend`，识别 17 组连续 type 2 父子骨并运行 120 tick：PMX 为 `local_error=2.27339956e-07, displacement=0.052140129`，MMD 为 `local_error=3.1676404e-07, displacement=0.0501235642`。PMX/MMD `PHYSICS_ROOT_OFFSET_REGRESSION_OK` 与完整 `MMD_SKIRT_PROXY_CREATOR_SMOKE_OK` 继续通过。版本保持 V0.1.8，源码 Junction 直接生效，不修改 DLL、不打包 ZIP、不 push；真实交互视口观感仍待用户重启/Reload Scripts 后确认。
 
-## 2026-08-24 - V0.1.8 Parent Empty 同 tick 物理输入修正候选
+## 2026-08-25 - V0.1.8 骨链曲率细分、层级重排与权重等分
 
-- 用户在真实 Blender 4.4 中确认 Parent Empty 连续拖动延迟已修复，批准该状态晋升为本地安全基线 `baseline-20260824-parent-empty-same-tick`；该基线只固化统一 PMX/MMD raw Object transform 检测，不包含后续 IK 关闭生命周期重构。
-- 用户在真实 Blender 4.4 发现：PMX DLL 下直接移动 MMD 模型 Root Empty 时物理与刚体能同步，而 MMD DLL 下 Object Mode 移动会出现刚体延迟，进入 Armature Pose Mode 移动则正常。核查确认两条 DLL 的正常 Blender hot path 已共用 `_prepare_mmd_tools_step()` / `_submit_pose_targets()` / `_apply_mmd_tools_step()`，但 `PoseInputAdapter.raw_input_changes()` 只监视 evaluated `root.matrix_world` / `armature.matrix_world`；Object Mode Transform modal 存在原始 `matrix_basis` 已变化、depsgraph 尚未传播新 `matrix_world`、timer 已先运行的窗口，旧逻辑会错误复用上一 tick 输入。Pose Mode 更容易先触发 Armature evaluation，因此会掩盖该窗口。
-- 修复保持 PMX/MMD 共用，不增加 MMD-only common-motion/world-delta 分支：Session 现在缓存并监视 MMD Root、Armature 及其完整父级 Object 链的原始 `matrix_basis`。发现任一父级 raw transform 改变时，即使 `matrix_world` 尚未刷新，也会让当前 tick 进入一次必要的 `_update_view_layer()`，随后提交已求值的同 tick world-space 刚体目标。这样既覆盖 Root 自身 Empty，也覆盖额外父级 Empty，并避免重新引入历史上已经导致双重位移的手工 motion-delta 补偿。
-- 新增 `tests/mmd_04_parent_empty_latency_regression.py`，在原 `04.blend` 中故意修改 Root Empty 后不预先调用 `view_layer.update()`，分别验证 PMX/MMD 都能由当前 tick 检出 raw Object transform、完成一次输入求值并同步 59 个绑定 0 型刚体；两条路径均输出 `MMD_04_PARENT_EMPTY_LATENCY_OK ... max_error≈1.9e-08`。既有 `MMD_04_PREVIEW_PIPELINE_OK ... motion_rigid_error=0`、`MMD_04_RIGID_LATENCY_REGRESSION_OK ... max_error=0`、PMX/MMD `PHYSICS_ROOT_OFFSET_REGRESSION_OK` 继续通过。
-- 性能回归保持：`CURRENT_PROXY + debug on` 的 PMX/MMD tick 中位分别约 `7.50/7.91 ms`，合计约 `20.85/20.97 ms`，新增父级链 raw 比较未形成可测的稳定开销。当前改动位于已验收基线 `baseline-20260824-physics-runtime-v2-phase1` 之后，版本保持 V0.1.8，不打包、不修改 DLL、不新建 baseline，等待真实 GUI 对 Parent Empty 连续拖动重新验收。
+- 在 MMD 查看器“PMX 实际顺序”下方新增“骨骼细分”区域，提供 `2–32` 的“细分段数”和“细分勾选骨骼”操作。段数表示每根源骨骼最终包含的总段数；操作使用查看器复选框范围，完成后原骨骼与全部新增段保持勾选。
+- 用户明确要求不能照搬 Blender 原生骨骼细分的逐骨直线切割。实现会读取源骨骼、连续父骨和方向最连贯的延续子骨 rest-pose 节点，使用 centripetal Catmull–Rom 曲线生成密集采样，再按弧长重采样为等长曲线段；分叉时优先选择勾选链延续，其次选择方向最连续的子骨，只有没有任何邻接曲率信息的孤立骨骼才直线均分。各段按源骨 `z_axis` 对齐 roll，避免曲线转向时产生无关扭转。
+- 同一勾选链不再使用会破坏代理主体名识别的 `_S02/_S03`；改为从首根骨的原数字开始紧凑连续重编号，左右配对链共用同一数字范围。例如 `Bone_Piao160–162` 各分三段后为 `Bone_Piao160–168`，Blender 骨名、MMD 日/英文名及顶点组一并同步。新骨继承 Bone Collection、deform/inherit-scale/envelope 及关键 MMD transform/fixed/local-axis 元数据；保留父子层级但强制 `use_connect=False`，head/tail 仅位置重合，Edit Mode 下可用 G 移动。原直接子骨重挂到最后一段并保持自身原 `use_connect`。
+- 新骨骼按细分后的连续数字链紧邻写入真实 PMX `bone_id`，只在写入前初始化一次无效 `-1` ID，最终不再执行会覆盖用户结果的 hierarchy realignment。对 MMD Root 下所有非 Rigid Mesh，原顶点组的每个非零权重在源骨与新增段之间按段数等分，不做空间猜测、不改变该组拆分前后的权重总和。骨骼重命名利用 Blender 对相关 Armature 顶点组的原子同步，避免循环重命名时二次覆盖正确的连续编号。
+- 新增 `tests/mmd_bone_curved_subdivision_regression.py`，由 Blender 4.4.3 直接打开原 `D:\MMD\模型\Alicia\鳴潮-達尼婭\達尼婭\05.blend`（不保存），真实刷新查看器并勾选左右 `Bone_Piao160–162` 六根连续骨骼，以三段模式调用正式 operator，随后不修改勾选直接调用“从勾选骨骼恢复或新建代理”。验证从 `742` 根增加到 `754` 根，左右骨名均连续为 `160–168`，全部新骨未 Connected、PMX ID 紧邻、原子骨重挂、链端点不变、内部节点相对原直线最大偏移 `0.0002935930`，以及 `10` 个实际带权顶点组拆分后的最大权重误差 `2.98e-08`；成功新建含 `18` 根骨的两列代理，输出 `ACTUAL_05_BLEND_CURVED_SUBDIVISION_PROXY_OK`。完整 `tests/headless_smoke.py` 继续输出 `MMD_SKIRT_PROXY_CREATOR_SMOKE_OK`，既有自由排序回归输出 `MMD_ORDERING_USER_CONTROL_REGRESSION_OK`，`python -m py_compile`、UTF-8/no-BOM 与 `git diff --check` 通过。版本保持 V0.1.8，源码 Junction 直接生效，不保存原工程、不打包 ZIP、不 push。
+
+## 2026-08-25 - V0.1.8 PMX 骨骼实际顺序恢复用户直接控制
+
+- 用户指出“PMX 实际顺序”会错误阻止骨骼移动，且从未要求插件替用户限制父子骨顺序。根因是排序层自行扩展勾选范围：移动父骨会自动携带所有子级；随后又用父骨和追加变换依赖关系拒绝写入目标 `bone_id` 顺序。这两项都是插件策略，不是当前排序操作不可绕过的格式限制。
+- 删除骨骼子级自动扩选与父子/追加变换顺序校验。随后真实 GUI 复测暴露第二层问题：`_apply_bone_order()` 在移动后调用 `FnModel.realign_bone_ids()`，该官方修复函数会按父子/追加变换依赖重新排序，导致刚写入的用户顺序立刻被还原。继续用截图对应原工程 `D:\MMD\模型\Alicia\鳴潮-達尼婭\達尼婭\05.blend` 实际复现后确认，目标 `Bone_Piao160_M` 及相邻新增骨骼的 `bone_id` 均为 `-1`；因此移动前的一次 realignment 仍必须保留，用于为尚无 ID 的骨骼初始化有效顺序，否则官方 `shift_bone_id()` 会直接拒绝。最终链路固定为“移动前初始化一次 → 严格应用用户目标顺序 → 移动后绝不再 hierarchy realignment”。置顶、上移、下移、置底以及插到活动项前后只处理用户明确勾选的骨骼；只有目标序列本来没有变化时才提示边界。同步更新面板说明与 `README.md`，不再宣称或显示父子依赖保护。
+- 新增 `tests/mmd_ordering_user_control_regression.py`，使用初始 `bone_id=-1` 覆盖“子骨置顶越过父骨”和“父骨置底越过子骨”，断言初始化只发生一次、每次只影响一个明确勾选项、用户顺序写入后不会再被 realignment 回滚。最终另以 Blender 4.4.3 直接打开原 `05.blend`（不保存），刷新真实查看器、勾选 `Bone_Piao160_M` 并调用与面板按钮相同的 `surface_proxy.reorder_checked_mmd_items(action='UP')`：操作前 `(index=533, bone_id=-1)`，操作后 `(index=532, bone_id=532)`，输出 `ACTUAL_05_BLEND_OPERATOR_UP_OK`。改动严格限定于 MMD 查看器排序，不触及现有 MMD IK、Physics runtime、DLL、Rigid/Joint 排序或其它工作树改动。版本保持 V0.1.8，源码 Junction 继续直接生效，不打包 ZIP、不 push。
 
 ## 2026-08-24 - V0.1.8 MMD IK / Physics 显式所有权交接重构候选
 
@@ -27,6 +291,14 @@
 - 新增 `RuntimeAdapterHandoff`：关闭兼容时只暂停当前 physics commit，保留同一个 `PreviewSession`、`PreviewWorld`、solver、generation、190 根 physics driver 输出和全部 Rigid 显示矩阵；恢复 mmd_tools constraints 后原地把 adapter 从 `MmdIkPhysicsAdapter` 切换为 `None`，重建 pose input cache 并只做一次 view-layer update。物理 world 不停止、不 Reset、不重建，也不丢速度/连续状态。
 - 新增 `tests/mmd_ik_disable_physics_handoff_regression.py`，在原 `04.blend` 对 PMX/MMD 两条 physics path 验证关闭前后 Session/World/Solver/generation 对象身份保持、190 根 driver 与全部 Rigid 零位移误差、adapter 正确脱离；随后依次执行 Clear All、再次移动足 IK、Clear Selected，足 IK 与脚链回归误差均为 `0`，physics tick 无失败。两条路径均输出 `MMD_IK_DISABLE_PHYSICS_HANDOFF_REGRESSION_OK`。
 - 回归继续通过：`MMD_IK_SCOPED_OWNERSHIP_REGRESSION_OK owned=35 outputs=35 constraints=49 high_heel_error=8.94e-08`、`MMD_IK_PHYSICS_CLEAR_REPEAT_REGRESSION_OK repeat_error=1.53e-07`、`MMD_IK_CLEAR_USER_TRANSFORMS_REGRESSION_OK`、`MMD_IK_TRANSFORM_MODAL_REGRESSION_OK`、`MMD_IK_PHYSICS_FEEDBACK_REGRESSION_OK exact_calls=12`、`MMD_IK_PHYSICS_RESET_REGRESSION_OK`、`MMD_IK_RUNTIME_SMOKE_OK`。无 IK 的 PMX/MMD Parent Empty、preview pipeline 与 rigid latency 六组回归继续通过；未修改三个 DLL、fixed frequency/substeps 或版本号，不打包、不 push，真实 Blender 4.4 继续通过源码 Junction 使用，等待 GUI 验收后再决定是否晋升新基线。
+
+## 2026-08-24 - V0.1.8 Parent Empty 同 tick 物理输入修正候选
+
+- 用户在真实 Blender 4.4 中确认 Parent Empty 连续拖动延迟已修复，批准该状态晋升为本地安全基线 `baseline-20260824-parent-empty-same-tick`；该基线只固化统一 PMX/MMD raw Object transform 检测，不包含后续 IK 关闭生命周期重构。
+- 用户在真实 Blender 4.4 发现：PMX DLL 下直接移动 MMD 模型 Root Empty 时物理与刚体能同步，而 MMD DLL 下 Object Mode 移动会出现刚体延迟，进入 Armature Pose Mode 移动则正常。核查确认两条 DLL 的正常 Blender hot path 已共用 `_prepare_mmd_tools_step()` / `_submit_pose_targets()` / `_apply_mmd_tools_step()`，但 `PoseInputAdapter.raw_input_changes()` 只监视 evaluated `root.matrix_world` / `armature.matrix_world`；Object Mode Transform modal 存在原始 `matrix_basis` 已变化、depsgraph 尚未传播新 `matrix_world`、timer 已先运行的窗口，旧逻辑会错误复用上一 tick 输入。Pose Mode 更容易先触发 Armature evaluation，因此会掩盖该窗口。
+- 修复保持 PMX/MMD 共用，不增加 MMD-only common-motion/world-delta 分支：Session 现在缓存并监视 MMD Root、Armature 及其完整父级 Object 链的原始 `matrix_basis`。发现任一父级 raw transform 改变时，即使 `matrix_world` 尚未刷新，也会让当前 tick 进入一次必要的 `_update_view_layer()`，随后提交已求值的同 tick world-space 刚体目标。这样既覆盖 Root 自身 Empty，也覆盖额外父级 Empty，并避免重新引入历史上已经导致双重位移的手工 motion-delta 补偿。
+- 新增 `tests/mmd_04_parent_empty_latency_regression.py`，在原 `04.blend` 中故意修改 Root Empty 后不预先调用 `view_layer.update()`，分别验证 PMX/MMD 都能由当前 tick 检出 raw Object transform、完成一次输入求值并同步 59 个绑定 0 型刚体；两条路径均输出 `MMD_04_PARENT_EMPTY_LATENCY_OK ... max_error≈1.9e-08`。既有 `MMD_04_PREVIEW_PIPELINE_OK ... motion_rigid_error=0`、`MMD_04_RIGID_LATENCY_REGRESSION_OK ... max_error=0`、PMX/MMD `PHYSICS_ROOT_OFFSET_REGRESSION_OK` 继续通过。
+- 性能回归保持：`CURRENT_PROXY + debug on` 的 PMX/MMD tick 中位分别约 `7.50/7.91 ms`，合计约 `20.85/20.97 ms`，新增父级链 raw 比较未形成可测的稳定开销。当前改动位于已验收基线 `baseline-20260824-physics-runtime-v2-phase1` 之后，版本保持 V0.1.8，不打包、不修改 DLL、不新建 baseline，等待真实 GUI 对 Parent Empty 连续拖动重新验收。
 
 ## 2026-08-24 - V0.1.8 Physics Runtime V2 第一阶段性能与路径隔离重构
 

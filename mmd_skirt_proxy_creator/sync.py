@@ -87,6 +87,175 @@ def _bone_layout(armature_object, prefix):
     return layout, row_counts, sides, local_indices, groups
 
 
+def _stored_position_layout(proxy_object, armature_object):
+    row_counts = [
+        int(value) for value in proxy_object.get("surface_proxy_column_rows", [])
+    ]
+    vertex_map = [
+        int(value) for value in proxy_object.get("surface_proxy_vertex_map", [])
+    ]
+    coordinates, _signature = _mesh_state(proxy_object)
+    if (
+        not row_counts
+        or any(count < 2 for count in row_counts)
+        or len(vertex_map) != sum(row_counts)
+        or any(index < 0 or index >= len(coordinates) for index in vertex_map)
+    ):
+        raise ProxyBuildError("代理缺少可用的位置恢复信息")
+
+    proxy_to_armature = armature_object.matrix_world.inverted_safe() @ proxy_object.matrix_world
+    targets = [proxy_to_armature @ coordinates[index] for index in vertex_map]
+    minimum = Vector(
+        tuple(min(point[axis] for point in targets) for axis in range(3))
+    )
+    maximum = Vector(
+        tuple(max(point[axis] for point in targets) for axis in range(3))
+    )
+    tolerance = max((maximum - minimum).length * 1.0e-4, 1.0e-6)
+    available = set(armature_object.data.bones)
+    layout = {}
+    offset = 0
+
+    def walk(chain, column_targets, row):
+        bone = chain[-1]
+        if row == len(column_targets) - 1:
+            return [(sum(
+                (chain[index].head_local - column_targets[index]).length
+                + (chain[index].tail_local - column_targets[index + 1]).length
+                for index in range(len(chain))
+            ), tuple(chain))]
+        paths = []
+        for child in bone.children:
+            if child not in available:
+                continue
+            if (
+                (child.head_local - column_targets[row]).length > tolerance
+                or (child.tail_local - column_targets[row + 1]).length > tolerance
+            ):
+                continue
+            paths.extend(walk(chain + [child], column_targets, row + 1))
+        return paths
+
+    for column, count in enumerate(row_counts):
+        column_targets = targets[offset : offset + count]
+        offset += count
+        paths = []
+        for bone in available:
+            if (
+                (bone.head_local - column_targets[0]).length > tolerance
+                or (bone.tail_local - column_targets[1]).length > tolerance
+            ):
+                continue
+            paths.extend(walk([bone], column_targets, 1))
+        if not paths:
+            raise ProxyBuildError(
+                f"代理第 {column + 1} 列没有找到位置与父子层级都匹配的骨链"
+            )
+        paths.sort(key=lambda item: (item[0], tuple(bone.name for bone in item[1])))
+        if len(paths) > 1 and abs(paths[1][0] - paths[0][0]) <= tolerance * 0.1:
+            raise ProxyBuildError(f"代理第 {column + 1} 列存在多个位置相同的候选骨链")
+        chain = paths[0][1]
+        layout[column] = {row: bone for row, bone in enumerate(chain)}
+        available.difference_update(chain)
+
+    stored_sides = [
+        str(value) for value in proxy_object.get("surface_proxy_column_sides", [])
+    ]
+    if len(stored_sides) == len(row_counts):
+        sides = stored_sides
+    else:
+        sides = []
+        for column in range(len(row_counts)):
+            match = re.search(r"(?:\.|_)([LR])$", layout[column][0].name)
+            sides.append(match.group(1) if match else "")
+    stored_indices = [
+        int(value)
+        for value in proxy_object.get("surface_proxy_column_local_indices", [])
+    ]
+    if len(stored_indices) == len(row_counts):
+        local_indices = stored_indices
+    else:
+        side_counts = {}
+        local_indices = []
+        for side in sides:
+            local_indices.append(side_counts.get(side, 0))
+            side_counts[side] = local_indices[-1] + 1
+    stored_groups = [
+        int(value) for value in proxy_object.get("surface_proxy_column_groups", [])
+    ]
+    groups = stored_groups if len(stored_groups) == len(row_counts) else [0] * len(row_counts)
+    return layout, row_counts, sides, local_indices, groups, vertex_map
+
+
+def _stored_identity_layout(proxy_object, armature_object):
+    row_counts = [
+        int(value) for value in proxy_object.get("surface_proxy_column_rows", [])
+    ]
+    bone_names = [
+        str(value) for value in proxy_object.get("surface_proxy_bone_names", [])
+    ]
+    if (
+        not row_counts
+        or any(count < 2 for count in row_counts)
+        or len(bone_names) != sum(count - 1 for count in row_counts)
+    ):
+        raise ProxyBuildError("代理缺少可用的骨骼身份信息")
+
+    layout = {}
+    offset = 0
+    for column, count in enumerate(row_counts):
+        chain = []
+        for row in range(count - 1):
+            bone = armature_object.data.bones.get(bone_names[offset + row])
+            if bone is None:
+                raise ProxyBuildError("代理保存的骨骼身份已失效")
+            if chain and bone.parent != chain[-1]:
+                raise ProxyBuildError("代理保存的骨骼父子层级已失效")
+            chain.append(bone)
+        layout[column] = {row: bone for row, bone in enumerate(chain)}
+        offset += count - 1
+
+    vertex_map = [
+        int(value) for value in proxy_object.get("surface_proxy_vertex_map", [])
+    ]
+    coordinates, _signature = _mesh_state(proxy_object)
+    if (
+        len(vertex_map) != sum(row_counts)
+        or any(index < 0 or index >= len(coordinates) for index in vertex_map)
+    ):
+        vertex_map = _recover_vertex_map(
+            proxy_object,
+            armature_object,
+            layout,
+            row_counts,
+        )
+
+    sides = [
+        str(value) for value in proxy_object.get("surface_proxy_column_sides", [])
+    ]
+    if len(sides) != len(row_counts):
+        sides = []
+        for column in range(len(row_counts)):
+            match = re.search(r"(?:\.|_)([LR])$", layout[column][0].name)
+            sides.append(match.group(1) if match else "")
+    local_indices = [
+        int(value)
+        for value in proxy_object.get("surface_proxy_column_local_indices", [])
+    ]
+    if len(local_indices) != len(row_counts):
+        side_counts = {}
+        local_indices = []
+        for side in sides:
+            local_indices.append(side_counts.get(side, 0))
+            side_counts[side] = local_indices[-1] + 1
+    groups = [
+        int(value) for value in proxy_object.get("surface_proxy_column_groups", [])
+    ]
+    if len(groups) != len(row_counts):
+        groups = [0] * len(row_counts)
+    return layout, row_counts, sides, local_indices, groups, vertex_map
+
+
 def _recover_vertex_map(proxy_object, armature_object, layout, row_counts):
     coordinates, _signature = _mesh_state(proxy_object)
     if len(coordinates) < sum(row_counts):
@@ -143,8 +312,69 @@ def identify_proxy(proxy_object):
         else [obj for obj in bpy.data.objects if obj.type == "ARMATURE"]
     )
     candidates = []
+    if stored_armature is not None and stored_armature.type == "ARMATURE":
+        stored_row_counts = [
+            int(value)
+            for value in proxy_object.get("surface_proxy_column_rows", [])
+        ]
+        stored_bone_names = [
+            str(value)
+            for value in proxy_object.get("surface_proxy_bone_names", [])
+        ]
+        stored_identity_is_valid = (
+            stored_row_counts
+            and len(stored_bone_names)
+            == sum(max(count - 1, 0) for count in stored_row_counts)
+            and all(name in stored_armature.data.bones for name in stored_bone_names)
+        )
+        if stored_identity_is_valid:
+            try:
+                layout, row_counts, sides, local_indices, groups, vertex_map = (
+                    _stored_identity_layout(proxy_object, stored_armature)
+                )
+            except ProxyBuildError:
+                pass
+            else:
+                prefix = stored_prefix or name_prefix
+                if not prefix:
+                    raise ProxyBuildError("代理缺少名称前缀，无法完成身份恢复")
+                candidates.append(
+                    (
+                        stored_armature,
+                        prefix,
+                        layout,
+                        row_counts,
+                        vertex_map,
+                        sides,
+                        local_indices,
+                        groups,
+                    )
+                )
+        if not candidates:
+            try:
+                layout, row_counts, sides, local_indices, groups, vertex_map = (
+                    _stored_position_layout(proxy_object, stored_armature)
+                )
+            except ProxyBuildError:
+                pass
+            else:
+                prefix = stored_prefix or name_prefix
+                if not prefix:
+                    raise ProxyBuildError("代理缺少名称前缀，无法完成位置恢复")
+                candidates.append(
+                    (
+                        stored_armature,
+                        prefix,
+                        layout,
+                        row_counts,
+                        vertex_map,
+                        sides,
+                        local_indices,
+                        groups,
+                    )
+                )
     portable_pattern = re.compile(r"^(?P<prefix>.+)_C\d+_R\d+(?:\.[LR])?$")
-    for armature_object in armatures:
+    for armature_object in (() if candidates else armatures):
         prefixes = [prefix for prefix in (stored_prefix, name_prefix) if prefix]
         prefixes.extend(
             match.group("prefix")
@@ -194,6 +424,11 @@ def identify_proxy(proxy_object):
     proxy_object["surface_proxy_max_rows"] = max(row_counts)
     proxy_object["surface_proxy_column_rows"] = row_counts
     proxy_object["surface_proxy_column_bones"] = [count - 1 for count in row_counts]
+    proxy_object["surface_proxy_bone_names"] = [
+        layout[column][row].name
+        for column, count in enumerate(row_counts)
+        for row in range(count - 1)
+    ]
     proxy_object["surface_proxy_vertex_map"] = vertex_map
     proxy_object["surface_proxy_topology"] = signature
     proxy_object["surface_proxy_armature"] = armature_object.name
@@ -464,7 +699,7 @@ def sync_proxy_bones(context, proxy_object, restore_mode=True):
 class SPX_OT_IdentifyProxy(Operator):
     bl_idname = "surface_proxy.identify_proxy"
     bl_label = "识别或恢复所选代理"
-    bl_description = "根据对象名、骨骼名和拓扑恢复导入后丢失的代理元数据"
+    bl_description = "原骨骼身份仍有效时精确恢复；骨骼改名后按位置与父子层级恢复代理元数据"
     bl_options = {"REGISTER", "UNDO"}
 
     def execute(self, context):

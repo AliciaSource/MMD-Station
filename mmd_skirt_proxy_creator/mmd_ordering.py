@@ -4,6 +4,12 @@ import bpy
 from bpy.props import EnumProperty
 from bpy.types import Operator
 
+from .mmd_material_order import (
+    ordered_materials,
+    set_material_order,
+    sync_changed_material_order,
+)
+
 
 class OrderingError(RuntimeError):
     pass
@@ -109,45 +115,6 @@ def _apply_bone_order(FnModel, root, desired):
             bone_morphs,
             pose_bones,
         )
-    FnModel.realign_bone_ids(0, bone_morphs, pose_bones)
-
-
-def _expand_bone_selection(items, selected):
-    expanded = set(selected)
-    stack = list(selected)
-    while stack:
-        bone = stack.pop()
-        for child in bone.children:
-            if getattr(child, "is_mmd_shadow_bone", False) or child in expanded:
-                continue
-            expanded.add(child)
-            stack.append(child)
-    return [item for item in items if item in expanded]
-
-
-def _bone_order_is_valid(desired, current):
-    positions = {bone: index for index, bone in enumerate(desired)}
-    id_map = {
-        bone.mmd_bone.bone_id: bone
-        for bone in current
-        if bone.mmd_bone.bone_id >= 0
-    }
-    for bone in desired:
-        parent = bone.parent
-        while parent is not None and getattr(parent, "is_mmd_shadow_bone", False):
-            parent = parent.parent
-        if parent in positions and positions[parent] >= positions[bone]:
-            return False
-        dependency = id_map.get(bone.mmd_bone.additional_transform_bone_id)
-        if (
-            dependency in positions
-            and dependency.mmd_bone.transform_after_dynamics
-            == bone.mmd_bone.transform_after_dynamics
-            and dependency.mmd_bone.transform_order == bone.mmd_bone.transform_order
-            and positions[dependency] >= positions[bone]
-        ):
-            return False
-    return True
 
 
 def _resolve_items(settings, kind, checked_names, active_name):
@@ -155,6 +122,9 @@ def _resolve_items(settings, kind, checked_names, active_name):
     root = _resolve_root(settings, FnModel)
     if kind == "BONE":
         _armature, items = _bone_order(FnModel, root)
+        by_name = {item.name: item for item in items}
+    elif kind == "MATERIAL":
+        items = ordered_materials(root, FnModel)
         by_name = {item.name: item for item in items}
     elif kind == "RIGID":
         items = sorted(FnModel.iterate_rigid_body_objects(root), key=lambda item: item.name)
@@ -179,25 +149,27 @@ def reorder_mmd_items(settings, kind, checked_names, action, active_name=None):
         checked_names,
         active_name,
     )
-    explicit_selected = list(selected)
-    effective_selected = (
-        _expand_bone_selection(items, selected) if kind == "BONE" else selected
-    )
-    desired = _reorder_block(items, effective_selected, action, active)
+    desired = _reorder_block(items, selected, action, active)
     if kind == "BONE":
-        if desired == items or not _bone_order_is_valid(desired, items):
+        if desired == items:
             applied = items
         else:
             _apply_bone_order(FnModel, root, desired)
             applied = _bone_order(FnModel, root)[1]
+    elif kind == "MATERIAL":
+        if desired != items:
+            set_material_order(root, desired)
+            if settings.material_order_auto_sync:
+                sync_changed_material_order(root, items, desired, FnModel)
+        applied = ordered_materials(root, FnModel)
     else:
         MoveObject.normalize_indices(desired)
         applied = sorted(items, key=lambda item: item.name)
     return (
-        [item.name for item in explicit_selected],
+        [item.name for item in selected],
         active.name if active is not None else None,
         applied != items,
-        len(effective_selected),
+        len(selected),
     )
 
 
@@ -219,11 +191,24 @@ class SPX_OT_ReorderCheckedMMDItems(Operator):
         options={"HIDDEN"},
     )
 
+    @classmethod
+    def description(cls, _context, properties):
+        return {
+            "TOP": "将勾选项置顶",
+            "UP": "将勾选项上移一位",
+            "DOWN": "将勾选项下移一位",
+            "BOTTOM": "将勾选项置底",
+            "BEFORE": "将勾选项作为一个块插入蓝色活动行之前",
+            "AFTER": "将勾选项作为一个块插入蓝色活动行之后",
+        }.get(properties.action, cls.bl_description)
+
     def execute(self, context):
         settings = context.scene.surface_proxy_creator
         kind = settings.browser_kind
         checked_names = [
-            item.target_name
+            item.material.name
+            if kind == "MATERIAL" and item.material is not None
+            else item.target_name
             for item in settings.browser_items
             if item.kind == kind and item.selected
         ]
@@ -232,9 +217,13 @@ class SPX_OT_ReorderCheckedMMDItems(Operator):
             index = min(settings.browser_index, len(settings.browser_items) - 1)
             candidate = settings.browser_items[index]
             if candidate.kind == kind:
-                active = candidate.target_name
+                active = (
+                    candidate.material.name
+                    if kind == "MATERIAL" and candidate.material is not None
+                    else candidate.target_name
+                )
         try:
-            moved_names, active_name, changed, affected_count = reorder_mmd_items(
+            moved_names, active_name, changed, _affected_count = reorder_mmd_items(
                 settings,
                 kind,
                 checked_names,
@@ -248,55 +237,38 @@ class SPX_OT_ReorderCheckedMMDItems(Operator):
         bpy.ops.surface_proxy.refresh_mmd_browser()
         moved = set(moved_names)
         for index, item in enumerate(settings.browser_items):
-            item.selected = item.target_name in moved
-            if active_name is not None and item.target_name == active_name:
+            item_name = (
+                item.material.name
+                if item.kind == "MATERIAL" and item.material is not None
+                else item.target_name
+            )
+            item.selected = item_name in moved
+            if active_name is not None and item_name == active_name:
                 settings.browser_index = index
         if not changed:
-            if kind == "BONE":
-                message = "顺序未变化：所选骨骼不能越过自己的父骨或其它变换依赖"
-            else:
-                message = "顺序未变化：勾选项已经位于该方向的边界"
-            self.report({"WARNING"}, message)
-        elif kind == "BONE" and affected_count > len(moved_names):
-            self.report(
-                {"INFO"},
-                f"已调整 {len(moved_names)} 个勾选骨骼及其 {affected_count - len(moved_names)} 个子级",
-            )
+            self.report({"WARNING"}, "顺序未变化：勾选项已经位于该方向的边界")
         else:
             self.report({"INFO"}, f"已调整 {len(moved_names)} 项的实际 PMX 顺序")
         return {"FINISHED"}
 
 
-def draw(layout, settings):
-    box = layout.box()
-    box.label(text="PMX 实际顺序", icon="SORTSIZE")
-    row = box.row(align=True)
-    for action, text, icon in (
-        ("TOP", "置顶", "TRIA_UP_BAR"),
-        ("UP", "上移", "TRIA_UP"),
-        ("DOWN", "下移", "TRIA_DOWN"),
-        ("BOTTOM", "置底", "TRIA_DOWN_BAR"),
+def draw(layout, _settings):
+    for action, icon in (
+        ("TOP", "TRIA_UP_BAR"),
+        ("UP", "TRIA_UP"),
+        ("DOWN", "TRIA_DOWN"),
+        ("BOTTOM", "TRIA_DOWN_BAR"),
+        ("BEFORE", "ANCHOR_TOP"),
+        ("AFTER", "ANCHOR_BOTTOM"),
     ):
-        operator = row.operator(
+        if action == "BEFORE":
+            layout.separator(factor=0.5)
+        operator = layout.operator(
             SPX_OT_ReorderCheckedMMDItems.bl_idname,
-            text=text,
+            text="",
             icon=icon,
         )
         operator.action = action
-    row = box.row(align=True)
-    operator = row.operator(
-        SPX_OT_ReorderCheckedMMDItems.bl_idname,
-        text="插到活动项前",
-    )
-    operator.action = "BEFORE"
-    operator = row.operator(
-        SPX_OT_ReorderCheckedMMDItems.bl_idname,
-        text="插到活动项后",
-    )
-    operator.action = "AFTER"
-    box.label(text="勾选项作为一块；蓝色活动行是插入位置", icon="INFO")
-    if settings.browser_kind == "BONE":
-        box.label(text="父骨移动会携带全部子级，且不能越过自己的父骨", icon="INFO")
 
 
 CLASSES = (SPX_OT_ReorderCheckedMMDItems,)

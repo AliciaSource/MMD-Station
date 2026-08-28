@@ -28,6 +28,13 @@ from .vmd_hook import SOURCE_FRAME_KEY, SOURCE_VMD_KEY
 _SESSIONS = {}
 
 
+@dataclass
+class UndoRedoPoseTransaction:
+    input_basis: dict
+    presented_basis: dict
+    selected_names: tuple
+
+
 def _resolve_live_source_path(root):
     source_path = Path(str(root.get("spx_mmd_ik_source_pmx", "")))
     if source_path.is_file():
@@ -387,6 +394,7 @@ class Session:
     solver_matrices: dict = field(default_factory=dict)
     desired_pose: dict = field(default_factory=dict)
     output_indices: tuple | None = None
+    undo_redo_transaction: UndoRedoPoseTransaction | None = None
 
     def output_bone_names(self):
         indices = (
@@ -949,8 +957,42 @@ def suspend_sessions_for_undo_redo():
     for session in tuple(_SESSIONS.values()):
         if not session.live:
             continue
+        canonical = bpy.data.objects.get(session.canonical_name)
+        session.undo_redo_transaction = UndoRedoPoseTransaction(
+            input_basis={
+                name: matrix.copy()
+                for name, matrix in session.input_basis.items()
+            },
+            presented_basis={
+                name: matrix.copy()
+                for name, matrix in session.presented_basis.items()
+            },
+            selected_names=tuple(
+                pose_bone.name
+                for pose_bone in canonical.pose.bones
+                if pose_bone.bone.select
+            ) if canonical is not None else (),
+        )
         session.suspended = True
         session.restore_input(update=False)
+
+
+def _undo_redo_presentation_restored(session, canonical, transaction):
+    names = session.output_bone_names()
+    if not names:
+        return False
+    return all(
+        name in transaction.presented_basis
+        and max(
+            abs(
+                canonical.pose.bones[name].matrix_basis[row][column]
+                - transaction.presented_basis[name][row][column]
+            )
+            for row in range(4)
+            for column in range(4)
+        ) < 1.0e-6
+        for name in names
+    )
 
 
 def resume_sessions_after_undo_redo(scene=None):
@@ -991,23 +1033,55 @@ def resume_sessions_after_undo_redo(scene=None):
             session.bone_indices[pose_bone.name] = index
             for alias in _pose_bone_name(pose_bone):
                 session.bone_indices.setdefault(alias, index)
+        transaction = session.undo_redo_transaction
+        selected_names = (
+            transaction.selected_names
+            if transaction is not None
+            else tuple(
+                pose_bone.name
+                for pose_bone in canonical.pose.bones
+                if pose_bone.bone.select
+            )
+        )
         selected = tuple(
-            pose_bone
-            for pose_bone in canonical.pose.bones
-            if pose_bone.bone.select and pose_bone.name in session.input_basis
+            canonical.pose.bones[name]
+            for name in selected_names
+            if name in canonical.pose.bones and name in session.input_basis
+        )
+        cleared_input = (
+            transaction.input_basis
+            if transaction is not None
+            else session.input_basis
         )
         preserve_cleared_input = bool(selected) and all(
             _matrix_near_identity(matrix)
-            for matrix in session.input_basis.values()
-        ) and all(
-            _matrix_near_identity(pose_bone.matrix_basis)
-            for pose_bone in selected
+            for matrix in cleared_input.values()
+        ) and (
+            all(
+                _matrix_near_identity(pose_bone.matrix_basis)
+                for pose_bone in selected
+            )
+            or transaction is not None
+            and _undo_redo_presentation_restored(
+                session,
+                canonical,
+                transaction,
+            )
         )
-        if not preserve_cleared_input:
+        if preserve_cleared_input:
+            session.input_basis = {
+                name: matrix.copy()
+                for name, matrix in cleared_input.items()
+            }
+            for pose_bone in selected:
+                pose_bone.matrix_basis = session.input_basis[pose_bone.name]
+            canonical.update_tag(refresh={"OBJECT"})
+        else:
             session.input_basis = {
                 pose_bone.name: pose_bone.matrix_basis.copy()
                 for pose_bone in canonical.pose.bones
             }
+        session.undo_redo_transaction = None
         session.output_basis.clear()
         session.presented_basis.clear()
         session.input_signature = (

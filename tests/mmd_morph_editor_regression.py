@@ -1,0 +1,932 @@
+import pathlib
+import sys
+from types import SimpleNamespace
+
+import bpy
+from mathutils import Vector
+
+
+PROJECT_ROOT = pathlib.Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(PROJECT_ROOT))
+
+bpy.ops.preferences.addon_enable(module="bl_ext.blender_org.mmd_tools")
+
+import mmd_skirt_proxy_creator
+from mmd_skirt_proxy_creator import mmd_morph_editor as morph_editor_module
+from bl_ext.blender_org.mmd_tools.core.model import Model
+from mmd_skirt_proxy_creator.mmd_morph_editor import (
+    DETAIL_SELECTED_PROPERTY,
+    OUTPUT_BRIDGE_PROPERTY,
+    UV_DETAIL_SELECTED_PROPERTY,
+    VERTEX_DETAIL_SELECTED_PROPERTY,
+    _clear_uv_morph_preview,
+    _create_uv_morph_preview,
+    _migrate_placeholder_animation,
+    _morph_state_data_path,
+    _morph_states_are_current,
+    _preinitialize_imported_morphs,
+    _remove_imported_shape_key_curves,
+    ensure_morph_states,
+)
+
+
+def make_material(name, shader_type="ShaderNodeBsdfPrincipled"):
+    material = bpy.data.materials.new(name)
+    material.use_nodes = True
+    nodes = material.node_tree.nodes
+    nodes.clear()
+    output = nodes.new("ShaderNodeOutputMaterial")
+    shader = nodes.new(shader_type)
+    material.node_tree.links.new(shader.outputs[0], output.inputs["Surface"])
+    return material
+
+
+def make_custom_group_material(name):
+    shader_group = bpy.data.node_groups.new(name + "Shader", "ShaderNodeTree")
+    shader_group.interface.new_socket(
+        name="Surface",
+        in_out="OUTPUT",
+        socket_type="NodeSocketShader",
+    )
+    group_output = shader_group.nodes.new("NodeGroupOutput")
+    emission = shader_group.nodes.new("ShaderNodeEmission")
+    shader_group.links.new(emission.outputs[0], group_output.inputs["Surface"])
+    material = bpy.data.materials.new(name)
+    material.use_nodes = True
+    nodes = material.node_tree.nodes
+    nodes.clear()
+    output = nodes.new("ShaderNodeOutputMaterial")
+    shader = nodes.new("ShaderNodeGroup")
+    shader.node_tree = shader_group
+    material.node_tree.links.new(shader.outputs[0], output.inputs["Surface"])
+    return material
+
+
+def make_mesh(name, armature, material, x_offset):
+    mesh = bpy.data.meshes.new(name)
+    mesh.from_pydata(
+        (
+            (x_offset, 0.0, 0.0),
+            (x_offset + 1.0, 0.0, 0.0),
+            (x_offset, 1.0, 0.0),
+        ),
+        (),
+        ((0, 1, 2),),
+    )
+    mesh.uv_layers.new(name="UVMap")
+    mesh.materials.append(material)
+    obj = bpy.data.objects.new(name, mesh)
+    bpy.context.collection.objects.link(obj)
+    obj.parent = armature
+    modifier = obj.modifiers.new(name="mmd_armature", type="ARMATURE")
+    modifier.object = armature
+    obj.shape_key_add(name="Basis")
+    obj.shape_key_add(name="Smile")
+    return obj
+
+
+def bridge_nodes(material):
+    return [
+        node
+        for node in material.node_tree.nodes
+        if bool(node.get(OUTPUT_BRIDGE_PROPERTY, False))
+    ]
+
+
+mmd_skirt_proxy_creator.register()
+model = Model.create("MorphEditorRegression", add_root_bone=True)
+root = model.rootObject()
+armature = model.armature()
+bpy.context.view_layer.objects.active = armature
+armature.select_set(True)
+bpy.ops.object.mode_set(mode="EDIT")
+parent_edit_bone = armature.data.edit_bones[0]
+child_edit_bone = armature.data.edit_bones.new("WeightedChild")
+child_edit_bone.head = parent_edit_bone.tail
+child_edit_bone.tail = parent_edit_bone.tail + Vector((0.0, 0.0, 1.0))
+child_edit_bone.parent = parent_edit_bone
+weighted_child_name = child_edit_bone.name
+bpy.ops.object.mode_set(mode="OBJECT")
+material = make_material("Body", "ShaderNodeBsdfPrincipled")
+custom_material = make_custom_group_material("CustomBody")
+hidden_material = make_material("InitiallyHidden", "ShaderNodeBsdfPrincipled")
+hidden_material.mmd_material.alpha = 0.0
+hidden_shader = next(
+    node
+    for node in hidden_material.node_tree.nodes
+    if node.inputs.get("Alpha") is not None
+)
+hidden_shader.inputs["Alpha"].default_value = 0.0
+mesh_a = make_mesh("Face", armature, material, 0.0)
+mesh_b = make_mesh("Mouth", armature, material, 2.0)
+custom_mesh = make_mesh("CustomMesh", armature, custom_material, 4.0)
+hidden_mesh = make_mesh("HiddenMesh", armature, hidden_material, 6.0)
+
+vertex_morph = root.mmd_root.vertex_morphs.add()
+vertex_morph.name = "Smile"
+vertex_morph.name_e = "Smile"
+
+uv_morph = root.mmd_root.uv_morphs.add()
+uv_morph.name = "UVShift"
+uv_morph.name_e = "UVShift"
+uv_morph.uv_index = 0
+uv_data = uv_morph.data.add()
+uv_data.index = 0
+uv_data.offset = (0.0, 0.0, 0.0, 0.0)
+
+hide_morph = root.mmd_root.material_morphs.add()
+hide_morph.name = "Hide"
+hide_morph.name_e = "Hide"
+hide_data = hide_morph.data.add()
+hide_data.material = material.name
+hide_data.offset_type = "ADD"
+hide_data.diffuse_color = (0.25, 0.0, 0.0, -1.0)
+hide_data.edge_color = (0.0, 0.0, 0.0, 0.0)
+custom_hide_data = hide_morph.data.add()
+custom_hide_data.material = custom_material.name
+custom_hide_data.offset_type = "ADD"
+custom_hide_data.diffuse_color = (0.0, 0.0, 0.25, -1.0)
+
+mult_morph = root.mmd_root.material_morphs.add()
+mult_morph.name = "FadeMultiply"
+mult_data = mult_morph.data.add()
+mult_data.material = material.name
+mult_data.offset_type = "MULT"
+mult_data.diffuse_color = (1.0, 1.0, 1.0, 0.5)
+mult_data.edge_color = (1.0, 1.0, 1.0, 0.5)
+
+show_morph = root.mmd_root.material_morphs.add()
+show_morph.name = "ShowHidden"
+show_data = show_morph.data.add()
+show_data.material = hidden_material.name
+show_data.offset_type = "ADD"
+show_data.diffuse_color = (0.0, 0.0, 0.0, 1.0)
+
+preset_morph = root.mmd_root.material_morphs.add()
+preset_morph.name = "PresetBatch"
+for preset_material in (material, custom_material):
+    preset_data = preset_morph.data.add()
+    preset_data.material = preset_material.name
+    preset_data.offset_type = "MULT"
+    preset_data.diffuse_color = (0.2, 0.3, 0.4, 0.5)
+    preset_data.specular_color = (0.6, 0.7, 0.8)
+    preset_data.shininess = 12.0
+    preset_data.ambient_color = (0.9, 0.8, 0.7)
+    preset_data.edge_color = (0.6, 0.5, 0.4, 0.3)
+    preset_data.edge_weight = 2.0
+    preset_data.texture_factor = (0.1, 0.2, 0.3, 0.4)
+    preset_data.sphere_texture_factor = (0.5, 0.6, 0.7, 0.8)
+    preset_data.toon_texture_factor = (0.9, 0.8, 0.7, 0.6)
+
+bone_morph = root.mmd_root.bone_morphs.add()
+bone_morph.name = "BoneMove"
+bone_data = bone_morph.data.add()
+bone_data.bone = armature.pose.bones[0].name
+bone_data.location = (0.25, 0.0, 0.0)
+
+convert_morph = root.mmd_root.bone_morphs.add()
+convert_morph.name = "BoneConvert"
+convert_data = convert_morph.data.add()
+convert_data.bone = armature.pose.bones[0].name
+convert_data.location = (0.5, 0.0, 0.0)
+weighted_group = mesh_a.vertex_groups.new(name=weighted_child_name)
+weighted_group.add((0,), 1.0, "REPLACE")
+mesh_b.vertex_groups.new(name=weighted_child_name)
+unrelated_group = custom_mesh.vertex_groups.new(name="UnrelatedBone")
+unrelated_group.add((0, 1, 2), 1.0, "REPLACE")
+
+ensure_morph_states(root)
+assert _morph_states_are_current(root)
+states = {state.morph_name: state for state in root.spx_morph_states}
+assert {"Smile", "Hide", "FadeMultiply", "ShowHidden"}.issubset(states)
+assert hasattr(bpy.types.Object, VERTEX_DETAIL_SELECTED_PROPERTY)
+assert hasattr(bpy.types.Object, UV_DETAIL_SELECTED_PROPERTY)
+assert hasattr(type(hide_data), DETAIL_SELECTED_PROPERTY)
+assert hasattr(type(bone_data), DETAIL_SELECTED_PROPERTY)
+assert hasattr(type(uv_data), DETAIL_SELECTED_PROPERTY)
+hide_data.spx_morph_detail_selected = True
+bone_data.spx_morph_detail_selected = True
+uv_data.spx_morph_detail_selected = True
+assert hide_data.spx_morph_detail_selected
+assert bone_data.spx_morph_detail_selected
+assert uv_data.spx_morph_detail_selected
+
+# Material presets update every checked detail row and clear stale parameters.
+root.spx_morph_active_index = root.spx_morph_states.find(states["PresetBatch"].uid)
+assert bpy.ops.surface_proxy.select_morph_details(action="ALL") == {"FINISHED"}
+assert all(data.spx_morph_detail_selected for data in preset_morph.data)
+assert bpy.ops.surface_proxy.select_morph_details(action="INVERT") == {"FINISHED"}
+assert not any(data.spx_morph_detail_selected for data in preset_morph.data)
+assert bpy.ops.surface_proxy.select_morph_details(action="ALL") == {"FINISHED"}
+preset_morph.data[1].spx_morph_detail_selected = False
+assert bpy.ops.surface_proxy.apply_material_morph_preset(preset="HIDE") == {
+    "FINISHED"
+}
+for preset_data in (preset_morph.data[0],):
+    assert preset_data.offset_type == "ADD"
+    assert tuple(preset_data.diffuse_color) == (0.0, 0.0, 0.0, -1.0)
+    assert tuple(preset_data.specular_color) == (0.0, 0.0, 0.0)
+    assert preset_data.shininess == 0.0
+    assert tuple(preset_data.ambient_color) == (0.0, 0.0, 0.0)
+    assert tuple(preset_data.edge_color) == (0.0, 0.0, 0.0, -1.0)
+    assert preset_data.edge_weight == 0.0
+    assert tuple(preset_data.texture_factor) == (0.0, 0.0, 0.0, 0.0)
+    assert tuple(preset_data.sphere_texture_factor) == (0.0, 0.0, 0.0, 0.0)
+    assert tuple(preset_data.toon_texture_factor) == (0.0, 0.0, 0.0, 0.0)
+assert preset_morph.data[1].offset_type == "MULT"
+assert max(
+    abs(actual - expected)
+    for actual, expected in zip(
+        preset_morph.data[1].diffuse_color,
+        (0.2, 0.3, 0.4, 0.5),
+        strict=True,
+    )
+) < 1.0e-6
+assert bpy.ops.surface_proxy.select_morph_details(action="ALL") == {"FINISHED"}
+assert bpy.ops.surface_proxy.apply_material_morph_preset(preset="SHOW") == {
+    "FINISHED"
+}
+for preset_data in preset_morph.data:
+    assert preset_data.offset_type == "ADD"
+    assert tuple(preset_data.diffuse_color) == (0.0, 0.0, 0.0, 1.0)
+    assert tuple(preset_data.specular_color) == (0.0, 0.0, 0.0)
+    assert tuple(preset_data.edge_color) == (0.0, 0.0, 0.0, 1.0)
+
+# Bone-to-Vertex conversion only touches meshes and vertices with direct,
+# non-zero weights for a bone referenced by the source Bone Morph.
+root.spx_morph_active_index = root.spx_morph_states.find(states["BoneConvert"].uid)
+bpy.context.view_layer.objects.active = root
+assert bpy.ops.surface_proxy.convert_weighted_bone_morph() == {
+    "FINISHED"
+}
+ensure_morph_states(root)
+states = {state.morph_name: state for state in root.spx_morph_states}
+assert root.mmd_root.bone_morphs.get("BoneConvertB") is not None
+assert root.mmd_root.vertex_morphs.get("BoneConvert") is not None
+converted_key = mesh_a.data.shape_keys.key_blocks["BoneConvert"]
+converted_basis = converted_key.relative_key
+assert (converted_key.data[0].co - converted_basis.data[0].co).length > 1.0e-6
+for vertex_index in (1, 2):
+    assert (
+        converted_key.data[vertex_index].co
+        - converted_basis.data[vertex_index].co
+    ).length < 1.0e-7
+for mesh_object in (mesh_b, custom_mesh, hidden_mesh):
+    assert "BoneConvert" not in mesh_object.data.shape_keys.key_blocks
+
+# Selecting a central list row keeps official mmd_tools detail operators aligned.
+bone_state_index = root.spx_morph_states.find(states["BoneMove"].uid)
+root.spx_morph_active_index = bone_state_index
+assert root.mmd_root.active_morph_type == "bone_morphs"
+assert root.mmd_root.bone_morphs[root.mmd_root.active_morph].name == "BoneMove"
+
+# Panel drawing only reads this cache; stale data is refreshed outside draw.
+root.spx_morph_states[0].morph_name = "Stale"
+assert not _morph_states_are_current(root)
+ensure_morph_states(root)
+assert _morph_states_are_current(root)
+
+# Named state paths remain keyframeable and sorting updates the PMX facial frame.
+states["Hide"].keyframe_insert(data_path="value", frame=1)
+hide_path = states["Hide"].path_from_id("value")
+assert any(
+    curve.data_path == hide_path for curve in root.animation_data.action.fcurves
+)
+settings = bpy.context.scene.surface_proxy_creator
+settings.morph_editor_root = root
+settings.morph_editor_type = "material_morphs"
+material_states = [
+    state for state in root.spx_morph_states if state.morph_type == "material_morphs"
+]
+for state in material_states:
+    state.selected = False
+material_states[0].selected = True
+material_states[-1].selected = True
+assert bpy.ops.surface_proxy.select_morph_interval() == {"FINISHED"}
+assert all(state.selected for state in material_states)
+for state in material_states:
+    state.selected = False
+material_states[0].selected = True
+assert bpy.ops.surface_proxy.select_morph_interval() == {"CANCELLED"}
+material_states[0].selected = False
+hide_morph.name_e = "OldHideEnglish"
+show_morph.name_e = "OldShowEnglish"
+states["Hide"].selected = True
+states["ShowHidden"].selected = True
+assert bpy.ops.surface_proxy.copy_morph_japanese_names_to_english() == {
+    "FINISHED"
+}
+assert hide_morph.name_e == hide_morph.name
+assert show_morph.name_e == show_morph.name
+assert morph_editor_module._parse_morph_name_translations(
+    '```json\n["Eye+", "[Hide]-"]\n```',
+    2,
+) == ["Eye+", "[Hide]-"]
+assert morph_editor_module._validate_morph_name_translations(
+    ["目+", "[隐藏]-"],
+    ["Eye+", "[Hide]-"],
+) == ["Eye+", "[Hide]-"]
+assert morph_editor_module._compact_english_morph_name("cross eyed") == "CrossEyed"
+assert morph_editor_module._compact_english_morph_name("+lower eyes") == "+LowerEyes"
+assert morph_editor_module._compact_english_morph_name("cross-eyed") == "Cross-Eyed"
+assert morph_editor_module._normalize_morph_direction_tokens("Emo3Left") == "Emo3_L"
+assert morph_editor_module._normalize_morph_direction_tokens("LeftEye") == "Eye_L"
+assert morph_editor_module._normalize_morph_direction_tokens("RightEye") == "Eye_R"
+assert morph_editor_module._normalize_morph_direction_tokens(
+    "PupilUpRight"
+) == "Pupil_Up_R"
+assert morph_editor_module._normalize_morph_direction_tokens(
+    "LeftPupilDown"
+) == "Pupil_Down_L"
+assert morph_editor_module._normalize_morph_direction_tokens(
+    "Pupil_Up_R"
+) == "Pupil_Up_R"
+assert morph_editor_module._validate_morph_name_translations(
+    ["emo3左"],
+    ["Emo3_L"],
+) == ["Emo3_L"]
+try:
+    morph_editor_module._validate_morph_name_translations(
+        ["目+"],
+        ["VeryLongEyeNameX+"],
+    )
+except ValueError as exc:
+    assert "超过 16 个字符" in str(exc)
+else:
+    raise AssertionError("Translations longer than 16 characters must be rejected")
+try:
+    morph_editor_module._validate_morph_name_translations(["目+"], ["Eye-"])
+except ValueError as exc:
+    assert "完整保留原名称符号" in str(exc)
+else:
+    raise AssertionError("Translations that change protected symbols must be rejected")
+assert morph_editor_module._morph_ai_chat_completions_url(
+    "https://api.example.com"
+) == "https://api.example.com/v1/chat/completions"
+assert morph_editor_module._morph_ai_chat_completions_url(
+    "https://api.example.com/v1/"
+) == "https://api.example.com/v1/chat/completions"
+original_addon_preferences = morph_editor_module._addon_preferences
+original_translation_request = morph_editor_module._request_morph_name_translations
+morph_editor_module._addon_preferences = lambda _context: SimpleNamespace()
+morph_editor_module._request_morph_name_translations = (
+    lambda _preferences, names: [f"{name}_AI" for name in names]
+)
+try:
+    assert bpy.ops.surface_proxy.translate_morph_names_with_ai() == {"FINISHED"}
+finally:
+    morph_editor_module._addon_preferences = original_addon_preferences
+    morph_editor_module._request_morph_name_translations = original_translation_request
+assert hide_morph.name_e == f"{hide_morph.name}_AI"
+assert show_morph.name_e == f"{show_morph.name}_AI"
+states["Hide"].selected = False
+states["ShowHidden"].selected = False
+assert bpy.ops.surface_proxy.copy_morph_japanese_names_to_english() == {
+    "CANCELLED"
+}
+assert bpy.ops.surface_proxy.translate_morph_names_with_ai() == {"CANCELLED"}
+states["FadeMultiply"].selected = True
+assert bpy.ops.surface_proxy.reorder_morphs(action="TOP") == {"FINISHED"}
+assert [morph.name for morph in root.mmd_root.material_morphs] == [
+    "FadeMultiply",
+    "Hide",
+    "ShowHidden",
+    "PresetBatch",
+]
+facial = root.mmd_root.display_item_frames["表情"]
+assert [item.name for item in facial.data[:2]] == ["FadeMultiply", "Hide"]
+states = {state.morph_name: state for state in root.spx_morph_states}
+states["FadeMultiply"].selected = False
+states["Hide"].selected = True
+states["ShowHidden"].selected = True
+root.spx_morph_active_index = root.spx_morph_states.find(
+    states["FadeMultiply"].uid
+)
+assert bpy.ops.surface_proxy.reorder_morphs(action="BEFORE") == {"FINISHED"}
+assert [morph.name for morph in root.mmd_root.material_morphs] == [
+    "Hide",
+    "ShowHidden",
+    "FadeMultiply",
+    "PresetBatch",
+]
+states = {state.morph_name: state for state in root.spx_morph_states}
+states["Hide"].selected = False
+states["ShowHidden"].selected = False
+states["Hide"].selected = True
+root.spx_morph_active_index = root.spx_morph_states.find(
+    states["ShowHidden"].uid
+)
+assert bpy.ops.surface_proxy.reorder_morphs(action="AFTER") == {"FINISHED"}
+assert [morph.name for morph in root.mmd_root.material_morphs] == [
+    "ShowHidden",
+    "Hide",
+    "FadeMultiply",
+    "PresetBatch",
+]
+states = {state.morph_name: state for state in root.spx_morph_states}
+root.spx_morph_active_index = root.spx_morph_states.find(states["Hide"].uid)
+assert bpy.ops.surface_proxy.reorder_morphs(action="BEFORE") == {"CANCELLED"}
+states["Hide"].selected = False
+root.animation_data_clear()
+states = {state.morph_name: state for state in root.spx_morph_states}
+
+# Material detail add collects every non-empty slot from selected model meshes,
+# removes shared-material duplicates, and inserts the new block after the active row.
+smart_material_a = make_material("SmartMaterialA")
+smart_material_b = make_material("SmartMaterialB")
+mesh_b.data.materials.append(smart_material_a)
+mesh_b.data.materials.append(smart_material_b)
+smart_morph = root.mmd_root.material_morphs.add()
+smart_morph.name = "SmartMaterialAdd"
+smart_anchor = smart_morph.data.add()
+smart_anchor.related_mesh = hidden_mesh.data.name
+smart_anchor.material = hidden_material.name
+smart_tail = smart_morph.data.add()
+smart_tail.related_mesh = custom_mesh.data.name
+smart_tail.material = custom_material.name
+smart_morph.active_data = 0
+ensure_morph_states(root)
+states = {state.morph_name: state for state in root.spx_morph_states}
+root.spx_morph_active_index = root.spx_morph_states.find(
+    states["SmartMaterialAdd"].uid
+)
+for scene_object in bpy.context.selected_objects:
+    scene_object.select_set(False)
+mesh_a.select_set(True)
+mesh_b.select_set(True)
+bpy.context.view_layer.objects.active = mesh_a
+assert bpy.ops.surface_proxy.add_morph_offset() == {"FINISHED"}
+assert [data.material for data in smart_morph.data] == [
+    hidden_material.name,
+    material.name,
+    smart_material_a.name,
+    smart_material_b.name,
+    custom_material.name,
+]
+assert [data.related_mesh for data in smart_morph.data[1:4]] == [
+    mesh_a.data.name,
+    mesh_b.data.name,
+    mesh_b.data.name,
+]
+assert smart_morph.active_data == 1
+assert bpy.ops.surface_proxy.add_morph_offset() == {"CANCELLED"}
+assert len(smart_morph.data) == 5
+
+# Detail sorting keeps the checked rows stable and retains the blue active row.
+smart_morph.data[2].spx_morph_detail_selected = True
+smart_morph.data[4].spx_morph_detail_selected = True
+smart_morph.active_data = 0
+assert bpy.ops.surface_proxy.reorder_morph_offsets(action="AFTER") == {"FINISHED"}
+assert [data.material for data in smart_morph.data] == [
+    hidden_material.name,
+    smart_material_a.name,
+    custom_material.name,
+    material.name,
+    smart_material_b.name,
+]
+assert smart_morph.active_data == 0
+assert bpy.ops.surface_proxy.reorder_morph_offsets(action="TOP") == {"FINISHED"}
+assert [data.material for data in smart_morph.data] == [
+    smart_material_a.name,
+    custom_material.name,
+    hidden_material.name,
+    material.name,
+    smart_material_b.name,
+]
+assert smart_morph.active_data == 2
+assert bpy.ops.surface_proxy.reorder_morph_offsets(action="DOWN") == {"FINISHED"}
+assert [data.material for data in smart_morph.data] == [
+    hidden_material.name,
+    smart_material_a.name,
+    custom_material.name,
+    material.name,
+    smart_material_b.name,
+]
+assert bpy.ops.surface_proxy.reorder_morph_offsets(action="BOTTOM") == {
+    "FINISHED"
+}
+assert [data.material for data in smart_morph.data] == [
+    hidden_material.name,
+    material.name,
+    smart_material_b.name,
+    smart_material_a.name,
+    custom_material.name,
+]
+assert bpy.ops.surface_proxy.reorder_morph_offsets(action="UP") == {"FINISHED"}
+assert [data.material for data in smart_morph.data] == [
+    hidden_material.name,
+    material.name,
+    smart_material_a.name,
+    custom_material.name,
+    smart_material_b.name,
+]
+assert bpy.ops.surface_proxy.reorder_morph_offsets(action="BEFORE") == {
+    "FINISHED"
+}
+assert [data.material for data in smart_morph.data] == [
+    smart_material_a.name,
+    custom_material.name,
+    hidden_material.name,
+    material.name,
+    smart_material_b.name,
+]
+assert bpy.ops.surface_proxy.reorder_morph_offsets(action="AFTER") == {"FINISHED"}
+assert [data.material for data in smart_morph.data] == [
+    hidden_material.name,
+    smart_material_a.name,
+    custom_material.name,
+    material.name,
+    smart_material_b.name,
+]
+assert smart_morph.active_data == 0
+smart_morph.data[0].spx_morph_detail_selected = True
+assert bpy.ops.surface_proxy.reorder_morph_offsets(action="BEFORE") == {
+    "CANCELLED"
+}
+smart_morph.data[0].spx_morph_detail_selected = False
+for data in smart_morph.data:
+    data.spx_morph_detail_selected = False
+
+# Non-material tabs keep the original empty-offset add behavior.
+root.spx_morph_active_index = root.spx_morph_states.find(states["UVShift"].uid)
+uv_offset_count = len(uv_morph.data)
+assert bpy.ops.surface_proxy.add_morph_offset() == {"FINISHED"}
+assert len(uv_morph.data) == uv_offset_count + 1
+assert bpy.ops.surface_proxy.remove_morph_offset() == {"FINISHED"}
+assert len(uv_morph.data) == uv_offset_count
+states = {state.morph_name: state for state in root.spx_morph_states}
+
+# A single central Vertex Morph value updates every matching ShapeKey.
+states["Smile"].value = 0.625
+assert abs(mesh_a.data.shape_keys.key_blocks["Smile"].value - 0.625) < 1.0e-6
+assert abs(mesh_b.data.shape_keys.key_blocks["Smile"].value - 0.625) < 1.0e-6
+assert abs(custom_mesh.data.shape_keys.key_blocks["Smile"].value - 0.625) < 1.0e-6
+
+# Vertex detail object buttons select the exact mesh and activate its ShapeKey.
+mesh_b.select_set(True)
+result = bpy.ops.surface_proxy.select_vertex_morph_object(
+    root_name=root.name,
+    object_name=mesh_a.name,
+    morph_uid=states["Smile"].uid,
+)
+assert result == {"FINISHED"}
+assert bpy.context.view_layer.objects.active == mesh_a
+assert mesh_a.select_get()
+assert not mesh_b.select_get()
+assert mesh_a.active_shape_key.name == "Smile"
+mesh_a.spx_morph_vertex_target_selected = True
+assert mesh_a.spx_morph_vertex_target_selected
+assert not mesh_a.spx_morph_uv_target_selected
+
+# The first Material Morph adjustment installs one output bridge on the body.
+assert bridge_nodes(material) == []
+states["Hide"].value = 0.4
+body_bridges = bridge_nodes(material)
+assert len(body_bridges) == 1
+assert abs(body_bridges[0].inputs["Opacity"].default_value - 0.6) < 1.0e-6
+assert body_bridges[0].inputs["Add Strength"].default_value > 0.0
+custom_bridges = bridge_nodes(custom_material)
+assert len(custom_bridges) == 1
+assert abs(custom_bridges[0].inputs["Opacity"].default_value - 0.6) < 1.0e-6
+
+# ADD alpha starts from the PMX material's authored base alpha.
+assert bridge_nodes(hidden_material) == []
+states["ShowHidden"].value = 0.5
+hidden_bridges = bridge_nodes(hidden_material)
+assert len(hidden_bridges) == 1
+assert abs(hidden_bridges[0].inputs["Opacity"].default_value - 0.5) < 1.0e-6
+assert abs(hidden_shader.inputs["Alpha"].default_value - 1.0) < 1.0e-6
+states["ShowHidden"].value = 0.0
+assert abs(hidden_bridges[0].inputs["Opacity"].default_value - 0.0) < 1.0e-6
+
+# Repeated adjustments only update the existing bridge.
+states["Hide"].value = 0.5
+assert bridge_nodes(material) == body_bridges
+assert abs(body_bridges[0].inputs["Opacity"].default_value - 0.5) < 1.0e-6
+
+# MULT and ADD are accumulated independently: 0.8 + (-0.25) = 0.55.
+states["Hide"].value = 0.25
+states["FadeMultiply"].value = 0.4
+assert abs(body_bridges[0].inputs["Opacity"].default_value - 0.55) < 1.0e-6
+
+# An outline material created later is discovered and receives its own bridge.
+states["FadeMultiply"].value = 0.0
+edge_material = make_material("mmd_edge." + material.name, "ShaderNodeEmission")
+assert bridge_nodes(edge_material) == []
+states["Hide"].value = 0.5
+assert bridge_nodes(edge_material) == []
+
+# Body and outline alpha follow their independent PMX Material Morph channels.
+states["Hide"].value = 1.0
+assert abs(body_bridges[0].inputs["Opacity"].default_value - 0.0) < 1.0e-6
+assert bridge_nodes(edge_material) == []
+states["Hide"].value = 0.0
+states["FadeMultiply"].value = 0.5
+edge_bridges = bridge_nodes(edge_material)
+assert len(edge_bridges) == 1
+assert abs(body_bridges[0].inputs["Opacity"].default_value - 0.75) < 1.0e-6
+assert abs(edge_bridges[0].inputs["Opacity"].default_value - 0.75) < 1.0e-6
+
+# Reset restores neutral bridge inputs without removing or duplicating nodes.
+states["Hide"].value = 0.0
+states["FadeMultiply"].value = 0.0
+assert abs(body_bridges[0].inputs["Opacity"].default_value - 1.0) < 1.0e-6
+assert abs(edge_bridges[0].inputs["Opacity"].default_value - 1.0) < 1.0e-6
+assert len(bridge_nodes(material)) == 1
+assert len(bridge_nodes(edge_material)) == 1
+
+# Keyframed central values are evaluated during frame changes.
+states["Hide"].value = 0.0
+states["Hide"].keyframe_insert(data_path="value", frame=1)
+states["Hide"].value = 1.0
+states["Hide"].keyframe_insert(data_path="value", frame=2)
+bpy.context.scene.frame_set(1)
+assert abs(body_bridges[0].inputs["Opacity"].default_value - 1.0) < 1.0e-6
+bpy.context.scene.frame_set(2)
+assert abs(body_bridges[0].inputs["Opacity"].default_value - 0.0) < 1.0e-6
+root.animation_data_clear()
+states["Hide"].value = 0.0
+
+# Bone Morph values lazily create the official non-material runtime only.
+states["BoneMove"].value = 0.3
+assert "spx_morph_runtime_error" not in root, root.get("spx_morph_runtime_error")
+assert abs(model.morph_slider.get("BoneMove").value - 0.3) < 1.0e-6
+placeholder = model.morph_slider.placeholder()
+for mesh_object in (mesh_a, mesh_b, custom_mesh, hidden_mesh):
+    shape_keys = mesh_object.data.shape_keys
+    assert not any(key.name.startswith("mmd_bind") for key in shape_keys.key_blocks)
+    smile = shape_keys.key_blocks["Smile"]
+    assert not smile.mute
+    animation_data = shape_keys.animation_data
+    assert animation_data is None or not any(
+        curve.data_path == smile.path_from_id("value")
+        and any(
+            target.id == placeholder
+            for variable in curve.driver.variables
+            for target in variable.targets
+        )
+        for curve in animation_data.drivers
+    )
+assert not any(
+    node.name.startswith("mmd_bind") for node in material.node_tree.nodes
+)
+
+# A mesh-local ShapeKey remains directly editable after Bone/UV runtime binding.
+mesh_a.data.shape_keys.key_blocks["Smile"].value = 0.125
+assert abs(mesh_a.data.shape_keys.key_blocks["Smile"].value - 0.125) < 1.0e-6
+assert abs(mesh_b.data.shape_keys.key_blocks["Smile"].value - 0.625) < 1.0e-6
+states["Smile"].value = 0.6
+states["Smile"].value = 0.625
+for mesh_object in (mesh_a, mesh_b, custom_mesh, hidden_mesh):
+    assert abs(mesh_object.data.shape_keys.key_blocks["Smile"].value - 0.625) < 1.0e-6
+
+# The add-on preview switches away from temporary layers before deleting them.
+_create_uv_morph_preview(root, mesh_a, uv_morph)
+assert mesh_a.data.uv_layers.active.name.startswith("__uv.")
+_clear_uv_morph_preview(root)
+assert mesh_a.data.uv_layers.active.name == "UVMap"
+assert not any(layer.name.startswith("__uv.") for layer in mesh_a.data.uv_layers)
+
+# Group Morph evaluation reuses the lazy non-material mmd_tools runtime while
+# Material Morph output remains owned by this add-on.
+group_morph = root.mmd_root.group_morphs.add()
+group_morph.name = "GroupHide"
+group_offset = group_morph.data.add()
+group_offset.morph_type = "material_morphs"
+group_offset.name = "Hide"
+group_offset.factor = 0.5
+group_vertex_offset = group_morph.data.add()
+group_vertex_offset.morph_type = "vertex_morphs"
+group_vertex_offset.name = "Smile"
+group_vertex_offset.factor = 0.25
+group_bone_offset = group_morph.data.add()
+group_bone_offset.morph_type = "bone_morphs"
+group_bone_offset.name = "BoneMove"
+group_bone_offset.factor = 2.4
+group_offset.spx_morph_detail_selected = True
+assert group_offset.spx_morph_detail_selected
+ensure_morph_states(root)
+states = {state.morph_name: state for state in root.spx_morph_states}
+states["GroupHide"].value = 1.0
+assert "spx_morph_runtime_error" not in root, root.get("spx_morph_runtime_error")
+assert bool(root.get("spx_morph_lightweight_bound", False))
+assert abs(body_bridges[0].inputs["Opacity"].default_value - 0.5) < 1.0e-6
+assert abs(edge_bridges[0].inputs["Opacity"].default_value - 1.0) < 1.0e-6
+group_slider = model.morph_slider.get("GroupHide")
+assert group_slider is None or abs(group_slider.value) < 1.0e-6
+assert abs(model.morph_slider.get("Smile").value) < 1.0e-6
+for mesh_object in (mesh_a, mesh_b, custom_mesh, hidden_mesh):
+    assert abs(mesh_object.data.shape_keys.key_blocks["Smile"].value - 0.875) < 1.0e-6
+assert abs(model.morph_slider.get("BoneMove").value - 2.7) < 1.0e-6
+assert model.morph_slider.get("BoneMove").slider_max >= 2.7
+assert not any(
+    node.name.startswith("mmd_bind") for node in material.node_tree.nodes
+)
+
+# Numeric entry is unrestricted while mouse dragging keeps the 0..1 soft range.
+value_property = root.spx_morph_states[0].bl_rna.properties["value"]
+assert value_property.soft_min == 0.0
+assert value_property.soft_max == 1.0
+assert value_property.hard_min < -1.0e20
+assert value_property.hard_max > 1.0e20
+states["GroupHide"].value = 0.0
+assert abs(model.morph_slider.get("BoneMove").value - 0.3) < 1.0e-6
+states["Smile"].value = -2.5
+for mesh_object in (mesh_a, mesh_b, custom_mesh, hidden_mesh):
+    smile = mesh_object.data.shape_keys.key_blocks["Smile"]
+    assert abs(smile.value + 2.5) < 1.0e-6
+    assert smile.slider_min <= -3.0
+states["Smile"].value = 3.25
+for mesh_object in (mesh_a, mesh_b, custom_mesh, hidden_mesh):
+    smile = mesh_object.data.shape_keys.key_blocks["Smile"]
+    assert abs(smile.value - 3.25) < 1.0e-6
+    assert smile.slider_max >= 4.0
+states["Smile"].value = 0.0
+
+# A negative ADD weight reverses the RGB contribution instead of being clamped
+# at the editor property boundary.
+states["Hide"].value = -1.0
+assert abs(body_bridges[0].inputs["Tint Color"].default_value[0] - 0.75) < 1.0e-6
+assert abs(body_bridges[0].inputs["Tint Color"].default_value[1] - 1.0) < 1.0e-6
+states["Hide"].value = 0.0
+
+# Imported placeholder curves migrate to stable UID paths on the MMD Root.
+root.animation_data_clear()
+model.morph_slider.create()
+placeholder_keys = placeholder.data.shape_keys
+placeholder_keys.animation_data_clear()
+source_action = bpy.data.actions.new("SyntheticVmd_facial")
+placeholder_keys.animation_data_create().action = source_action
+for name in ("Smile", "Hide", "BoneMove", "UVShift", "GroupHide"):
+    key_block = placeholder_keys.key_blocks[name]
+    curve = source_action.fcurves.new(key_block.path_from_id("value"))
+    curve.keyframe_points.insert(10.0, 0.0)
+    curve.keyframe_points.insert(20.0, 1.0)
+
+mesh_action = bpy.data.actions.new("SyntheticVmd_mesh")
+mesh_a.data.shape_keys.animation_data_create().action = mesh_action
+mesh_curve = mesh_action.fcurves.new(
+    mesh_a.data.shape_keys.key_blocks["Smile"].path_from_id("value")
+)
+mesh_curve.keyframe_points.insert(10.0, 0.0)
+mesh_curve.keyframe_points.insert(20.0, 1.0)
+
+imported_uids = _migrate_placeholder_animation(root)
+assert imported_uids == {
+    states[name].uid
+    for name in ("Smile", "Hide", "BoneMove", "UVShift", "GroupHide")
+}
+destination_paths = {curve.data_path for curve in root.animation_data.action.fcurves}
+assert {
+    _morph_state_data_path(states[name])
+    for name in ("Smile", "Hide", "BoneMove", "UVShift", "GroupHide")
+}.issubset(destination_paths)
+_remove_imported_shape_key_curves(root)
+assert not source_action.fcurves
+assert not mesh_action.fcurves
+_preinitialize_imported_morphs(root, imported_uids)
+bpy.context.scene.frame_set(20)
+assert abs(states["Smile"].value - 1.0) < 1.0e-6
+assert abs(states["Hide"].value - 1.0) < 1.0e-6
+assert abs(states["BoneMove"].value - 1.0) < 1.0e-6
+assert abs(states["UVShift"].value - 1.0) < 1.0e-6
+assert abs(states["GroupHide"].value - 1.0) < 1.0e-6
+assert bool(root.get("spx_morph_lightweight_bound", False))
+assert "spx_morph_runtime_error" not in root, root.get("spx_morph_runtime_error")
+
+# NLA imports keep their strip timing while targeting the same stable UID path.
+root.animation_data_clear()
+placeholder_keys.animation_data_clear()
+nla_source = bpy.data.actions.new("SyntheticVmdNla_facial")
+nla_curve = nla_source.fcurves.new(
+    placeholder_keys.key_blocks["Smile"].path_from_id("value")
+)
+nla_curve.keyframe_points.insert(1.0, 0.0)
+nla_curve.keyframe_points.insert(30.0, 1.0)
+placeholder_animation = placeholder_keys.animation_data_create()
+source_track = placeholder_animation.nla_tracks.new()
+source_track.name = "SyntheticVmdNla_facial"
+source_strip = source_track.strips.new("SyntheticVmdNla_facial", 12, nla_source)
+source_strip.blend_type = "COMBINE"
+nla_uids = _migrate_placeholder_animation(root)
+assert nla_uids == {states["Smile"].uid}
+assert len(root.animation_data.nla_tracks) == 1
+destination_strip = root.animation_data.nla_tracks[0].strips[0]
+assert abs(destination_strip.frame_start - source_strip.frame_start) < 1.0e-6
+assert destination_strip.blend_type == source_strip.blend_type
+assert {
+    curve.data_path for curve in destination_strip.action.fcurves
+} == {_morph_state_data_path(states["Smile"])}
+_remove_imported_shape_key_curves(root)
+assert not nla_source.fcurves
+
+# MMD Viewer interval selection follows the current filtered list and is shared
+# by every viewer tab that exposes the checked-item list.
+settings.browser_items.clear()
+settings.browser_filter_by_prefix = False
+settings.browser_prefix = ""
+settings.browser_search = "Keep"
+for label in ("KeepA", "Hidden", "KeepB", "KeepC"):
+    item = settings.browser_items.add()
+    item.kind = "BONE"
+    item.label = label
+    item.target_name = label
+settings.browser_items[0].selected = True
+settings.browser_items[3].selected = True
+assert bpy.ops.surface_proxy.set_mmd_browser_checks(action="RANGE") == {"FINISHED"}
+assert [item.selected for item in settings.browser_items] == [True, False, True, True]
+for item in settings.browser_items:
+    item.selected = False
+settings.browser_items[0].selected = True
+assert bpy.ops.surface_proxy.set_mmd_browser_checks(action="RANGE") == {"CANCELLED"}
+
+# The MMD Viewer material tab reuses the Morph AI preferences and translation
+# pipeline, but reads selected MMD Japanese material names and writes name_e.
+settings.browser_items.clear()
+settings.browser_search = ""
+material.mmd_material.name_j = "左目上"
+custom_material.mmd_material.name_j = "右目下"
+for target_material in (material, custom_material):
+    item = settings.browser_items.add()
+    item.kind = "MATERIAL"
+    item.material = target_material
+    item.selected = True
+original_addon_preferences = morph_editor_module._addon_preferences
+original_translation_request = morph_editor_module._request_morph_name_translations
+morph_editor_module._addon_preferences = lambda _context: SimpleNamespace()
+morph_editor_module._request_morph_name_translations = (
+    lambda _preferences, names: [
+        "Eye_Up_L" if name == "左目上" else "Eye_Down_R"
+        for name in names
+    ]
+)
+try:
+    assert bpy.ops.surface_proxy.translate_selected_material_names_with_ai() == {
+        "FINISHED"
+    }
+finally:
+    morph_editor_module._addon_preferences = original_addon_preferences
+    morph_editor_module._request_morph_name_translations = original_translation_request
+assert material.mmd_material.name_e == "Eye_Up_L"
+assert custom_material.mmd_material.name_e == "Eye_Down_R"
+
+# Bone AI translation consumes the checked MMD Japanese names and writes three
+# coordinated conventions without breaking vertex groups or Bone Morph links.
+parent_old_name = bone_data.bone
+child_old_name = weighted_child_name
+parent_pose_bone = armature.pose.bones[parent_old_name]
+child_pose_bone = armature.pose.bones[child_old_name]
+parent_pose_bone.mmd_bone.name_j = "左上臂"
+parent_pose_bone.mmd_bone.name_e = "OldParent_L"
+child_pose_bone.mmd_bone.name_j = "袖子A1.R"
+child_pose_bone.mmd_bone.name_e = "OldChild_R"
+settings.mmd_root = root
+settings.browser_kind = "BONE"
+settings.browser_items.clear()
+for bone_name in (parent_old_name, child_old_name):
+    item = settings.browser_items.add()
+    item.kind = "BONE"
+    item.target_name = bone_name
+    item.label = bone_name
+    item.armature_name = armature.name
+    item.selected = True
+
+original_addon_preferences = morph_editor_module._addon_preferences
+original_translation_request = morph_editor_module._request_morph_name_translations
+morph_editor_module._addon_preferences = lambda _context: SimpleNamespace()
+
+
+def translate_bone_names(_preferences, names, **kwargs):
+    assert names == ["上臂", "袖子A1"]
+    assert kwargs["max_characters"] == 14
+    assert "client adds the side markers" in kwargs["extra_instruction"]
+    return ["UpperArm", "SleeveA1"]
+
+
+morph_editor_module._request_morph_name_translations = translate_bone_names
+try:
+    assert bpy.ops.surface_proxy.translate_selected_bone_names_with_ai() == {
+        "FINISHED"
+    }
+finally:
+    morph_editor_module._addon_preferences = original_addon_preferences
+    morph_editor_module._request_morph_name_translations = original_translation_request
+
+parent_pose_bone = armature.pose.bones["UpperArm.L"]
+child_pose_bone = armature.pose.bones["SleeveA1.R"]
+assert parent_pose_bone.mmd_bone.name_j == "左UpperArm"
+assert parent_pose_bone.mmd_bone.name_e == "UpperArm_L"
+assert child_pose_bone.mmd_bone.name_j == "右SleeveA1"
+assert child_pose_bone.mmd_bone.name_e == "SleeveA1_R"
+assert armature.pose.bones.get(parent_old_name) is None
+assert armature.pose.bones.get(child_old_name) is None
+assert mesh_a.vertex_groups.get("SleeveA1.R") is not None
+assert mesh_b.vertex_groups.get("SleeveA1.R") is not None
+assert mesh_a.vertex_groups.get(child_old_name) is None
+assert bone_data.bone == "UpperArm.L"
+assert convert_data.bone == "UpperArm.L"
+assert {
+    item.target_name for item in settings.browser_items if item.selected
+} == {"UpperArm.L", "SleeveA1.R"}
+
+print("MMD_MORPH_EDITOR_REGRESSION_OK")
