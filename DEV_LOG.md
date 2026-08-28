@@ -1,5 +1,10 @@
 # Development Log
 
+## 2026-08-28 - V0.1.8 Morph 当前 Tab 空详情清理
+
+- Morph 编辑器的材质、UV、骨骼、顶点、群组五个 Tab 在勾选操作行统一新增“清理”按钮；操作范围严格限定为当前 Tab 的已勾选项，只移除详情为空的 Morph，不再像普通删除按钮那样在无勾选时回退删除活动行。有详情的勾选项保持不变：材质/骨骼/群组按 offset 行判断，顶点按模型中的同名 ShapeKey 判断，UV 同时支持 offset 数据与 `VERTEX_GROUP` 模式下的对应 UV Vertex Group。
+- `tests/mmd_morph_editor_regression.py` 新增五个 Tab 的空项清理、后续 Tab 不被提前波及、有详情项保留、无勾选及无空项拒绝执行的回归覆盖。Blender 4.4.3 focused regression 输出 `MMD_MORPH_EDITOR_REGRESSION_OK`；`py_compile` 与 `git diff --check` 通过。版本保持 V0.1.8，源码 Junction 直接生效，不打包 ZIP、不 push。
+
 ## 2026-08-28 - V0.1.8 中线 `_M` 刚体参与镜像 Joint
 
 - 修复“创建镜像 Joint / 同步镜像 Joint”在一端为中线 `_M` 刚体时直接计为跳过的问题。`_M` 仍保留为普通无左右名称的镜像副本标记；但当该刚体确实位于骨架局部 X 中线时，Joint 镜像端点解析现在允许左右两侧共享它，不再因为 `_source_side == "M"` 错误拒绝已有的另一侧端点。
