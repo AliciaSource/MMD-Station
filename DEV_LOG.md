@@ -1,5 +1,10 @@
 # Development Log
 
+## 2026-08-28 - V0.1.8 MMD 材质详情恢复原版紧凑排列
+
+- 将 MMD 查看器内嵌的“MMD 材质”从逐字段纵向堆叠恢复为 `mmd_tools` 原面板的紧凑横向组合：漫射颜色与 Alpha 同行、高光颜色与反射同行、双面与地面阴影同行、自身阴影贴图与自身阴影同行、边缘颜色与边权重同行；MMD 纹理区的“使用共用的卡通纹理”和共用编号也恢复同行。字段右侧的勾选材质批量复制小图标继续保留，不改变批量写回范围。
+- `tests/mmd_morph_editor_regression.py` 继续覆盖完整 Material Tab 绘制路径、字段及批量复制按钮；Blender 4.4.3 focused regression 输出 `MMD_MORPH_EDITOR_REGRESSION_OK`，`py_compile` 与 `git diff --check` 通过。版本保持 V0.1.8，真实 Blender 4.4 源码 Junction 已直接生效，不打包 ZIP、不 push；本轮未进行人工 GUI 视觉验收。
+
 ## 2026-08-28 - V0.1.8 MMD 查看器材质详情实际挂载与勾选批量字段同步
 
 - 修复此前虽实现“MMD 纹理 / MMD 材质”绘制函数、但 Material Tab 在 `draw_material_name_sync()` 后提前 `return`，导致真实 MMD Station 面板完全不显示详情的接线错误。Material 分支现在先绘制活动材质的两块详情面板再返回；回归直接执行完整 `draw_browser()` Material 路径，防止只测私有绘制函数却再次漏接真实入口。
