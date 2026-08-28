@@ -537,6 +537,8 @@ def _bone_side(name):
     for suffix, side in ((".L", "L"), (".R", "R"), ("_L", "L"), ("_R", "R")):
         if name.endswith(suffix):
             return name[:-2], side
+    if name.endswith("_M"):
+        return name[:-2], ""
     return name, ""
 
 
@@ -752,10 +754,10 @@ def _proxy_grid_from_checked_bones(settings):
         )
         if not chains:
             raise ProxyBuildError("没有找到可恢复的父子骨链")
-        prefix = _derived_proxy_prefix([item.target_name for item in checked])
+        prefix = _derived_proxy_prefix([chain[0].name for chain in chains])
         if not prefix:
             raise ProxyBuildError(
-                "勾选骨链的主体名称不一致；请按主体分别创建代理"
+                "勾选的独立骨链主体名称不一致；请按主体分别创建代理"
             )
         for chain in chains:
             sides = {_bone_side(bone.name)[1] for bone in chain}
