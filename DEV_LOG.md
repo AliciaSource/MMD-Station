@@ -1,5 +1,11 @@
 # Development Log
 
+## 2026-08-28 - V0.1.8 复制材质身份冲突与查看器漏项修复
+
+- 修复 Blender 复制材质时连同 MMD Station 的 `surface_proxy_pmx_material_id` 自定义属性一起复制，导致 MMD 查看器按身份建表时由复制材质覆盖原材质的问题。`ordered_materials()` 现在会在当前模型实际使用的材质中检测重复身份：较早创建的原材质保留既有身份，后续复制材质获得新的唯一身份，并紧跟原身份插入现有 PMX 排序；不修改 `mmd_material.material_id`、材质内容或工程中的对象关系。
+- 对用户工程 `D:\MMD\模型\Alicia\鳴潮-達尼婭\達尼婭\31.blend` 进行了不保存的只读检查：模型 `合并2` 实际有 96 个材质，存储排序只有 95 个身份；`手套` 与 `手套+` 共用身份 `fdf32d357d4545dc8a19fb22dbe30519`，修复后内存排序恢复为 96 项，`手套` 位于 73、`手套+` 位于 74 且身份已分离。测试工程未被保存。
+- `tests/mmd_material_order_regression.py` 新增真实复制语义回归，覆盖复制项继承自定义属性、原材质身份保留、复制项身份修复、两项同时进入查看器以及删除复制项后的排序收敛。Blender 4.4.3 回归输出 `MMD_MATERIAL_ORDER_REGRESSION_OK` 与 `MMD_MORPH_EDITOR_REGRESSION_OK`，`py_compile`、`git diff --check` 通过。版本保持 V0.1.8，真实 Blender 4.4 源码 Junction 已直接生效，不打包 ZIP、不 push。
+
 ## 2026-08-28 - V0.1.8 MMD 材质详情恢复原版紧凑排列
 
 - 将 MMD 查看器内嵌的“MMD 材质”从逐字段纵向堆叠恢复为 `mmd_tools` 原面板的紧凑横向组合：漫射颜色与 Alpha 同行、高光颜色与反射同行、双面与地面阴影同行、自身阴影贴图与自身阴影同行、边缘颜色与边权重同行；MMD 纹理区的“使用共用的卡通纹理”和共用编号也恢复同行。字段右侧的勾选材质批量复制小图标继续保留，不改变批量写回范围。
