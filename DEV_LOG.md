@@ -1,5 +1,11 @@
 # Development Log
 
+## 2026-08-28 - V0.1.8 PMX 显示枠编辑器与智能整理
+
+- MMD Station 新增独立“显示枠”功能页，直接编辑 `mmd_tools` 原生 `display_item_frames`，提供显示枠日文名/英文名同屏编辑、特殊枠锁定、显示项详情编辑，以及显示枠与显示项两级复选框、加减、稳定块排序、全选/全不选/反选；普通显示枠的加号可把当前 Armature 在 Edit/Pose Mode 中所选骨骼批量写入，表情枠则接收 Morph 编辑器已勾选项。
+- 新增“智能补充未收录的可见骨骼”：只向当前普通显示枠追加尚未出现在任何显示枠中的骨骼，保持 Armature 顺序，并排除 `Bone.hide` 或仅属于不可见 Bone Collection 的骨骼。新增“智能重排序表情枠”：只收录存在详情行/实际 ShapeKey 或 UV Vertex Group 的 Morph，按 Group → Material → UV → Bone → Vertex 重建表情枠；空 Morph 定义本身不删除，仍可保留作分段。
+- 关键文件为 `mmd_station/mmd_display_frame.py`、`mmd_station/__init__.py` 与 `tests/mmd_display_frame_regression.py`；未修改 `mmd_tools` PMX 导入/导出核心，导入导出仍直接消费同一原生数据。Blender 4.4.3 focused regression 输出 `MMD_DISPLAY_FRAME_REGRESSION_OK`，既有 Morph 回归单进程重跑输出 `MMD_MORPH_EDITOR_REGRESSION_OK`，真实 Blender 4.4 Junction 装载输出 `MMD_STATION_REAL_ADDON_SMOKE_OK`，`py_compile` 与 `git diff --check` 通过。版本保持 V0.1.8，源码 Junction 已直接生效，不打包 ZIP、不 push。
+
 ## 2026-08-28 - V0.1.8 `_M` 父子骨链代理恢复误拦截修复
 
 - 修复 MMD 查看器从勾选骨骼恢复代理时，把 `Bone_Piao130_M -> Bone_Piao131_M` 这类明确父子骨链误判为“主体名称不一致”的问题。根因是中心后缀 `_M` 未被名称解析器识别，导致末尾编号没有被剥离；现在 `_M` 按无左右侧的中心后缀处理。
