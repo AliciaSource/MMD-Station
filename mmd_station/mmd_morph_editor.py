@@ -1514,6 +1514,50 @@ def _remove_vertex_morph_shape_keys(root, morph_names):
     return removed
 
 
+def _shape_key_max_displacement_squared(key_blocks, key_block):
+    basis = key_blocks[0]
+    coordinate_count = len(basis.data) * 3
+    basis_coordinates = array("f", [0.0]) * coordinate_count
+    key_coordinates = array("f", [0.0]) * coordinate_count
+    basis.data.foreach_get("co", basis_coordinates)
+    key_block.data.foreach_get("co", key_coordinates)
+    maximum = 0.0
+    for index in range(0, coordinate_count, 3):
+        dx = key_coordinates[index] - basis_coordinates[index]
+        dy = key_coordinates[index + 1] - basis_coordinates[index + 1]
+        dz = key_coordinates[index + 2] - basis_coordinates[index + 2]
+        maximum = max(maximum, dx * dx + dy * dy + dz * dz)
+    return maximum
+
+
+def _clean_near_zero_vertex_morph_shape_keys(root, morph_names, threshold):
+    FnModel, _Model = _mmd_api()
+    morph_module = importlib.import_module(
+        "bl_ext.blender_org.mmd_tools.core.morph"
+    )
+    threshold_squared = float(threshold) * float(threshold)
+    removed = 0
+    for mesh_object in FnModel.iterate_mesh_objects(root):
+        key_blocks = getattr(
+            getattr(mesh_object.data, "shape_keys", None),
+            "key_blocks",
+            None,
+        )
+        if key_blocks is None or not key_blocks:
+            continue
+        for morph_name in morph_names:
+            key_block = key_blocks.get(morph_name)
+            if key_block is None:
+                continue
+            if (
+                _shape_key_max_displacement_squared(key_blocks, key_block)
+                <= threshold_squared
+            ):
+                morph_module.FnMorph.remove_shape_key(mesh_object, morph_name)
+                removed += 1
+    return removed
+
+
 class SPX_OT_RefreshMorphEditor(Operator):
     bl_idname = "surface_proxy.refresh_morph_editor"
     bl_label = "刷新 Morph 编辑器"
@@ -1686,16 +1730,33 @@ class SPX_OT_CleanSelectedEmptyMorphs(Operator):
             return {"CANCELLED"}
 
         morphs = _morph_collection(root, settings.morph_editor_type)
+        cleaned_shape_keys = 0
+        if settings.morph_editor_type == "vertex_morphs":
+            selected_names = [
+                morph.name
+                for morph in morphs
+                if str(morph.get(MORPH_UID_PROPERTY, "")) in selected
+            ]
+            cleaned_shape_keys = _clean_near_zero_vertex_morph_shape_keys(
+                root,
+                selected_names,
+                settings.morph_editor_shapekey_cleanup_threshold,
+            )
         removed = 0
+        removed_vertex_names = []
         for index in reversed(range(len(morphs))):
             morph = morphs[index]
             if (
                 str(morph.get(MORPH_UID_PROPERTY, "")) in selected
                 and not _morph_has_details(root, settings.morph_editor_type, morph)
             ):
+                if settings.morph_editor_type == "vertex_morphs":
+                    removed_vertex_names.append(morph.name)
                 morphs.remove(index)
                 removed += 1
-        if not removed:
+        if removed_vertex_names:
+            _remove_vertex_morph_shape_keys(root, removed_vertex_names)
+        if not removed and not cleaned_shape_keys:
             self.report({"INFO"}, "勾选项中没有可清理的空 Morph")
             return {"CANCELLED"}
 
@@ -1705,7 +1766,10 @@ class SPX_OT_CleanSelectedEmptyMorphs(Operator):
             max(0, len(root.spx_morph_states) - 1),
         )
         _sync_morph_order(root)
-        self.report({"INFO"}, f"已清理 {removed} 个空 Morph")
+        message = f"已清理 {removed} 个空 Morph"
+        if cleaned_shape_keys:
+            message += f"、{cleaned_shape_keys} 个阈值内 ShapeKey"
+        self.report({"INFO"}, message)
         return {"FINISHED"}
 
 
@@ -3321,6 +3385,12 @@ def draw_morph_editor(layout, context):
         text="清理",
         icon="TRASH",
     )
+    if settings.morph_editor_type == "vertex_morphs":
+        layout.prop(
+            settings,
+            "morph_editor_shapekey_cleanup_threshold",
+            text="形态键清理阈值",
+        )
     name_tools = layout.row(align=True)
     name_tools.operator(
         SPX_OT_CopyMorphJapaneseNamesToEnglish.bl_idname,
@@ -3367,6 +3437,18 @@ def register_settings(settings_cls):
     annotations["morph_editor_show_english"] = BoolProperty(
         name="英文名",
         default=True,
+    )
+    annotations["morph_editor_shapekey_cleanup_threshold"] = FloatProperty(
+        name="形态键清理阈值",
+        description=(
+            "清理勾选 Vertex Morph 时，若某 ShapeKey 在网格上所有顶点相对 Basis "
+            "的最大位移不超过该值，则删除该 ShapeKey（单位：米，物体局部坐标）"
+        ),
+        default=1.0e-4,
+        min=0.0,
+        soft_max=1.0e-2,
+        precision=6,
+        step=0.01,
     )
 
 

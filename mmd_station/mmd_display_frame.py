@@ -758,6 +758,7 @@ def _draw_selection_buttons(
     operator_idname,
     interval_target,
     clean_operator_idname="",
+    sync_operator_idname="",
 ):
     row = layout.row(align=True)
     row.operator(operator_idname, text="全选").action = "ALL"
@@ -769,6 +770,12 @@ def _draw_selection_buttons(
     ).target = interval_target
     if clean_operator_idname:
         row.operator(clean_operator_idname, text="清理", icon="TRASH")
+    if sync_operator_idname:
+        row.operator(
+            sync_operator_idname,
+            text="",
+            icon="RESTRICT_SELECT_OFF",
+        )
 
 
 def _draw_active_item_details(layout, root, frame):
@@ -861,6 +868,7 @@ def draw_display_frame_editor(layout, context):
         "surface_proxy.select_display_items",
         "ITEMS",
         "surface_proxy.clean_invalid_display_items",
+        "surface_proxy.select_checked_display_bones" if frame.name != "表情" else "",
     )
     if frame.name == "表情":
         layout.operator(
@@ -869,11 +877,6 @@ def draw_display_frame_editor(layout, context):
             icon="SORTSIZE",
         )
     else:
-        layout.operator(
-            "surface_proxy.select_checked_display_bones",
-            text="将勾选项选入 Blender",
-            icon="RESTRICT_SELECT_OFF",
-        )
         layout.operator(
             "surface_proxy.smart_fill_display_frame_bones",
             text="智能补充未收录的可见骨骼",

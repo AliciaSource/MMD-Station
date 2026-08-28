@@ -1,5 +1,12 @@
 # Development Log
 
+## 2026-08-28 - V0.1.8 显示框同步入口、Morph 阈值清理与材质详情补齐
+
+- 将普通骨骼显示框的“将勾选项选入 Blender”由整行大按钮收纳为选择工具栏末尾的 `RESTRICT_SELECT_OFF` 小图标；作用域与既有行为不变，仍只同步当前显示框中已勾选且有效的骨骼，表情框不显示该入口。
+- Morph 编辑器 Vertex Tab 新增与 Velo Tools 同语义、同默认值的“形态键清理阈值”（默认 `0.000100 m`）。执行“清理”时，先逐 Mesh 计算勾选 Vertex Morph 的 ShapeKey 相对 Basis 的最大局部空间欧氏位移；不超过阈值的 ShapeKey 会被移除，只有当所有模型 Mesh 均不再保留同名有效 ShapeKey 时才继续删除空 Morph 元数据，避免局部空键误删仍有实际变形的 Morph。
+- MMD 查看器 Material Tab 的活动材质详情区补齐“MMD 纹理”和“MMD 材质”两块内嵌面板，覆盖主纹理、球体纹理、Toon 纹理、MMD 名称/ID/注释、颜色、阴影和描边参数。纹理增删通过显式材质名操作，不依赖 Properties 编辑器当前活动材质，避免查看器列表活动行与 Blender 活动物体不一致时改错材质。
+- 关键文件为 `mmd_station/mmd_display_frame.py`、`mmd_station/mmd_morph_editor.py`、`mmd_station/mmd_physics.py` 与 `tests/mmd_morph_editor_regression.py`。Blender 4.4.3 focused regression 输出 `MMD_DISPLAY_FRAME_REGRESSION_OK`、`MMD_MORPH_EDITOR_REGRESSION_OK`、`MMD_MATERIAL_ORDER_REGRESSION_OK` 与 `MMD_ORDERING_USER_CONTROL_REGRESSION_OK`；`py_compile`、`git diff --check` 通过。版本保持 V0.1.8，真实 Blender 4.4 源码 Junction 已直接生效，不打包 ZIP、不 push；本轮未进行人工 GUI 视觉验收。
+
 ## 2026-08-28 - V0.1.8 显示枠骨骼跳转与勾选同步
 
 - 普通骨骼显示枠的每个 `BONE` 显示项行右侧新增与 MMD 查看器相同的 `RESTRICT_SELECT_OFF` 跳转按钮，并直接复用 `surface_proxy.select_mmd_item`：单击切入对应 Armature 的 Pose Mode 并独选该骨骼，按住 Shift 单击可扩展选择。表情枠以及 Morph 显示项不显示该骨骼跳转入口。
