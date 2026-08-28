@@ -474,6 +474,51 @@ class SPX_OT_SelectDisplayItems(Operator):
         return {"FINISHED"}
 
 
+class SPX_OT_SelectDisplayInterval(Operator):
+    bl_idname = "surface_proxy.select_display_interval"
+    bl_label = "区间选组"
+    bl_description = "以首尾两个已勾选项为端点，补选两者之间的全部项目"
+    bl_options = {"REGISTER", "UNDO"}
+
+    target: EnumProperty(
+        items=(
+            ("FRAMES", "显示枠", "补选显示枠区间"),
+            ("ITEMS", "显示项", "补选当前显示枠中的显示项区间"),
+        )
+    )
+
+    def execute(self, context):
+        root = _find_root(context, context.scene.surface_proxy_creator)
+        if root is None:
+            return {"CANCELLED"}
+        if self.target == "FRAMES":
+            collection = root.mmd_root.display_item_frames
+            property_name = FRAME_SELECTED_PROPERTY
+            noun = "显示枠"
+        else:
+            frame = _active_frame(root)
+            if frame is None:
+                return {"CANCELLED"}
+            collection = frame.data
+            property_name = ITEM_SELECTED_PROPERTY
+            noun = "显示项"
+        selected_indices = [
+            index
+            for index, item in enumerate(collection)
+            if getattr(item, property_name)
+        ]
+        if len(selected_indices) < 2:
+            self.report({"WARNING"}, f"区间选组至少需要勾选两个{noun}")
+            return {"CANCELLED"}
+        added = 0
+        for item in collection[selected_indices[0] : selected_indices[-1] + 1]:
+            if not getattr(item, property_name):
+                setattr(item, property_name, True)
+                added += 1
+        self.report({"INFO"}, f"已补选区间内 {added} 个{noun}")
+        return {"FINISHED"}
+
+
 class SPX_OT_ReorderDisplayItems(Operator):
     bl_idname = "surface_proxy.reorder_display_items"
     bl_label = "排序显示项"
@@ -613,11 +658,15 @@ def _draw_reorder_buttons(column, operator_idname):
         column.operator(operator_idname, text="", icon=icon).action = action
 
 
-def _draw_selection_buttons(layout, operator_idname):
+def _draw_selection_buttons(layout, operator_idname, interval_target):
     row = layout.row(align=True)
     row.operator(operator_idname, text="全选").action = "ALL"
     row.operator(operator_idname, text="全不选").action = "NONE"
     row.operator(operator_idname, text="反选").action = "INVERT"
+    row.operator(
+        SPX_OT_SelectDisplayInterval.bl_idname,
+        text="区间选组",
+    ).target = interval_target
 
 
 def _draw_active_item_details(layout, root, frame):
@@ -673,7 +722,11 @@ def draw_display_frame_editor(layout, context):
     )
     frame_buttons.separator(factor=0.5)
     _draw_reorder_buttons(frame_buttons, "surface_proxy.reorder_display_frames")
-    _draw_selection_buttons(layout, "surface_proxy.select_display_frames")
+    _draw_selection_buttons(
+        layout,
+        "surface_proxy.select_display_frames",
+        "FRAMES",
+    )
 
     frame = _active_frame(root)
     if frame is None:
@@ -701,7 +754,11 @@ def draw_display_frame_editor(layout, context):
     )
     item_buttons.separator(factor=0.5)
     _draw_reorder_buttons(item_buttons, "surface_proxy.reorder_display_items")
-    _draw_selection_buttons(layout, "surface_proxy.select_display_items")
+    _draw_selection_buttons(
+        layout,
+        "surface_proxy.select_display_items",
+        "ITEMS",
+    )
     if frame.name == "表情":
         layout.operator(
             "surface_proxy.smart_reorder_facial_frame",
@@ -767,6 +824,7 @@ CLASSES = (
     SPX_OT_AddSelectedDisplayItems,
     SPX_OT_RemoveSelectedDisplayItems,
     SPX_OT_SelectDisplayItems,
+    SPX_OT_SelectDisplayInterval,
     SPX_OT_ReorderDisplayItems,
     SPX_OT_SmartFillDisplayFrameBones,
     SPX_OT_SmartReorderFacialFrame,

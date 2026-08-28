@@ -77,6 +77,12 @@ extra.name = "Anchor"
 frame.active_item = len(frame.data) - 1
 assert bpy.ops.surface_proxy.reorder_display_items(action="BOTTOM") == {"FINISHED"}
 assert [item.name for item in frame.data][-2:] == ["SelectedBone", "MissingBone"]
+for item in frame.data:
+    setattr(item, ITEM_SELECTED_PROPERTY, False)
+setattr(frame.data[0], ITEM_SELECTED_PROPERTY, True)
+setattr(frame.data[-1], ITEM_SELECTED_PROPERTY, True)
+assert bpy.ops.surface_proxy.select_display_interval(target="ITEMS") == {"FINISHED"}
+assert all(getattr(item, ITEM_SELECTED_PROPERTY) for item in frame.data)
 
 assert bpy.ops.object.mode_set(mode="OBJECT") == {"FINISHED"}
 add_mesh_with_shape_key(armature, "VertexDetailed")
@@ -126,8 +132,15 @@ assert root.mmd_root.group_morphs.get("GroupEmpty") is not None
 
 custom_frames = [frame for frame in root.mmd_root.display_item_frames if not frame.is_special]
 assert custom_frames
-for display_frame in custom_frames:
-    setattr(display_frame, FRAME_SELECTED_PROPERTY, True)
+for display_frame in root.mmd_root.display_item_frames:
+    setattr(display_frame, FRAME_SELECTED_PROPERTY, False)
+setattr(root.mmd_root.display_item_frames[0], FRAME_SELECTED_PROPERTY, True)
+setattr(root.mmd_root.display_item_frames[-1], FRAME_SELECTED_PROPERTY, True)
+assert bpy.ops.surface_proxy.select_display_interval(target="FRAMES") == {"FINISHED"}
+assert all(
+    getattr(display_frame, FRAME_SELECTED_PROPERTY)
+    for display_frame in root.mmd_root.display_item_frames
+)
 root.mmd_root.active_display_item_frame = facial_index
 assert bpy.ops.surface_proxy.reorder_display_frames(action="TOP") == {"FINISHED"}
 assert all(frame.is_special for frame in root.mmd_root.display_item_frames[:2])
