@@ -1,5 +1,10 @@
 # Development Log
 
+## 2026-08-28 - V0.1.8 姿态所选骨骼显式写入按钮
+
+- 在普通显示枠的“智能补充未收录的可见骨骼”正下方新增独立宽按钮“添加姿态模式所选骨骼”。该入口只接受当前 MMD 模型 Armature 的 Pose Mode 选择，按 Armature 顺序将所选骨骼加入当前显示枠并跳过当前枠内重复项；表情枠、错误模型、非 Pose Mode 和空选择均给出明确提示。
+- `tests/mmd_display_frame_regression.py` 已改为通过该专用 operator 验证姿态所选骨骼写入。Blender 4.4.3 focused regression 输出 `MMD_DISPLAY_FRAME_REGRESSION_OK`，`py_compile` 与 `git diff --check` 通过。版本保持 V0.1.8，真实 Blender 4.4 源码 Junction 已直接生效，不打包 ZIP、不 push。
+
 ## 2026-08-28 - V0.1.8 显示枠区间选组补齐
 
 - 补齐显示枠编辑器首版遗漏的“区间选组”：显示枠列表与当前显示项列表的选择工具条现在都与 Morph 编辑器一致，在“全选 / 全不选 / 反选”后提供“区间选组”，以首尾两个已勾选项为端点补选中间全部项目；不足两个端点时明确提示且不改动选择。
