@@ -1,5 +1,10 @@
 # Development Log
 
+## 2026-08-28 - V0.1.8 Material Morph 详情按真实 PMX 材质顺序添加
+
+- 修正 Material Morph 详情 `+` 在多选 Mesh 时按活动物体优先、再按 `context.selected_objects`/材质槽遍历而导致顺序偏离 PMX 的问题。现在先汇总所选 Mesh 涉及的材质集合，再复用 MMD 查看器与导出链路的 `ordered_materials()` 真实 PMX 顺序过滤候选材质；共享材质仍只添加一次，已存在于当前 Morph 的材质仍跳过。没有实际 PMX 顺序的未使用材质槽保留原能力，但统一追加在具真实顺序的材质之后。
+- `tests/mmd_morph_editor_regression.py` 通过刻意打乱所选对象与材质顺序，断言新增详情严格服从存储的 PMX 材质顺序，同时验证 `related_mesh` 仍指向包含该材质的所选 Mesh。Blender 4.4.3 focused regression 输出 `MMD_MORPH_EDITOR_REGRESSION_OK`，材质导出/回读回归输出 `MMD_MATERIAL_ORDER_REGRESSION_OK`；`py_compile` 与 `git diff --check` 通过。版本保持 V0.1.8，真实 Blender 4.4 源码 Junction 已直接生效，不打包 ZIP、不 push。
+
 ## 2026-08-28 - V0.1.8 Morph 详情减号批量删除语义
 
 - 修正 Material、UV、Bone、Group Morph Offset 详情列表的减号行为：存在任意勾选详情行时，批量删除全部勾选项，不再误删蓝色活动行；没有勾选项时才回退删除蓝色活动行。删除后活动索引落在首个删除位置对应的有效邻近行，并立即重新计算当前 Morph Root。Vertex 详情行是模型中实时汇总的 Mesh/ShapeKey 命中结果，不是独立 Offset 数据，因此仍不显示减号。

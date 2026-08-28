@@ -21,6 +21,8 @@ from bpy.props import (
 from bpy.types import AddonPreferences, Operator, PropertyGroup, UIList
 from mathutils import Vector
 
+from .mmd_material_order import ordered_materials
+
 
 MORPH_TYPES = (
     ("material_morphs", "材质", "编辑 Material Morph"),
@@ -2435,35 +2437,42 @@ class SPX_OT_AddMorphOffset(Operator):
         settings = getattr(context.scene, "surface_proxy_creator", None)
         root = _find_root(context, settings) if settings is not None else None
         if root is not None and root.mmd_root.active_morph_type == "material_morphs":
-            return "将当前 MMD 模型内已选 Mesh 的全部材质插入活动详情项下方"
+            return "将当前 MMD 模型内已选 Mesh 的材质按真实 PMX 顺序插入活动详情项下方"
         return "新增一个空 Morph 详情项"
 
     def _add_selected_materials(self, context, root, morph):
         FnModel, _Model = _mmd_api()
-        active_object = context.active_object
-        selected_meshes = [
+        selected_meshes = {
             obj
             for obj in context.selected_objects
             if obj.type == "MESH" and FnModel.find_root_object(obj) == root
-        ]
-        if active_object in selected_meshes:
-            selected_meshes.remove(active_object)
-            selected_meshes.insert(0, active_object)
+        }
         if not selected_meshes:
             self.report({"WARNING"}, "请先选择当前 MMD 模型中的 Mesh")
             return {"CANCELLED"}
 
-        existing_materials = {
-            data.material for data in morph.data if data.material
-        }
-        candidates = []
-        for mesh_object in selected_meshes:
+        material_owners = {}
+        for mesh_object in FnModel.iterate_mesh_objects(root):
+            if mesh_object not in selected_meshes:
+                continue
             for material_slot in mesh_object.material_slots:
                 material = material_slot.material
-                if material is None or material.name in existing_materials:
-                    continue
-                existing_materials.add(material.name)
-                candidates.append((mesh_object.data.name, material.name))
+                if material is not None and material not in material_owners:
+                    material_owners[material] = mesh_object.data.name
+
+        existing_materials = {data.material for data in morph.data if data.material}
+        candidates = []
+        for material in ordered_materials(root, FnModel):
+            mesh_name = material_owners.get(material)
+            if mesh_name is None or material.name in existing_materials:
+                continue
+            existing_materials.add(material.name)
+            candidates.append((mesh_name, material.name))
+        for material, mesh_name in material_owners.items():
+            if material.name in existing_materials:
+                continue
+            existing_materials.add(material.name)
+            candidates.append((mesh_name, material.name))
         if not candidates:
             self.report({"WARNING"}, "所选 Mesh 的材质已全部存在于当前 Morph")
             return {"CANCELLED"}
