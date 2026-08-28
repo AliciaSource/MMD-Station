@@ -30,6 +30,35 @@ from mmd_station.mmd_morph_editor import (
     _remove_imported_shape_key_curves,
     ensure_morph_states,
 )
+from mmd_station.mmd_physics import _draw_active_mmd_inspector
+
+
+class InspectorLayoutProbe:
+    def __init__(self, labels=None, properties=None, operators=None):
+        self.labels = labels if labels is not None else []
+        self.properties = properties if properties is not None else []
+        self.operators = operators if operators is not None else []
+        self.active = True
+
+    def row(self, **_kwargs):
+        return InspectorLayoutProbe(self.labels, self.properties, self.operators)
+
+    def column(self, **_kwargs):
+        return InspectorLayoutProbe(self.labels, self.properties, self.operators)
+
+    def box(self):
+        return InspectorLayoutProbe(self.labels, self.properties, self.operators)
+
+    def label(self, text="", **_kwargs):
+        self.labels.append(text)
+
+    def prop(self, data, name, **_kwargs):
+        assert hasattr(data, name), name
+        self.properties.append(name)
+
+    def operator(self, operator_id, **_kwargs):
+        self.operators.append(operator_id)
+        return SimpleNamespace()
 
 
 def make_material(name, shader_type="ShaderNodeBsdfPrincipled"):
@@ -348,6 +377,42 @@ assert any(
 settings = bpy.context.scene.surface_proxy_creator
 settings.morph_editor_root = root
 settings.morph_editor_type = "material_morphs"
+
+# The material browser embeds the complete MMD Texture and MMD Material
+# controls for its active material instead of requiring the Properties editor.
+settings.mmd_root = root
+settings.browser_kind = "MATERIAL"
+assert bpy.ops.surface_proxy.refresh_mmd_browser() == {"FINISHED"}
+settings.browser_index = next(
+    index
+    for index, browser_item in enumerate(settings.browser_items)
+    if browser_item.material == material
+)
+inspector_probe = InspectorLayoutProbe()
+_draw_active_mmd_inspector(inspector_probe, settings)
+assert {"MMD 纹理", "MMD 材质"} <= set(inspector_probe.labels)
+assert {
+    "material_id",
+    "name_j",
+    "name_e",
+    "comment",
+    "diffuse_color",
+    "alpha",
+    "sphere_texture_type",
+    "toon_texture",
+} <= set(inspector_probe.properties)
+assert inspector_probe.operators.count(
+    "surface_proxy.open_browser_material_texture"
+) == 2
+assert bpy.ops.surface_proxy.open_browser_material_texture(
+    material_name=material.name,
+    texture_kind="MAIN",
+    filepath="//missing-inspector-texture.png",
+) == {"FINISHED"}
+assert bpy.ops.surface_proxy.remove_browser_material_texture(
+    material_name=material.name,
+    texture_kind="MAIN",
+) == {"FINISHED"}
 
 # Refresh restores model ShapeKeys that are missing from the Vertex Morph list,
 # while minus removes both the metadata row and every matching real/proxy key.
@@ -1076,12 +1141,16 @@ nonempty_morph_names = {
     "material_morphs": "Hide",
     "uv_morphs": "CleanupUVGroupKeep",
     "bone_morphs": "BoneMove",
-    "vertex_morphs": "Smile",
+    "vertex_morphs": "CleanupVertexKeep",
     "group_morphs": "CleanupGroupKeep",
 }
 for morph_type, morph_name in empty_morph_names.items():
     morph = getattr(root.mmd_root, morph_type).add()
     morph.name = morph_name
+cleanup_vertex_keep = root.mmd_root.vertex_morphs.add()
+cleanup_vertex_keep.name = nonempty_morph_names["vertex_morphs"]
+cleanup_vertex_key = mesh_a.shape_key_add(name=cleanup_vertex_keep.name)
+cleanup_vertex_key.data[0].co.x += 1.0e-3
 cleanup_uv_keep = root.mmd_root.uv_morphs.add()
 cleanup_uv_keep.name = nonempty_morph_names["uv_morphs"]
 cleanup_uv_keep.data_type = "VERTEX_GROUP"
@@ -1127,6 +1196,37 @@ for morph_index, morph_type in enumerate(morph_types):
             getattr(root.mmd_root, other_type).get(empty_morph_names[other_type])
             is not None
         )
+
+# Vertex cleanup matches Velo Tools: each model-mesh ShapeKey is compared to
+# Basis by maximum local-space Euclidean displacement.
+assert abs(settings.morph_editor_shapekey_cleanup_threshold - 1.0e-4) < 1.0e-9
+threshold_partial = root.mmd_root.vertex_morphs.add()
+threshold_partial.name = "ThresholdPartial"
+threshold_partial_name = threshold_partial.name
+partial_small = mesh_a.shape_key_add(name=threshold_partial.name)
+partial_small.data[0].co.x += 5.0e-5
+partial_large = mesh_b.shape_key_add(name=threshold_partial.name)
+partial_large.data[0].co.x += 2.0e-4
+threshold_empty = root.mmd_root.vertex_morphs.add()
+threshold_empty.name = "ThresholdEmpty"
+threshold_empty_name = threshold_empty.name
+for mesh_object in (mesh_a, mesh_b):
+    key_block = mesh_object.shape_key_add(name=threshold_empty.name)
+    key_block.data[0].co.x += 5.0e-5
+ensure_morph_states(root)
+settings.morph_editor_type = "vertex_morphs"
+for state in root.spx_morph_states:
+    state.selected = state.morph_name == threshold_partial.name
+assert bpy.ops.surface_proxy.clean_selected_empty_morphs() == {"FINISHED"}
+assert root.mmd_root.vertex_morphs.get(threshold_partial_name) is not None
+assert threshold_partial_name not in mesh_a.data.shape_keys.key_blocks
+assert threshold_partial_name in mesh_b.data.shape_keys.key_blocks
+for state in root.spx_morph_states:
+    state.selected = state.morph_name == threshold_empty.name
+assert bpy.ops.surface_proxy.clean_selected_empty_morphs() == {"FINISHED"}
+assert root.mmd_root.vertex_morphs.get(threshold_empty_name) is None
+for mesh_object in (mesh_a, mesh_b):
+    assert threshold_empty_name not in mesh_object.data.shape_keys.key_blocks
 
 for state in root.spx_morph_states:
     state.selected = False

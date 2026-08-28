@@ -2607,6 +2607,66 @@ def _selected_materials_from_blender(context, mesh_objects):
     return selected_materials, active_material
 
 
+class SPX_OT_OpenBrowserMaterialTexture(Operator):
+    bl_idname = "surface_proxy.open_browser_material_texture"
+    bl_label = "添加 MMD 纹理"
+    bl_options = {"REGISTER", "UNDO"}
+
+    material_name: StringProperty(options={"HIDDEN"})
+    texture_kind: EnumProperty(
+        items=(("MAIN", "纹理", ""), ("SPHERE", "球体纹理", "")),
+        options={"HIDDEN"},
+    )
+    filepath: StringProperty(subtype="FILE_PATH", maxlen=1024)
+    use_filter_image: BoolProperty(default=True, options={"HIDDEN"})
+
+    def invoke(self, context, _event):
+        context.window_manager.fileselect_add(self)
+        return {"RUNNING_MODAL"}
+
+    def execute(self, _context):
+        material = bpy.data.materials.get(self.material_name)
+        if material is None:
+            self.report({"ERROR"}, "材质已不存在")
+            return {"CANCELLED"}
+        material_module = importlib.import_module(
+            "bl_ext.blender_org.mmd_tools.core.material"
+        )
+        fn_material = material_module.FnMaterial(material)
+        if self.texture_kind == "SPHERE":
+            fn_material.create_sphere_texture(self.filepath)
+        else:
+            fn_material.create_texture(self.filepath)
+        return {"FINISHED"}
+
+
+class SPX_OT_RemoveBrowserMaterialTexture(Operator):
+    bl_idname = "surface_proxy.remove_browser_material_texture"
+    bl_label = "移除 MMD 纹理"
+    bl_options = {"REGISTER", "UNDO"}
+
+    material_name: StringProperty(options={"HIDDEN"})
+    texture_kind: EnumProperty(
+        items=(("MAIN", "纹理", ""), ("SPHERE", "球体纹理", "")),
+        options={"HIDDEN"},
+    )
+
+    def execute(self, _context):
+        material = bpy.data.materials.get(self.material_name)
+        if material is None:
+            self.report({"ERROR"}, "材质已不存在")
+            return {"CANCELLED"}
+        material_module = importlib.import_module(
+            "bl_ext.blender_org.mmd_tools.core.material"
+        )
+        fn_material = material_module.FnMaterial(material)
+        if self.texture_kind == "SPHERE":
+            fn_material.remove_sphere_texture()
+        else:
+            fn_material.remove_texture()
+        return {"FINISHED"}
+
+
 class SPX_OT_SelectMMDItem(Operator):
     bl_idname = "surface_proxy.select_mmd_item"
     bl_label = "选择 MMD 项目"
@@ -5021,11 +5081,101 @@ def draw_browser(layout, settings):
     _draw_active_mmd_inspector(layout, settings)
 
 
+def _draw_browser_material_texture(layout, material):
+    material_module = importlib.import_module(
+        "bl_ext.blender_org.mmd_tools.core.material"
+    )
+    fn_material = material_module.FnMaterial(material)
+    mmd_material = material.mmd_material
+    box = layout.box()
+    box.label(text="MMD 纹理", icon="TEXTURE")
+    for texture_kind, label, texture in (
+        ("MAIN", "纹理", fn_material.get_texture()),
+        ("SPHERE", "球体纹理", fn_material.get_sphere_texture()),
+    ):
+        box.label(text=f"{label}：")
+        row = box.row(align=True)
+        if texture is not None and texture.type == "IMAGE" and texture.image:
+            row.prop(texture.image, "filepath", text="")
+            operator = row.operator(
+                SPX_OT_RemoveBrowserMaterialTexture.bl_idname,
+                text="",
+                icon="PANEL_CLOSE",
+            )
+            operator.material_name = material.name
+            operator.texture_kind = texture_kind
+        else:
+            operator = row.operator(
+                SPX_OT_OpenBrowserMaterialTexture.bl_idname,
+                text="添加",
+                icon="FILE_FOLDER",
+            )
+            operator.material_name = material.name
+            operator.texture_kind = texture_kind
+            if texture is not None:
+                row.label(text="纹理节点无有效图像", icon="ERROR")
+        if texture_kind == "SPHERE":
+            box.row(align=True).prop(
+                mmd_material,
+                "sphere_texture_type",
+                expand=True,
+            )
+    row = box.row()
+    row.prop(mmd_material, "is_shared_toon_texture")
+    shared = row.row()
+    shared.active = mmd_material.is_shared_toon_texture
+    shared.prop(mmd_material, "shared_toon_texture")
+    custom = box.row()
+    custom.active = not mmd_material.is_shared_toon_texture
+    custom.prop(mmd_material, "toon_texture")
+
+
+def _draw_browser_mmd_material(layout, material):
+    mmd_material = material.mmd_material
+    box = layout.box()
+    box.label(text="MMD 材质", icon="MATERIAL")
+    row = box.row(align=True)
+    row.label(text="信息：")
+    if not mmd_material.is_id_unique():
+        row.label(icon="ERROR")
+    row.prop(mmd_material, "material_id", text="ID")
+    box.prop(mmd_material, "name_j")
+    box.prop(mmd_material, "name_e")
+    box.prop(mmd_material, "comment")
+    box.label(text="颜色：")
+    row = box.row()
+    row.prop(mmd_material, "diffuse_color")
+    row.prop(mmd_material, "alpha", slider=True)
+    row = box.row()
+    row.prop(mmd_material, "specular_color")
+    row.prop(mmd_material, "shininess", slider=True)
+    box.prop(mmd_material, "ambient_color")
+    box.label(text="阴影：")
+    row = box.row()
+    row.prop(mmd_material, "is_double_sided")
+    row.prop(mmd_material, "enabled_drop_shadow")
+    row = box.row()
+    row.prop(mmd_material, "enabled_self_shadow_map")
+    row.prop(mmd_material, "enabled_self_shadow")
+    box.prop(mmd_material, "enabled_toon_edge")
+    edge = box.row()
+    edge.active = mmd_material.enabled_toon_edge
+    edge.prop(mmd_material, "edge_color")
+    edge.prop(mmd_material, "edge_weight", slider=True)
+
+
 def _draw_active_mmd_inspector(layout, settings):
-    if settings.browser_kind == "MATERIAL":
-        return
     item = _active_browser_item(settings)
     if item is None:
+        return
+    if settings.browser_kind == "MATERIAL":
+        material = item.material
+        if material is None:
+            box = layout.box()
+            box.label(text="材质已不存在", icon="ERROR")
+            return
+        _draw_browser_material_texture(layout, material)
+        _draw_browser_mmd_material(layout, material)
         return
     box = layout.box()
     box.label(text="活动项属性", icon="PROPERTIES")
@@ -5232,6 +5382,8 @@ CLASSES = (
     SPX_OT_TranslateSelectedBoneNamesWithAI,
     SPX_OT_SelectCheckedMMDItems,
     SPX_OT_SyncSelectedMMDObjectsToBrowser,
+    SPX_OT_OpenBrowserMaterialTexture,
+    SPX_OT_RemoveBrowserMaterialTexture,
     SPX_OT_CreateJointFromCheckedRigids,
     SPX_OT_FillMissingMMDBoneNames,
     SPX_OT_SyncBoneNamesToRigids,
