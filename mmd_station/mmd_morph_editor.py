@@ -1467,6 +1467,53 @@ def _sync_morph_order(root):
         item.name = morph.name
 
 
+def _restore_missing_vertex_morphs(root):
+    FnModel, _Model = _mmd_api()
+    morph_module = importlib.import_module(
+        "bl_ext.blender_org.mmd_tools.core.morph"
+    )
+    morphs = root.mmd_root.vertex_morphs
+    known_names = {morph.name for morph in morphs}
+    restored = 0
+    for mesh_object in FnModel.iterate_mesh_objects(root):
+        shape_keys = getattr(mesh_object.data, "shape_keys", None)
+        for key_block in getattr(shape_keys, "key_blocks", ())[1:]:
+            name = key_block.name
+            if name.startswith("mmd_") or name in known_names:
+                continue
+            morph = morphs.add()
+            morph.name = name
+            morph.name_e = name
+            morph_module.FnMorph.category_guess(morph)
+            known_names.add(name)
+            restored += 1
+    return restored
+
+
+def _remove_vertex_morph_shape_keys(root, morph_names):
+    FnModel, Model = _mmd_api()
+    morph_module = importlib.import_module(
+        "bl_ext.blender_org.mmd_tools.core.morph"
+    )
+    mesh_objects = list(FnModel.iterate_mesh_objects(root))
+    placeholder = Model(root).morph_slider.placeholder(create=False)
+    if placeholder is not None:
+        mesh_objects.append(placeholder)
+    removed = 0
+    for mesh_object in mesh_objects:
+        key_blocks = getattr(
+            getattr(mesh_object.data, "shape_keys", None),
+            "key_blocks",
+            (),
+        )
+        for morph_name in morph_names:
+            if morph_name not in key_blocks:
+                continue
+            morph_module.FnMorph.remove_shape_key(mesh_object, morph_name)
+            removed += 1
+    return removed
+
+
 class SPX_OT_RefreshMorphEditor(Operator):
     bl_idname = "surface_proxy.refresh_morph_editor"
     bl_label = "刷新 Morph 编辑器"
@@ -1479,7 +1526,10 @@ class SPX_OT_RefreshMorphEditor(Operator):
             self.report({"ERROR"}, "找不到 MMD 模型 Root")
             return {"CANCELLED"}
         settings.morph_editor_root = root
+        restored = _restore_missing_vertex_morphs(root)
         ensure_morph_states(root)
+        if restored:
+            self.report({"INFO"}, f"已补充 {restored} 个顶点 Morph")
         return {"FINISHED"}
 
 
@@ -1560,6 +1610,15 @@ class SPX_OT_RemoveSelectedMorphs(Operator):
             if state.morph_type == settings.morph_editor_type:
                 selected.add(state.uid)
         morphs = _morph_collection(root, settings.morph_editor_type)
+        if settings.morph_editor_type == "vertex_morphs":
+            _remove_vertex_morph_shape_keys(
+                root,
+                [
+                    morph.name
+                    for morph in morphs
+                    if str(morph.get(MORPH_UID_PROPERTY, "")) in selected
+                ],
+            )
         removed = 0
         for index in reversed(range(len(morphs))):
             if str(morphs[index].get(MORPH_UID_PROPERTY, "")) in selected:

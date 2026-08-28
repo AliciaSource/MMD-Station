@@ -349,6 +349,36 @@ settings = bpy.context.scene.surface_proxy_creator
 settings.morph_editor_root = root
 settings.morph_editor_type = "material_morphs"
 
+# Refresh restores model ShapeKeys that are missing from the Vertex Morph list,
+# while minus removes both the metadata row and every matching real/proxy key.
+for mesh_object in (mesh_a, mesh_b):
+    mesh_object.shape_key_add(name="RefreshOnly")
+placeholder = Model(root).morph_slider.placeholder(create=True)
+placeholder.shape_key_add(name="RefreshOnly")
+placeholder.shape_key_add(name="PlaceholderOnly")
+assert root.mmd_root.vertex_morphs.get("RefreshOnly") is None
+settings.morph_editor_type = "vertex_morphs"
+assert bpy.ops.surface_proxy.refresh_morph_editor() == {"FINISHED"}
+refresh_morph = root.mmd_root.vertex_morphs.get("RefreshOnly")
+assert refresh_morph is not None
+assert refresh_morph.name_e == "RefreshOnly"
+assert root.mmd_root.vertex_morphs.get("PlaceholderOnly") is None
+refresh_state = next(
+    state
+    for state in root.spx_morph_states
+    if state.morph_type == "vertex_morphs" and state.morph_name == "RefreshOnly"
+)
+for state in root.spx_morph_states:
+    state.selected = False
+root.spx_morph_active_index = root.spx_morph_states.find(refresh_state.uid)
+assert bpy.ops.surface_proxy.remove_selected_morphs() == {"FINISHED"}
+assert root.mmd_root.vertex_morphs.get("RefreshOnly") is None
+for mesh_object in (mesh_a, mesh_b):
+    assert "RefreshOnly" not in mesh_object.data.shape_keys.key_blocks
+assert "RefreshOnly" not in placeholder.data.shape_keys.key_blocks
+placeholder.shape_key_remove(placeholder.data.shape_keys.key_blocks["PlaceholderOnly"])
+settings.morph_editor_type = "material_morphs"
+
 # New Morphs are inserted directly below the active row instead of appended.
 states = {state.morph_name: state for state in root.spx_morph_states}
 root.spx_morph_active_index = root.spx_morph_states.find(states["Hide"].uid)
