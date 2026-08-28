@@ -1,5 +1,10 @@
 # Development Log
 
+## 2026-08-28 - V0.1.8 显示枠骨骼跳转与勾选同步
+
+- 普通骨骼显示枠的每个 `BONE` 显示项行右侧新增与 MMD 查看器相同的 `RESTRICT_SELECT_OFF` 跳转按钮，并直接复用 `surface_proxy.select_mmd_item`：单击切入对应 Armature 的 Pose Mode 并独选该骨骼，按住 Shift 单击可扩展选择。表情枠以及 Morph 显示项不显示该骨骼跳转入口。
+- 普通显示枠新增“将勾选项选入 Blender”，把当前枠内已勾选且仍有效的骨骼同步为 Blender Pose Mode 选择，并将最后一根有效骨骼设为活动骨骼；失效引用会被跳过，全部失效时提示先执行清理。`tests/mmd_display_frame_regression.py` 覆盖双骨骼勾选同步、模式切换与活动选择。Blender 4.4.3 focused regression 输出 `MMD_DISPLAY_FRAME_REGRESSION_OK`，`py_compile` 与 `git diff --check` 通过。版本保持 V0.1.8，真实 Blender 4.4 源码 Junction 已直接生效，不打包 ZIP、不 push。
+
 ## 2026-08-28 - V0.1.8 显示枠失效项目清理
 
 - 在当前显示枠的显示项选择工具条末尾新增“清理”按钮，批量移除因骨骼或 Morph 改名/删除而找不到真实目标的残余显示项。清理仅作用于当前显示枠的失效引用，不删除 Armature Bone、Morph 定义或任何仍可解析的显示项；若模型 Armature 本身不可用则拒绝清理，避免把全部 Bone 引用误判为残余。
