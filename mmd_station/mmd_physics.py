@@ -890,25 +890,25 @@ def _apply_stable_long_skirt_preset(settings):
     settings.body_rigid_type = "1"
     settings.rigid_radius_ratio = 0.0
     settings.rigid_length_ratio = 0.0
-    settings.rigid_depth_ratio = 0.15
+    settings.rigid_depth_ratio = 0.1
     settings.rigid_radius_multiply = False
     settings.rigid_length_multiply = False
 
     scalar_values = {
         "rigid_radius_ratio": (False, 0.0),
         "rigid_length_ratio": (False, 0.0),
-        "rigid_depth_ratio": (True, 0.5),
-        "mass": (True, 0.4),
-        "linear_damping": (True, 0.99),
+        "rigid_depth_ratio": (True, 0.4),
+        "mass": (True, 1.0),
+        "linear_damping": (True, 0.9999),
         "angular_damping": (True, 0.99),
         "restitution": (False, 0.0),
         "friction": (False, 0.3),
     }
-    settings.mass = 2.0
-    settings.linear_damping = 0.995
-    settings.angular_damping = 0.995
+    settings.mass = 12.0
+    settings.linear_damping = 0.99
+    settings.angular_damping = 0.9999
     settings.restitution = 0.0
-    settings.friction = 0.3
+    settings.friction = 0.0
     settings.collision_group_number = 5
     collision_mask = [False] * 16
     collision_mask[5] = True
@@ -921,13 +921,9 @@ def _apply_stable_long_skirt_preset(settings):
     joint_values = {
         "limit_linear_lower": (0.0, 0.0, 0.0),
         "limit_linear_upper": (0.0, 0.0, 0.0),
-        "limit_angular_lower": tuple(
-            math.radians(value) for value in (-8.0, 0.0, 0.0)
-        ),
-        "limit_angular_upper": tuple(
-            math.radians(value) for value in (8.0, 0.0, 0.0)
-        ),
-        "spring_linear": (0.0, 800.0, 0.0),
+        "limit_angular_lower": (0.0, 0.0, 0.0),
+        "limit_angular_upper": (0.0, 0.0, 0.0),
+        "spring_linear": (0.0, 0.0, 0.0),
         "spring_angular": (12.0, 5.0, 5.0),
         "horizontal_limit_linear_lower": (0.0, 0.0, 0.0),
         "horizontal_limit_linear_upper": (0.0, 0.0, 0.0),
@@ -943,13 +939,9 @@ def _apply_stable_long_skirt_preset(settings):
     joint_end_values = {
         "limit_linear_lower": (0.0, 0.0, 0.0),
         "limit_linear_upper": (0.0, 0.0, 0.0),
-        "limit_angular_lower": tuple(
-            math.radians(value) for value in (-18.0, -7.0, -7.0)
-        ),
-        "limit_angular_upper": tuple(
-            math.radians(value) for value in (18.0, 7.0, 7.0)
-        ),
-        "spring_linear": (0.0, 250.0, 0.0),
+        "limit_angular_lower": (0.0, 0.0, 0.0),
+        "limit_angular_upper": (0.0, 0.0, 0.0),
+        "spring_linear": (0.0, 0.0, 0.0),
         "spring_angular": (4.0, 2.0, 2.0),
         "horizontal_limit_linear_lower": (0.0, 0.0, 0.0),
         "horizontal_limit_linear_upper": (0.0, 0.0, 0.0),
@@ -959,7 +951,7 @@ def _apply_stable_long_skirt_preset(settings):
         "horizontal_limit_angular_upper": tuple(
             math.radians(value) for value in (18.0, 5.0, 12.0)
         ),
-        "horizontal_spring_linear": (0.0, 0.0, 0.0),
+        "horizontal_spring_linear": (0.0, 40.0, 0.0),
         "horizontal_spring_angular": (0.25, 0.5, 1.5),
     }
     for name, value in joint_values.items():
@@ -967,8 +959,8 @@ def _apply_stable_long_skirt_preset(settings):
         setattr(settings, f"{name}_end", joint_end_values[name])
     joint_interpolation = {
         "limit_linear": (False, False, False),
-        "limit_angular": (True, False, False),
-        "spring_linear": (False, True, False),
+        "limit_angular": (False, False, False),
+        "spring_linear": (False, False, False),
         "spring_angular": (True, True, True),
         "horizontal_limit_linear": (False, False, False),
         "horizontal_limit_angular": (True, True, True),

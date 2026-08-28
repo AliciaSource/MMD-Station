@@ -1,5 +1,11 @@
 # Development Log
 
+## 2026-08-28 - V0.1.8 “稳定中长裙”实测参数同步
+
+- 按真实裙摆物理验收结果更新内置“稳定中长裙”预设：刚体深度由 `0.10` 补间到 `0.40`，质量由 `12.00` 补间到 `1.00`，移动阻尼由 `0.99` 补间到 `0.9999`，旋转阻尼由 `0.9999` 补间到 `0.99`，摩擦起始值改为 `0.00`；盒体、刚体类型、碰撞组与屏蔽组保持既有设置。
+- 纵 Joint 的移动/旋转限制及移动弹簧统一归零并关闭补间，但按用户要求保留旋转弹簧 `12/5/5 -> 4/2/2` 三轴补间，以兼容可能依赖该组参数的特殊情况。横 Joint 保持旋转限制与旋转弹簧设置，移动限制仍归零；按面板实测数据保留未启用补间的末端 Y 移动弹簧值 `40.00`。
+- `tests/headless_smoke.py` 已同步精确预设断言。Blender 4.4.3 focused regression 输出 `STABLE_LONG_SKIRT_PRESET_FOCUSED_OK`，`py_compile` 与 `git diff --check` 通过；完整 `headless_smoke.py` 已通过本轮全部预设断言，随后在既有的骨骼名称修复断言（第 2204 行）失败，该失败不在本轮预设改动路径内，未扩张范围处理。版本保持 V0.1.8，源码 Junction 直接生效，不打包 ZIP、不 push。
+
 ## 2026-08-28 - V0.1.8 Vertex Morph 刷新与真实 ShapeKey 删除
 
 - 修正 Morph 编辑器“刷新”只重建面板缓存、不会从模型恢复缺失顶点 Morph 的问题。刷新现在扫描当前 MMD Root 的实际模型 Mesh ShapeKeys，按 `mmd_tools` 规则跳过 Basis 与 `mmd_` 内部键，并为面板中不存在的 ShapeKey 补建同名 Vertex Morph；Root 下的 `.placeholder` 不属于模型 Mesh，因此其中仅作为运行时滑块的孤立键不会被误补回面板。
