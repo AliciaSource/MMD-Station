@@ -48,6 +48,8 @@ def _record_model_counts(state, exporter):
     model = getattr(exporter, "_PmxExporter__model", None)
     if model is None:
         return
+    state["_model"] = model
+    state["_exporter"] = exporter
     state["counts"] = {
         name: len(getattr(model, name, ()))
         for name in _MODEL_COLLECTIONS
@@ -87,7 +89,16 @@ def _profile_export_call(original_export, exporter_class, pmx_module, filepath, 
         def timed_method(self, *args, _key=key, _label=label, _method=original_method, **call_kwargs):
             phase_started = time.perf_counter()
             try:
-                return _method(self, *args, **call_kwargs)
+                result = _method(self, *args, **call_kwargs)
+                if _key == "bones":
+                    state["_bone_map"] = result
+                elif _key == "mesh_data" and args:
+                    state.setdefault("_mesh_objects", []).append(args[0])
+                elif _key == "rigid_bodies" and args:
+                    state["_rigid_objects"] = tuple(args[0])
+                elif _key == "joints" and args:
+                    state["_joint_objects"] = tuple(args[0])
+                return result
             finally:
                 phase = state["phases"].setdefault(
                     _key,
@@ -116,6 +127,12 @@ def _profile_export_call(original_export, exporter_class, pmx_module, filepath, 
     try:
         result = original_export(filepath=filepath, **kwargs)
         state["success"] = True
+        try:
+            from .mmd_shadow import capture_full_export
+
+            capture_full_export(filepath, kwargs, state, pmx_module)
+        except Exception:
+            LOGGER.exception("[MMD Station Shadow] failed to capture full export")
         return result
     finally:
         for target, name, original in reversed(restorations):
@@ -125,8 +142,13 @@ def _profile_export_call(original_export, exporter_class, pmx_module, filepath, 
         state["unmeasured_seconds"] = max(0.0, state["total_seconds"] - measured)
         state["file_size"] = os.path.getsize(filepath) if os.path.isfile(filepath) else 0
         global _last_export_profile
-        _last_export_profile = state
-        _log_profile(state)
+        public_state = {
+            key: value
+            for key, value in state.items()
+            if not key.startswith("_")
+        }
+        _last_export_profile = public_state
+        _log_profile(public_state)
 
 
 def _log_profile(profile):
@@ -190,6 +212,28 @@ def register_export_profile_hook():
     pmx_module = exporter_module.pmx
 
     def export_with_profile(filepath, **kwargs):
+        kwargs = dict(kwargs)
+        for name in ("meshes", "rigid_bodies", "joints"):
+            if name in kwargs:
+                kwargs[name] = tuple(kwargs[name])
+        try:
+            from .mmd_shadow import try_fast_export
+
+            profile = try_fast_export(
+                filepath,
+                kwargs,
+                exporter_module,
+                exporter_class,
+                pmx_module,
+            )
+        except Exception:
+            LOGGER.exception("[MMD Station Shadow] unexpected fast export failure")
+            profile = None
+        if profile is not None:
+            global _last_export_profile
+            _last_export_profile = profile
+            _log_profile(profile)
+            return None
         return _profile_export_call(
             current_export,
             exporter_class,
