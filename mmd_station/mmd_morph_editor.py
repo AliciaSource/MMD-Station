@@ -51,6 +51,7 @@ VERTEX_BINDINGS_CLEAN_PROPERTY = "spx_morph_vertex_bindings_clean"
 DETAIL_SELECTED_PROPERTY = "spx_morph_detail_selected"
 VERTEX_DETAIL_SELECTED_PROPERTY = "spx_morph_vertex_target_selected"
 UV_DETAIL_SELECTED_PROPERTY = "spx_morph_uv_target_selected"
+GROUP_FACTOR_PROXY_PROPERTY = "spx_morph_factor_live"
 
 _MUTATING = False
 _EVALUATING = False
@@ -1393,6 +1394,30 @@ class SPX_MorphState(PropertyGroup):
     )
 
 
+class SPX_OT_SetMorphValue(Operator):
+    bl_idname = "surface_proxy.set_morph_value"
+    bl_label = "设置 Morph 值"
+    bl_description = "将同一个 Morph 滑块直接切换到 0 或 1"
+    bl_options = {"INTERNAL", "UNDO"}
+
+    root_name: StringProperty(options={"HIDDEN"})
+    morph_uid: StringProperty(options={"HIDDEN"})
+    value: FloatProperty(options={"HIDDEN"})
+
+    def execute(self, _context):
+        root = bpy.data.objects.get(self.root_name)
+        if root is None or not hasattr(root, "spx_morph_states"):
+            return {"CANCELLED"}
+        state = next(
+            (state for state in root.spx_morph_states if state.uid == self.morph_uid),
+            None,
+        )
+        if state is None:
+            return {"CANCELLED"}
+        state.value = self.value
+        return {"FINISHED"}
+
+
 class SPX_UL_MorphEditor(UIList):
     def filter_items(self, context, data, propname):
         states = getattr(data, propname)
@@ -1431,8 +1456,29 @@ class SPX_UL_MorphEditor(UIList):
             row.prop(morph, "name_e", text="")
         row.prop(morph, "category", text="", emboss=False)
         value_row = row.row(align=True)
-        value_row.use_property_decorate = True
-        value_row.prop(item, "value", text="", slider=True)
+        zero_button = value_row.row(align=True)
+        zero_button.ui_units_x = 1.0
+        operator = zero_button.operator(
+            "surface_proxy.set_morph_value",
+            text="0",
+            depress=math.isclose(item.value, 0.0, abs_tol=1.0e-6),
+        )
+        operator.root_name = data.name
+        operator.morph_uid = item.uid
+        operator.value = 0.0
+        slider_row = value_row.row(align=True)
+        slider_row.use_property_decorate = True
+        slider_row.prop(item, "value", text="", slider=True)
+        one_button = value_row.row(align=True)
+        one_button.ui_units_x = 1.0
+        operator = one_button.operator(
+            "surface_proxy.set_morph_value",
+            text="1",
+            depress=math.isclose(item.value, 1.0, abs_tol=1.0e-6),
+        )
+        operator.root_name = data.name
+        operator.morph_uid = item.uid
+        operator.value = 1.0
 
 
 def _set_collection_order(collection, desired_names):
@@ -3170,6 +3216,38 @@ class SPX_UL_BoneMorphOffsets(_SPX_UL_MorphOffsets):
 class SPX_UL_GroupMorphOffsets(_SPX_UL_MorphOffsets):
     official_list = "MMD_TOOLS_UL_GroupMorphOffsets"
 
+    def draw_item(
+        self,
+        _context,
+        layout,
+        _data,
+        item,
+        icon,
+        _active_data,
+        _active_propname,
+        _index,
+    ):
+        row = layout.row(align=True)
+        row.prop(item, DETAIL_SELECTED_PROPERTY, text="")
+        if self.layout_type == "DEFAULT":
+            fields = row.split(factor=0.5, align=True)
+            fields.prop(item, "name", text="", emboss=False, icon="SHAPEKEY_DATA")
+            values = fields.row(align=True)
+            values.prop(item, "morph_type", text="", emboss=False)
+            if item.name in getattr(item.id_data.mmd_root, item.morph_type):
+                values.prop(
+                    item,
+                    GROUP_FACTOR_PROXY_PROPERTY,
+                    text="",
+                    emboss=False,
+                    slider=True,
+                )
+            else:
+                values.label(icon="ERROR")
+        elif self.layout_type == "GRID":
+            row.alignment = "CENTER"
+            row.label(text="", icon_value=icon)
+
 
 class SPX_OT_SelectVertexMorphObject(Operator):
     bl_idname = "surface_proxy.select_vertex_morph_object"
@@ -3485,7 +3563,7 @@ def _draw_active_details(layout, context, root):
                 data.morph_type,
                 text="Morph",
             )
-            box.prop(data, "factor", text="权重")
+            box.prop(data, GROUP_FACTOR_PROXY_PROPERTY, text="权重")
 
 
 def draw_morph_editor(layout, context):
@@ -3651,6 +3729,53 @@ def _morph_frame_change(_scene, _depsgraph=None):
             evaluate_morph_root(root)
 
 
+def _get_group_morph_factor(offset):
+    return offset.factor
+
+
+def _set_group_morph_factor(offset, value):
+    offset.factor = value
+    root = offset.id_data
+    if (
+        root is not None
+        and getattr(root, "mmd_type", "") == "ROOT"
+        and hasattr(root, "spx_morph_states")
+        and root.spx_morph_states
+    ):
+        evaluate_morph_root(root)
+
+
+def _register_group_morph_factor_proxy():
+    morph_properties = importlib.import_module(
+        "bl_ext.blender_org.mmd_tools.properties.morph"
+    )
+    item_type = morph_properties.GroupMorphOffset
+    if not hasattr(item_type, GROUP_FACTOR_PROXY_PROPERTY):
+        setattr(
+            item_type,
+            GROUP_FACTOR_PROXY_PROPERTY,
+            FloatProperty(
+                name="权重",
+                description="Group Morph 中目标 Morph 的权重",
+                soft_min=0.0,
+                soft_max=1.0,
+                precision=3,
+                step=0.1,
+                get=_get_group_morph_factor,
+                set=_set_group_morph_factor,
+            ),
+        )
+
+
+def _unregister_group_morph_factor_proxy():
+    morph_properties = importlib.import_module(
+        "bl_ext.blender_org.mmd_tools.properties.morph"
+    )
+    item_type = morph_properties.GroupMorphOffset
+    if hasattr(item_type, GROUP_FACTOR_PROXY_PROPERTY):
+        delattr(item_type, GROUP_FACTOR_PROXY_PROPERTY)
+
+
 def _register_detail_selection_properties():
     global _DETAIL_SELECTION_REGISTRATIONS
     morph_properties = importlib.import_module(
@@ -3688,6 +3813,7 @@ def _unregister_detail_selection_properties():
 
 def register_services():
     _register_detail_selection_properties()
+    _register_group_morph_factor_proxy()
     bpy.types.Object.spx_morph_states = bpy.props.CollectionProperty(
         type=SPX_MorphState
     )
@@ -3704,6 +3830,7 @@ def register_services():
 
 
 def unregister_services():
+    _unregister_group_morph_factor_proxy()
     if bpy.app.timers.is_registered(_install_vmd_import_hook):
         bpy.app.timers.unregister(_install_vmd_import_hook)
     _remove_vmd_import_hook()
@@ -3719,6 +3846,7 @@ def unregister_services():
 CLASSES = (
     SPX_MorphAIAddonPreferences,
     SPX_MorphState,
+    SPX_OT_SetMorphValue,
     SPX_UL_MorphEditor,
     SPX_UL_MaterialMorphOffsets,
     SPX_UL_UVMorphOffsets,

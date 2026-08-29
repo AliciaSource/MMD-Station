@@ -1,5 +1,11 @@
 # Development Log
 
+## 2026-08-29 - V0.1.8 Morph 三段式滑块与 Group 详情实时刷新
+
+- Morph 编辑器五类 Tab 共用的主列表数值区改为 `0 | 滑块 | 1`：两侧端点按钮通过同一个 `SPX_MorphState.value` 将值直接切到 `0` 或 `1`，各自固定为 `1 UI unit` 宽的正方形，不随面板横向拉伸；中间仍是原生可伸缩滑块，并独占 Keyframe 装饰，因此按钮切值后插帧仍写入原 `value` 动画路径，没有新增第二套状态或动画数据。
+- 修复 Group Morph 已激活时直接编辑详情权重不立即更新的问题。原因是 `mmd_tools` 原生 `GroupMorphOffset.factor` 没有 MMD Station 求值回调；现在仅为 MMD Station 的 Group 详情 UI 增加无副本的实时代理属性，读写仍落到原生 `factor`，写入后立即对所属 Root 调用现有 `evaluate_morph_root()`。主详情列表与下方权重字段都走该入口，不修改上游 `mmd_tools` 属性定义，也不影响 PMX 数据存储格式。
+- `tests/mmd_morph_editor_regression.py` 新增三段布局、固定端点宽度、中央 Keyframe 属性归属、按钮实际切值及 Group 权重实时重算回归。Blender 4.4.3 focused regression 输出 `MMD_MORPH_EDITOR_REGRESSION_OK`，`py_compile` 与 `git diff --check` 通过。版本保持 V0.1.8；真实 Blender 4.4 安装目录仍是源码 Junction，改动已直接生效，不打包 ZIP、不 push；未进行人工 GUI 点击验收。
+
 ## 2026-08-29 - V0.1.8 诊断一键修复
 
 - 诊断 Tab 在诊断列表上方右侧新增“一键修复”按钮。执行时先冻结当前诊断清单，再依次调用既有的确定性安全修复：材质描边 Alpha 同步、可折算的刚体 Scale 修复、空 MMD 骨骼名称补齐；没有安全修复路径、目标已失效或修复失败的项目只计为跳过，不会中断后续项目。
@@ -787,11 +793,3 @@
 - 加固 `tests/bone_physics_creator_smoke.py`：骨骼生成刚体的局部 Z 必须沿骨骼方向且基底 determinant 为正；镜像刚体和 Joint 在带平移与旋转的非单位 Root 下，完整 4x4 world matrix 必须等于以 Armature 局部 X 平面反射的结果。验证覆盖创建与同步，而不再只比较 world X 位置。
 - 加固 `tests/headless_smoke.py`：代理刚体必须保持右手基底且局部 Z 沿代理骨骼；锚点/纵向 Joint 必须与其刚体 B 同坐标基，横向 Joint 必须与其来源列刚体 A 同坐标基。横向 Joint 的规则是既有约束语义，不能因为基础 Joint 的 bug 而改成刚体 B。
 - Blender 4.4.3 独立骨骼 smoke 输出 `BONE_PHYSICS_CREATOR_SMOKE_OK rigids=9 joints=5 ordered=3`；完整 smoke 复跑输出 `MMD_SKIRT_PROXY_CREATOR_SMOKE_OK top_range=0.235911131 rigids=48 joints=96`。首次完整 smoke 在既有开放曲线位移阈值断言处出现一次波动，立即复跑通过，坐标系专项断言两次均已先通过；已有 synthetic recovery traceback 是测试刻意注入。继续使用源码 Junction，不递增版本、不打包 zip。
-
-## 2026-08-17 - 基础 Joint 左右坐标系改用刚体 B 方向
-
-- 复现“同时选择带 `.L/.R` 标识的左右骨骼后创建基础 Joint，左右坐标系与 PE 结果相反/错位”的问题。根因不是后缀配对或 Blender 显示：`bone_physics_creator.builder._create_joint()` 过去用 child bone 的 Blender roll/x-axis 重新构造 Joint rotation；导入 PMX 后的 Blender bone roll 并不保存 PE Joint 的坐标基，因此即使 Joint 位置与刚体 A/B 正确，局部轴仍可能接近翻转。
-- 以 `D:\MMD\模型\Alicia\鳴潮-達尼婭\Test\07.blend` 的 PE 原始左右蝴蝶结 Joint 做只读对照。旧 bone-derived rotation 与左右原 Joint 的 quaternion 角差均为 `177.246619°`；原 Joint 与各自刚体 B 的 rotation 角差均为 `0°`。这同时排除了“仅显示形状看起来不一样”和“左右后缀串位”。
-- 基础 Joint 和“刚体 + 连接 Joint”现在以实际选中的刚体 B 的 MMD/model-local rotation 作为 Joint 坐标系，位置仍取 child bone head。对于现有 PE 刚体，这会保留其真正的左右镜像方向；对于本工具刚创建的刚体，Joint 与刚体 B 保持同一坐标基，不额外重复镜像。
-- `tests/bone_physics_creator_smoke.py` 先加入任意非默认刚体 B rotation 回归并确认旧实现失败，修复后要求新 Joint quaternion 与刚体 B 严格一致。随后在 `07.blend` 中只读删除原左右 `背蝴蝶结_1_1.L/.R` Joint、同时重新运行“基础 Joint”，新建两侧的 rotation 与 PE 原 Joint 均在 `0.0001°` 内、位置误差小于 `1e-7`，标记 `MMD_07_BASE_JOINT_AXES_OK`；工程未保存，临时脚本已删除。
-- Blender 4.4.3 完整 smoke 输出 `MMD_SKIRT_PROXY_CREATOR_SMOKE_OK top_range=0.235911131 rigids=48 joints=96`，独立骨骼物理 smoke 输出 `BONE_PHYSICS_CREATOR_SMOKE_OK rigids=9 joints=5 ordered=3`。继续使用源码 Junction，不递增版本、不打包 zip；本修复不自动改写本轮修复前已经创建的 Joint，需要 Reload Scripts 后删除并重新创建这些 Joint。
