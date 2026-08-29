@@ -3,8 +3,10 @@
 ## 2026-08-29 - V0.1.8 UV Morph 改名 Runtime 失效与完整删除修复
 
 - 修复已建立 Runtime 的顶点组型 UV Morph 在修改日文主名称后失效的问题：`mmd_tools` 会同步改名 `.placeholder` slider 与 `UV_<Morph名>±X/Y/Z/W` 顶点组，但既有 dummy-armature driver 的 `vertex_group_scale` 仍指向旧 Morph collection key。MMD Station 现在在稳定 UID 元数据刷新检测到 UV Morph 改名时强制重建轻量 Runtime，并清理由重建遗留的无效 driver；英文名仍只是导出名称，不触碰 Runtime。
+- Morph 编辑器标题栏的刷新按钮不再只重建列表缓存：检测到模型已有已绑定 `.placeholder` 时，会无条件重建 Bone/UV Runtime 并重新同步当前 Morph 值，因而可以修复“旧工程已保存新 Morph 名、但 driver 仍指向改名前 collection key”的状态；从未建立 Runtime 的模型仍保持按需绑定，不因刷新提前生成 Runtime。
 - UV Tab 主列表的减号现在不再只删除 Morph 元数据：删除前会在模型全部 Mesh 中精确移除该 Morph 的 `UV_<Morph名>±X/Y/Z/W` 附属顶点组及引用它们的 `UV_WARP` modifier，同时删除 `.placeholder` 同名 slider，并在已有 Runtime 时重建绑定以清理 dummy-armature 残留。不会按模糊前缀误删名称相近的其它 UV Morph 顶点组。
-- `tests/mmd_morph_editor_regression.py` 新增已绑定 UV Morph 改名后的新 `vertex_group_scale` driver 路径、旧路径清除、附属顶点组保留，以及双 Mesh UV Morph 经减号删除后的元数据、顶点组、modifier、placeholder slider 全链路清理回归。Blender 4.4.3 focused regression 输出 `MMD_MORPH_EDITOR_REGRESSION_OK`，`py_compile` 与 `git diff --check` 通过。版本保持 V0.1.8，真实 Blender 4.4 源码 Junction 已直接生效，不打包 ZIP、不 push；本轮未进行人工 GUI 视觉验收。
+- `tests/mmd_morph_editor_regression.py` 新增已绑定 UV Morph 改名后的新 `vertex_group_scale` driver 路径、旧路径清除、旧工程式“名称已一致但 driver 仍旧”的刷新修复、附属顶点组保留，以及双 Mesh UV Morph 经减号删除后的元数据、顶点组、modifier、placeholder slider 全链路清理回归。Blender 4.4.3 focused regression 输出 `MMD_MORPH_EDITOR_REGRESSION_OK`，`py_compile` 与 `git diff --check` 通过。
+- 对用户工程 `D:\MMD\模型\Alicia\鳴潮-達尼婭\達尼婭\33.blend` 做了不保存的只读修复验证：`合并2 / Morph2切換` 的 `UV_Morph2切換+X` 顶点组原本仍存在，但 Runtime scale path 错误残留为 `mmd_root.uv_morphs["新建 Morph"].vertex_group_scale`；执行刷新 Operator 后变为 `mmd_root.uv_morphs["Morph2切換"].vertex_group_scale`，旧路径消失、Runtime Error 为空。工程未被保存。版本保持 V0.1.8，真实 Blender 4.4 源码 Junction 已直接生效，不打包 ZIP、不 push；本轮未进行人工 GUI 视觉验收。
 
 ## 2026-08-29 - V0.1.8 活动显示枠 Morph / 骨骼统计
 
