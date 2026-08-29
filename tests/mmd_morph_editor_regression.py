@@ -451,8 +451,9 @@ settings.browser_index = next(
 )
 inspector_probe = InspectorLayoutProbe()
 _draw_active_mmd_inspector(inspector_probe, settings)
-assert {"MMD 纹理", "MMD 材质"} <= set(inspector_probe.labels)
 assert {
+    "browser_material_texture_expanded",
+    "browser_mmd_material_expanded",
     "material_id",
     "name_j",
     "name_e",
@@ -468,6 +469,20 @@ assert inspector_probe.operators.count(
 assert "surface_proxy.copy_browser_material_property_to_checked" in (
     inspector_probe.operators
 )
+
+settings.browser_material_texture_expanded = False
+settings.browser_mmd_material_expanded = False
+collapsed_probe = InspectorLayoutProbe()
+_draw_active_mmd_inspector(collapsed_probe, settings)
+assert {
+    "browser_material_texture_expanded",
+    "browser_mmd_material_expanded",
+} <= set(collapsed_probe.properties)
+assert "material_id" not in collapsed_probe.properties
+assert "sphere_texture_type" not in collapsed_probe.properties
+assert not collapsed_probe.operators
+settings.browser_material_texture_expanded = True
+settings.browser_mmd_material_expanded = True
 
 # The real Material Tab draw path reaches the embedded inspector before its
 # material-only early return.
