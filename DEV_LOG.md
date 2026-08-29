@@ -1,5 +1,11 @@
 # Development Log
 
+## 2026-08-29 - V0.1.8 MMD I/O 快捷入口与自有代理层
+
+- 在 MMD Station 六个功能 Tab 上方增加固定 I/O 快捷区，按“模型 / 运动 / 姿态”三列提供导入、导出按钮，覆盖 PMD/PMX 模型、VMD 运动与 VPD 姿态；切换代理创建、MMD 查看器、Morph 编辑器、显示枠、物理预览或 MMD IK 时入口始终保留。
+- 新增六个 `mmd_station.*` 自有 I/O operator。当前代理层完整转交给 `mmd_tools.import_model/export_pmx/import_vmd/export_vmd/import_vpd/export_vpd`，保持原文件选择器、参数面板与上下文规则；UI 不再直接依赖上游 operator id，后续可只替换 MMD Station 的 PMX 导出实现来做性能定制。
+- 新增 `tests/mmd_io_regression.py`，覆盖六个自有 operator 的注册与上游映射、三列按钮顺序，以及快捷区确实绘制在功能 Tab 之前。Blender 4.4.3 真实用户配置 focused regression 输出 `MMD_IO_REGRESSION_OK`，`py_compile` 与 `git diff --check` 通过。版本保持 V0.1.8；真实 Blender 4.4 安装目录仍是源码 Junction，改动已直接生效，不打包 ZIP、不 push；本轮未执行真实文件导入/导出，也未进行人工 GUI 点击验收。
+
 ## 2026-08-29 - V0.1.8 Morph 三段式滑块与 Group 详情实时刷新
 
 - Morph 编辑器五类 Tab 共用的主列表数值区改为 `0 | 滑块 | 1`：两侧端点按钮通过同一个 `SPX_MorphState.value` 将值直接切到 `0` 或 `1`，各自固定为 `1 UI unit` 宽的正方形，不随面板横向拉伸；中间仍是原生可伸缩滑块，并独占 Keyframe 装饰，因此按钮切值后插帧仍写入原 `value` 动画路径，没有新增第二套状态或动画数据。
