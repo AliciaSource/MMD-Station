@@ -1308,6 +1308,28 @@ assert 'mmd_root.uv_morphs["RenameUV"].vertex_group_scale' not in (
     uv_runtime_target_paths()
 )
 
+# A saved legacy file can already have matching state/morph names while its
+# bound driver still targets the pre-rename collection key. The explicit
+# refresh button must force a runtime rebuild even without a fresh rename.
+scale_target = next(
+    target
+    for curve in dummy_armature.animation_data.drivers
+    for variable in curve.driver.variables
+    for target in variable.targets
+    if target.data_path
+    == 'mmd_root.uv_morphs["RenamedUV"].vertex_group_scale'
+)
+scale_target.data_path = 'mmd_root.uv_morphs["LegacyRenameUV"].vertex_group_scale'
+assert _morph_states_are_current(root)
+assert bpy.ops.surface_proxy.refresh_morph_editor() == {"FINISHED"}
+assert 'mmd_root.uv_morphs["RenamedUV"].vertex_group_scale' in (
+    uv_runtime_target_paths()
+)
+assert 'mmd_root.uv_morphs["LegacyRenameUV"].vertex_group_scale' not in (
+    uv_runtime_target_paths()
+)
+assert abs(model.morph_slider.get("RenamedUV").value - 0.75) < 1.0e-6
+
 # The UV-tab minus removes the Morph plus its encoded vertex groups and bound
 # runtime artifacts from every model mesh.
 delete_uv_morph = root.mmd_root.uv_morphs.add()

@@ -1635,8 +1635,20 @@ class SPX_OT_RefreshMorphEditor(Operator):
         settings.morph_editor_root = root
         restored = _restore_missing_vertex_morphs(root)
         ensure_morph_states(root)
-        if restored:
+        rebound = _bound_placeholder(root) is not None
+        if rebound:
+            _ensure_lightweight_bind(root, force_rebind=True)
+            ensure_morph_states(root)
+            evaluate_morph_root(root)
+        if restored and rebound:
+            self.report(
+                {"INFO"},
+                f"已补充 {restored} 个顶点 Morph，并重建 Bone/UV Runtime",
+            )
+        elif restored:
             self.report({"INFO"}, f"已补充 {restored} 个顶点 Morph")
+        elif rebound:
+            self.report({"INFO"}, "已刷新 Morph 并重建 Bone/UV Runtime")
         return {"FINISHED"}
 
 
