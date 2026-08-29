@@ -84,6 +84,27 @@ class InspectorLayoutProbe:
         return SimpleNamespace()
 
 
+class MorphListLayoutProbe:
+    def __init__(self, nodes=None, properties=None, operators=None):
+        self.nodes = nodes if nodes is not None else []
+        self.properties = properties if properties is not None else []
+        self.operators = operators if operators is not None else []
+        self.ui_units_x = 0.0
+        self.use_property_decorate = False
+        self.nodes.append(self)
+
+    def row(self, **_kwargs):
+        return MorphListLayoutProbe(self.nodes, self.properties, self.operators)
+
+    def prop(self, data, name, **kwargs):
+        self.properties.append((self, data, name, kwargs))
+
+    def operator(self, operator_id, **kwargs):
+        properties = SimpleNamespace()
+        self.operators.append((self, operator_id, kwargs, properties))
+        return properties
+
+
 def make_material(name, shader_type="ShaderNodeBsdfPrincipled"):
     material = bpy.data.materials.new(name)
     material.use_nodes = True
@@ -438,6 +459,40 @@ assert any(
 settings = bpy.context.scene.surface_proxy_creator
 settings.morph_editor_root = root
 settings.morph_editor_type = "material_morphs"
+
+# Every Morph tab shares a 0 | slider | 1 value row. The endpoint buttons use
+# fixed one-unit layouts, while the keyframe decoration remains on state.value.
+morph_list_probe = MorphListLayoutProbe()
+morph_editor_module.SPX_UL_MorphEditor.draw_item(
+    None,
+    bpy.context,
+    morph_list_probe,
+    root,
+    states["Hide"],
+    0,
+    root,
+    "spx_morph_active_index",
+    root.spx_morph_states.find(states["Hide"].uid),
+)
+value_properties = [
+    record for record in morph_list_probe.properties if record[2] == "value"
+]
+assert len(value_properties) == 1
+slider_layout, slider_state, _name, slider_kwargs = value_properties[0]
+assert slider_state == states["Hide"]
+assert slider_kwargs.get("slider") is True
+assert slider_layout.use_property_decorate
+endpoint_operators = [
+    record
+    for record in morph_list_probe.operators
+    if record[1] == "surface_proxy.set_morph_value"
+]
+assert [record[2].get("text") for record in endpoint_operators] == ["0", "1"]
+assert all(record[0].ui_units_x == 1.0 for record in endpoint_operators)
+assert [record[3].value for record in endpoint_operators] == [0.0, 1.0]
+assert all(record[3].morph_uid == states["Hide"].uid for record in endpoint_operators)
+assert all(record[3].root_name == root.name for record in endpoint_operators)
+assert states["Hide"].path_from_id("value") == hide_path
 
 # The material browser embeds the complete MMD Texture and MMD Material
 # controls for its active material instead of requiring the Properties editor.
@@ -1262,6 +1317,15 @@ assert not any(
     node.name.startswith("mmd_bind") for node in material.node_tree.nodes
 )
 
+# Editing a Group Morph detail factor through RNA immediately recomputes the
+# already-active group instead of waiting for its top-level slider to move.
+group_offset.spx_morph_factor_live = 0.25
+assert group_offset.factor == 0.25
+assert abs(body_bridges[0].inputs["Opacity"].default_value - 0.75) < 1.0e-6
+group_offset.spx_morph_factor_live = 0.5
+assert group_offset.factor == 0.5
+assert abs(body_bridges[0].inputs["Opacity"].default_value - 0.5) < 1.0e-6
+
 # Numeric entry is unrestricted while mouse dragging keeps the 0..1 soft range.
 value_property = root.spx_morph_states[0].bl_rna.properties["value"]
 assert value_property.soft_min == 0.0
@@ -1793,5 +1857,16 @@ clipboard_layout = InspectorLayoutProbe()
 morph_editor_module.draw_morph_editor(clipboard_layout, bpy.context)
 assert "surface_proxy.copy_selected_morphs_to_clipboard" in clipboard_layout.operators
 assert "surface_proxy.paste_morphs_from_clipboard" in clipboard_layout.operators
+
+states = {state.morph_name: state for state in root.spx_morph_states}
+states["Hide"].value = 0.25
+button_value_path = states["Hide"].path_from_id("value")
+assert bpy.ops.surface_proxy.set_morph_value(
+    root_name=root.name,
+    morph_uid=states["Hide"].uid,
+    value=1.0,
+) == {"FINISHED"}
+assert states["Hide"].value == 1.0
+assert states["Hide"].path_from_id("value") == button_value_path
 
 print("MMD_MORPH_EDITOR_REGRESSION_OK")
