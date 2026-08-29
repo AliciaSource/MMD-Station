@@ -1,5 +1,11 @@
 # Development Log
 
+## 2026-08-29 - V0.1.8 切换 Morph Tab 不再改写表情显示枠
+
+- 修复从显示枠切到 Morph 编辑器再切回时，Morph 编辑器的被动状态刷新误调用完整 `_sync_morph_order()`，清空并用全部 Morph 重建“表情”枠的问题。被动刷新现在只重排编辑器状态缓存；若 Morph 确实被改名，只更新已经收录该 Morph 的显示项引用，不新增、删除或重排任何显示项。显式新增/删除/排序 Morph 与显示枠“智能重排序”的既有写回行为保持不变。
+- 对用户工程 `D:\MMD\模型\Alicia\鳴潮-達尼婭\達尼婭\33.blend` 进行了不保存的只读复现：`合并2` 的表情枠为 253 项、Morph 状态为 256 项，未收录的 3 项均为空 Material Morph（`--衣服消失--`、`--BDSM--`、`----------`）；修复后执行同一被动刷新仍为 253 项，逐项内容不变且新增 0 项。
+- `tests/mmd_morph_editor_regression.py` 新增“只保留一个已收录 Morph”的被动刷新与改名引用回归，防止未收录/空 Morph 再被自动补入。Blender 4.4.3 回归输出 `MMD_MORPH_EDITOR_REGRESSION_OK` 与 `MMD_DISPLAY_FRAME_REGRESSION_OK`，`py_compile`、`git diff --check` 通过。版本保持 V0.1.8，真实 Blender 4.4 源码 Junction 已直接生效，不打包 ZIP、不 push；真实工程未保存，未进行人工 GUI 点击验收。
+
 ## 2026-08-29 - V0.1.8 UV Morph 改名 Runtime 失效与完整删除修复
 
 - 修复已建立 Runtime 的顶点组型 UV Morph 在修改日文主名称后失效的问题：`mmd_tools` 会同步改名 `.placeholder` slider 与 `UV_<Morph名>±X/Y/Z/W` 顶点组，但既有 dummy-armature driver 的 `vertex_group_scale` 仍指向旧 Morph collection key。MMD Station 现在在稳定 UID 元数据刷新检测到 UV Morph 改名时强制重建轻量 Runtime，并清理由重建遗留的无效 driver；英文名仍只是导出名称，不触碰 Runtime。

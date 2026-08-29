@@ -248,13 +248,22 @@ def _refresh_morph_state_metadata(root):
     for state in root.spx_morph_states:
         morph = _morph_by_uid(root, state.morph_type, state.uid)
         if morph is not None and state.morph_name != morph.name:
+            previous_name = state.morph_name
             uv_runtime_renamed = uv_runtime_renamed or (
                 state.morph_type == "uv_morphs"
                 and _bound_placeholder(root) is not None
                 and bool(root.get(RUNTIME_BOUND_PROPERTY, False))
             )
+            for frame in root.mmd_root.display_item_frames:
+                for item in frame.data:
+                    if (
+                        item.type == "MORPH"
+                        and item.morph_type == state.morph_type
+                        and item.name == previous_name
+                    ):
+                        item.name = morph.name
             state.morph_name = morph.name
-    _sync_morph_order(root)
+    ensure_morph_states(root)
     if uv_runtime_renamed:
         _ensure_lightweight_bind(root, force_rebind=True)
 
