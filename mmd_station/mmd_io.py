@@ -39,7 +39,7 @@ class MMD_STATION_OT_ImportModel(_MMDToolsIOProxy):
 class MMD_STATION_OT_ExportPMX(_MMDToolsIOProxy):
     bl_idname = "mmd_station.export_pmx"
     bl_label = "导出 PMX 模型"
-    bl_description = "使用 MMD Station 导出入口导出 PMX 模型"
+    bl_description = "首次完整导出建立运行时 Shadow；同一 Blender 会话中的安全小改动可快速覆盖或另存为"
     target_operator = "mmd_tools.export_pmx"
 
 

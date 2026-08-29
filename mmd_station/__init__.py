@@ -80,6 +80,8 @@ from .mmd_io import CLASSES as MMD_IO_CLASSES
 from .mmd_io import draw_mmd_io
 from .mmd_export_profile import register_export_profile_hook
 from .mmd_export_profile import unregister_export_profile_hook
+from .mmd_shadow import register_services as register_shadow_services
+from .mmd_shadow import unregister_services as unregister_shadow_services
 from .vertex_group_tools import CLASSES as VERTEX_GROUP_TOOL_CLASSES
 from .vertex_group_tools import register_menu as register_vertex_group_menu
 from .vertex_group_tools import unregister_menu as unregister_vertex_group_menu
@@ -1165,6 +1167,7 @@ def register():
     bpy.types.Scene.surface_proxy_creator = PointerProperty(type=SPX_Settings)
     register_material_export_hook()
     register_export_profile_hook()
+    register_shadow_services()
     register_sync_services()
     register_browser_auto_refresh()
     register_browser_context_menu()
@@ -1175,6 +1178,7 @@ def register():
 
 
 def unregister():
+    unregister_shadow_services()
     unregister_export_profile_hook()
     unregister_material_export_hook()
     unregister_display_frame_services()

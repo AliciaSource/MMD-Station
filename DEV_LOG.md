@@ -1,5 +1,13 @@
 # Development Log
 
+## 2026-08-29 - V0.1.8 运行时 PMX Shadow 快速覆盖与另存为
+
+- 新增 `mmd_shadow.py`，第一次完整 PMX 导出时直接保留 `mmd_tools` 已构建的 `pmx.Model`、骨骼/材质索引映射及安全签名，不再从磁盘重新解析旧 PMX。Shadow 只存在于当前 Blender 进程内，不在 `.blend` 同目录、导出目录或用户配置目录写缓存文件；关闭 Blender、切换 `.blend`、Reload Scripts 或禁用 MMD Station 后立即清空，因此每次新会话第一次导出仍是完整导出并重新建立 Shadow。
+- 同一会话后续覆盖原路径或另存为新路径时，只要 Root、Mesh/Armature/ShapeKey/材质内容、导出结构选项和刚体/Joint 对象集合仍兼容，直接复用既有顶点、面、材质与骨骼数据，仅重建模型信息、显示枠、刚体、Joint、Bone/Material/Group Morph；支持这些 Morph 的新增、修改、删除，并支持既有 Vertex/UV Morph 改名与分类。Vertex/UV Morph 增删或类型变化、Mesh/权重/Modifier/材质/骨骼结构变化以及无法证明安全的状态会自动回退完整导出并重建 Shadow。
+- 对受监控 datablock 的 depsgraph 更新先计算内容 fingerprint，避免 Morph 元数据或模型信息更新引起的无效完整导出，同时确保顶点坐标、拓扑、UV、ShapeKey 坐标、权重、Modifier、材质与骨骼内容变化不会误走快速路径。快速写盘使用同目录临时文件加 `os.replace()` 原子替换；准备或写盘失败会回滚内存模型并自动执行原完整导出，不留下半写 PMX。
+- 使用完成工程 `D:\MMD\模型\Alicia\鳴潮-達尼婭\達尼婭\36.blend` 的 Root `合并2` 做真实验证：第一次完整导出 `35.106s`；微调刚体质量后覆盖同一路径 `2.045s`；新增 Group Morph 后另存为新路径 `1.961s`，两次均确认命中 Shadow，约比该工程此前 `26.710s` 的常规覆盖快 `13.1x–13.6x`。两个结果均经 `pmx.load()` 回读并验证刚体与新增 Morph，正式 `合并2.pmx` SHA256 保持 `3F45DC755DD322B7B2CD22C91BA4604B3B66E9336156CEEB5545C344145BDAC4` 不变。
+- 新增 `tests/mmd_shadow_regression.py`，覆盖首次完整建立 Shadow、快速另存为、Bone/Material/Group Morph 新增与改名、模型名更新、Mesh 实改自动完整回退以及运行时清空。Blender 4.4.3 输出 `MMD_SHADOW_REGRESSION_OK`、`MMD_EXPORT_PROFILE_REGRESSION_OK`、`MMD_IO_REGRESSION_OK`；`py_compile` 与 `git diff --check` 通过。版本保持 V0.1.8，真实 Blender 4.4 仍通过源码 Junction 生效，不打包 ZIP、不 push。
+
 ## 2026-08-29 - V0.1.8 PMX 完整导出分阶段性能基线
 
 - 新增 `mmd_export_profile.py`，由 MMD Station 在注册时挂载 `mmd_tools` PMX exporter 顶层入口，并只在单次导出期间临时计时 Bones、逐 Mesh 数据读取、顶点/面/材质构建、各类 Morph、显示枠、刚体、Joint、贴图处理和 PMX serialization；不修改上游 `mmd_tools` 源码，导出结束或异常时都会恢复原方法，同时保留最近一次结构化结果供后续快速覆盖实现和回归使用。
