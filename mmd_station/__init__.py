@@ -76,6 +76,8 @@ from .mmd_display_frame import draw_display_frame_editor
 from .mmd_display_frame import register_services as register_display_frame_services
 from .mmd_display_frame import register_settings as register_display_frame_settings
 from .mmd_display_frame import unregister_services as unregister_display_frame_services
+from .mmd_io import CLASSES as MMD_IO_CLASSES
+from .mmd_io import draw_mmd_io
 from .vertex_group_tools import CLASSES as VERTEX_GROUP_TOOL_CLASSES
 from .vertex_group_tools import register_menu as register_vertex_group_menu
 from .vertex_group_tools import unregister_menu as unregister_vertex_group_menu
@@ -1096,6 +1098,7 @@ class SPX_OT_CreateSkirtProxy(Operator):
 
 def draw_workspace(layout, context):
     settings = context.scene.surface_proxy_creator
+    draw_mmd_io(layout)
     tabs = layout.row(align=True)
     tabs.scale_y = 1.2
     tabs.prop(settings, "workspace_tab", expand=True)
@@ -1136,6 +1139,7 @@ CLASSES = (
     *MMD_BONE_SUBDIVISION_CLASSES,
     *MMD_MORPH_EDITOR_CLASSES,
     *MMD_DISPLAY_FRAME_CLASSES,
+    *MMD_IO_CLASSES,
     *PHYSICS_PREVIEW_CLASSES,
     *MMD_IK_RUNTIME_CLASSES,
     *VERTEX_GROUP_TOOL_CLASSES,

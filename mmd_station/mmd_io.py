@@ -1,0 +1,100 @@
+import bpy
+from bpy.types import Operator
+
+
+class _MMDToolsIOProxy(Operator):
+    target_operator = ""
+
+    @classmethod
+    def poll(cls, _context):
+        try:
+            module_name, operator_name = cls.target_operator.split(".", 1)
+            return getattr(getattr(bpy.ops, module_name), operator_name).poll()
+        except (AttributeError, RuntimeError, ValueError):
+            return False
+
+    def _invoke_target(self):
+        try:
+            module_name, operator_name = self.target_operator.split(".", 1)
+            operator = getattr(getattr(bpy.ops, module_name), operator_name)
+            return operator("INVOKE_DEFAULT")
+        except (AttributeError, RuntimeError, ValueError) as error:
+            self.report({"ERROR"}, f"无法启动 mmd_tools I/O：{error}")
+            return {"CANCELLED"}
+
+    def invoke(self, _context, _event):
+        return self._invoke_target()
+
+    def execute(self, _context):
+        return self._invoke_target()
+
+
+class MMD_STATION_OT_ImportModel(_MMDToolsIOProxy):
+    bl_idname = "mmd_station.import_model"
+    bl_label = "导入 MMD 模型"
+    bl_description = "使用 mmd_tools 导入 PMD/PMX 模型"
+    target_operator = "mmd_tools.import_model"
+
+
+class MMD_STATION_OT_ExportPMX(_MMDToolsIOProxy):
+    bl_idname = "mmd_station.export_pmx"
+    bl_label = "导出 PMX 模型"
+    bl_description = "使用 MMD Station 导出入口导出 PMX 模型"
+    target_operator = "mmd_tools.export_pmx"
+
+
+class MMD_STATION_OT_ImportVMD(_MMDToolsIOProxy):
+    bl_idname = "mmd_station.import_vmd"
+    bl_label = "导入 VMD 运动"
+    bl_description = "使用 mmd_tools 导入 VMD 运动"
+    target_operator = "mmd_tools.import_vmd"
+
+
+class MMD_STATION_OT_ExportVMD(_MMDToolsIOProxy):
+    bl_idname = "mmd_station.export_vmd"
+    bl_label = "导出 VMD 运动"
+    bl_description = "使用 MMD Station 导出入口导出 VMD 运动"
+    target_operator = "mmd_tools.export_vmd"
+
+
+class MMD_STATION_OT_ImportVPD(_MMDToolsIOProxy):
+    bl_idname = "mmd_station.import_vpd"
+    bl_label = "导入 VPD 姿态"
+    bl_description = "使用 mmd_tools 导入 VPD 姿态"
+    target_operator = "mmd_tools.import_vpd"
+
+
+class MMD_STATION_OT_ExportVPD(_MMDToolsIOProxy):
+    bl_idname = "mmd_station.export_vpd"
+    bl_label = "导出 VPD 姿态"
+    bl_description = "使用 MMD Station 导出入口导出 VPD 姿态"
+    target_operator = "mmd_tools.export_vpd"
+
+
+def draw_mmd_io(layout):
+    row = layout.row()
+
+    column = row.column(align=True)
+    column.label(text="模型", icon="OUTLINER_OB_ARMATURE")
+    column.operator(MMD_STATION_OT_ImportModel.bl_idname, text="导入")
+    column.operator(MMD_STATION_OT_ExportPMX.bl_idname, text="导出")
+
+    column = row.column(align=True)
+    column.label(text="运动", icon="ANIM")
+    column.operator(MMD_STATION_OT_ImportVMD.bl_idname, text="导入")
+    column.operator(MMD_STATION_OT_ExportVMD.bl_idname, text="导出")
+
+    column = row.column(align=True)
+    column.label(text="姿态", icon="POSE_HLT")
+    column.operator(MMD_STATION_OT_ImportVPD.bl_idname, text="导入")
+    column.operator(MMD_STATION_OT_ExportVPD.bl_idname, text="导出")
+
+
+CLASSES = (
+    MMD_STATION_OT_ImportModel,
+    MMD_STATION_OT_ExportPMX,
+    MMD_STATION_OT_ImportVMD,
+    MMD_STATION_OT_ExportVMD,
+    MMD_STATION_OT_ImportVPD,
+    MMD_STATION_OT_ExportVPD,
+)
