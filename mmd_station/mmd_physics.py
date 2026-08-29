@@ -2864,6 +2864,14 @@ class SPX_OT_JumpToMMDDiagnostic(Operator):
         )
 
 
+_AUTO_REPAIRABLE_MMD_DIAGNOSTIC_CODES = {
+    "MATERIAL_EDGE_ALPHA_SYNC",
+    "RIGID_SCALE_BAKE",
+    "RIGID_SCALE_NORMALIZE",
+    "BONE_NAME_EMPTY",
+}
+
+
 class SPX_OT_RepairMMDDiagnostic(Operator):
     bl_idname = "surface_proxy.repair_mmd_diagnostic"
     bl_label = "尝试安全修复"
@@ -2961,6 +2969,53 @@ class SPX_OT_RepairMMDDiagnostic(Operator):
             f"无法安全自动修复“{message}”：缺少唯一可靠的目标数据，请跳转后手动处理",
         )
         return {"CANCELLED"}
+
+
+class SPX_OT_RepairAllMMDDiagnostics(Operator):
+    bl_idname = "surface_proxy.repair_all_mmd_diagnostics"
+    bl_label = "一键修复"
+    bl_description = "依次修复所有可安全自动修复的诊断项；无法自动修复的项目会跳过"
+    bl_options = {"REGISTER", "UNDO"}
+
+    def execute(self, context):
+        settings = context.scene.surface_proxy_creator
+        issues = [
+            {
+                "code": item.code,
+                "target_kind": item.target_kind,
+                "target_name": item.target_name,
+                "armature_name": item.armature_name,
+                "diagnostic_message": item.message,
+            }
+            for item in settings.browser_diagnostics
+        ]
+        if not issues:
+            self.report({"INFO"}, "当前没有诊断项")
+            return {"FINISHED"}
+
+        repaired_count = 0
+        skipped_count = 0
+        for issue in issues:
+            if issue["code"] not in _AUTO_REPAIRABLE_MMD_DIAGNOSTIC_CODES:
+                skipped_count += 1
+                continue
+            try:
+                result = bpy.ops.surface_proxy.repair_mmd_diagnostic(**issue)
+            except RuntimeError:
+                skipped_count += 1
+                continue
+            if "FINISHED" in result:
+                repaired_count += 1
+            else:
+                skipped_count += 1
+
+        _refresh_mmd_browser_from_changes()
+        remaining_count = len(settings.browser_diagnostics)
+        self.report(
+            {"INFO"},
+            f"一键修复完成：已修复 {repaired_count} 项，跳过 {skipped_count} 项，剩余 {remaining_count} 项",
+        )
+        return {"FINISHED"}
 
 
 def _checked_items(settings, kind=None):
@@ -4982,6 +5037,14 @@ def draw_browser(layout, settings):
     layout.prop(settings, "browser_search", icon="VIEWZOOM")
     if settings.browser_kind == "DIAGNOSTIC":
         layout.label(text="这里只报告可确认的模型结构问题，不评判物理参数。", icon="INFO")
+        repair_row = layout.row(align=True)
+        repair_row.alignment = "RIGHT"
+        repair_row.enabled = bool(settings.browser_diagnostics)
+        repair_row.operator(
+            SPX_OT_RepairAllMMDDiagnostics.bl_idname,
+            text="一键修复",
+            icon="TOOL_SETTINGS",
+        )
         layout.template_list(
             "SPX_UL_MMDDiagnostics",
             "",
@@ -5604,6 +5667,7 @@ CLASSES = (
     SPX_OT_SelectMMDItem,
     SPX_OT_JumpToMMDDiagnostic,
     SPX_OT_RepairMMDDiagnostic,
+    SPX_OT_RepairAllMMDDiagnostics,
     SPX_OT_SetMMDBrowserChecks,
     SPX_OT_QuickCheckMMDGroup,
     SPX_OT_PrefixFromActiveMMDItem,
