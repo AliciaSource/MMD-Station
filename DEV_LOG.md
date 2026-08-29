@@ -1,5 +1,10 @@
 # Development Log
 
+## 2026-08-29 - V0.1.8 智能重排序跳过隐藏 Morph
+
+- “智能重排序表情枠”现在把 `mmd_tools` 中 `category == "SYSTEM"`（UI 显示为 Hidden/隐藏）的 Morph 与空 Morph 一样排除：即使隐藏 Morph 具备有效 Material/UV/Bone/Vertex/Group 详情，也不会被自动收录。该过滤仅作用于智能重排序；不删除或移动 Morph，不改变 Morph 编辑器顺序，也不限制用户通过显示枠页加号手动收录隐藏 Morph。
+- `tests/mmd_display_frame_regression.py` 新增具有效 Material 详情的 `SYSTEM` Morph，断言智能重排序保留原 Morph 定义但不把它写入表情枠，同时继续覆盖五类非隐藏有效 Morph 与各类空 Morph。Blender 4.4.3 focused regression 输出 `MMD_DISPLAY_FRAME_REGRESSION_OK`，`py_compile`、`git diff --check` 通过。版本保持 V0.1.8，真实 Blender 4.4 源码 Junction 已直接生效，不打包 ZIP、不 push；未进行人工 GUI 点击验收。
+
 ## 2026-08-29 - V0.1.8 材质同步与校对范围修复
 
 - 修复 MMD 查看器材质页两个名称同步按钮和“校对材质 ID 与物体编号”无视查看器选择范围、始终处理全部材质的问题。三项操作现在统一遵守同一范围规则：存在勾选项时只处理勾选材质；没有任何勾选项时只处理当前活动材质；不会再以“无勾选”解释为“全部”。没有有效活动材质时操作会取消并给出提示。

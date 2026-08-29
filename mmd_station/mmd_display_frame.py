@@ -701,7 +701,7 @@ class SPX_OT_SmartFillDisplayFrameBones(Operator):
 class SPX_OT_SmartReorderFacialFrame(Operator):
     bl_idname = "surface_proxy.smart_reorder_facial_frame"
     bl_label = "智能重排序表情枠"
-    bl_description = "仅收录有有效详情的 Morph，并按群组、材质、UV、骨骼、顶点排序"
+    bl_description = "仅收录非隐藏且有有效详情的 Morph，并按群组、材质、UV、骨骼、顶点排序"
     bl_options = {"REGISTER", "UNDO"}
 
     def execute(self, context):
@@ -723,7 +723,8 @@ class SPX_OT_SmartReorderFacialFrame(Operator):
             (morph_type, morph.name)
             for morph_type in priority
             for morph in getattr(root.mmd_root, morph_type)
-            if (
+            if morph.category != "SYSTEM"
+            and (
                 bool(morph.data)
                 if morph_type == "group_morphs"
                 else _morph_has_details(root, morph_type, morph)
@@ -736,7 +737,10 @@ class SPX_OT_SmartReorderFacialFrame(Operator):
             item.morph_type = morph_type
             item.name = morph_name
         frame.active_item = 0
-        self.report({"INFO"}, f"表情枠已重排，共收录 {len(ordered)} 个非空 Morph")
+        self.report(
+            {"INFO"},
+            f"表情枠已重排，共收录 {len(ordered)} 个非隐藏且非空 Morph",
+        )
         return {"FINISHED"}
 
 

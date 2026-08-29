@@ -108,6 +108,10 @@ add_mesh_with_shape_key(armature, "VertexDetailed")
 material_morph = root.mmd_root.material_morphs.add()
 material_morph.name = "MaterialDetailed"
 material_morph.data.add()
+hidden_material = root.mmd_root.material_morphs.add()
+hidden_material.name = "MaterialHiddenDetailed"
+hidden_material.category = "SYSTEM"
+hidden_material.data.add()
 empty_material = root.mmd_root.material_morphs.add()
 empty_material.name = "MaterialEmpty"
 
@@ -162,6 +166,8 @@ assert statistics_layout.labels == [
     "当前显示枠：共 2 项；Morph：0 项；骨骼：2 项",
 ]
 assert root.mmd_root.material_morphs.get("MaterialEmpty") is not None
+assert root.mmd_root.material_morphs.get("MaterialHiddenDetailed") is not None
+assert facial.data.get("MaterialHiddenDetailed") is None
 assert root.mmd_root.vertex_morphs.get("VertexEmpty") is not None
 assert root.mmd_root.group_morphs.get("GroupEmpty") is not None
 
