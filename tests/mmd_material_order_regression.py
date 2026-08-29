@@ -14,6 +14,7 @@ import mmd_station
 from bl_ext.blender_org.mmd_tools.core import pmx
 from bl_ext.blender_org.mmd_tools.core.model import FnModel, Model
 from mmd_station.mmd_material_order import (
+    draw_name_sync,
     material_identity,
     ordered_materials,
 )
@@ -39,6 +40,41 @@ class RecordingUILayout:
 
     def operator(self, *_args, **_kwargs):
         return type("RecordedOperator", (), {})()
+
+
+class MaterialControlsLayoutProbe:
+    def __init__(self, node_type="layout", kwargs=None):
+        self.node_type = node_type
+        self.kwargs = kwargs or {}
+        self.children = []
+
+    def _child(self, node_type, kwargs):
+        child = MaterialControlsLayoutProbe(node_type, kwargs)
+        self.children.append(child)
+        return child
+
+    def row(self, **kwargs):
+        return self._child("row", kwargs)
+
+    def split(self, **kwargs):
+        return self._child("split", kwargs)
+
+    def operator(self, operator_id, **kwargs):
+        self.children.append(MaterialControlsLayoutProbe("operator", {
+            "operator_id": operator_id,
+            **kwargs,
+        }))
+        return type("RecordedOperator", (), {})()
+
+    def prop(self, owner, property_name, **kwargs):
+        self.children.append(MaterialControlsLayoutProbe("prop", {
+            "owner": owner,
+            "property_name": property_name,
+            **kwargs,
+        }))
+
+    def label(self, **kwargs):
+        self.children.append(MaterialControlsLayoutProbe("label", kwargs))
 
 
 def make_material(name, name_j, name_e):
@@ -96,6 +132,28 @@ assert ordered_materials(root) == [material_c, material_a, material_b]
 settings = bpy.context.scene.surface_proxy_creator
 settings.mmd_root = root
 settings.browser_kind = "MATERIAL"
+assert abs(settings.material_split_shapekey_cleanup_threshold - 1e-4) < 1e-9
+controls_probe = MaterialControlsLayoutProbe()
+draw_name_sync(controls_probe, settings)
+controls_row = controls_probe.children[0]
+first_third = controls_row.children[0]
+assert first_third.node_type == "split"
+assert abs(first_third.kwargs["factor"] - (1.0 / 3.0)) < 1e-9
+remaining_thirds = first_third.children[1]
+assert remaining_thirds.node_type == "split"
+assert remaining_thirds.kwargs["factor"] == 0.5
+split_controls = remaining_thirds.children[0]
+assert split_controls.node_type == "row"
+assert split_controls.children[0].kwargs["operator_id"] == (
+    "surface_proxy.separate_active_mesh_by_materials"
+)
+auto_sync = split_controls.children[1]
+assert auto_sync.kwargs["property_name"] == "material_order_auto_sync"
+assert auto_sync.kwargs["text"] == ""
+threshold_control = remaining_thirds.children[1]
+assert threshold_control.kwargs["property_name"] == (
+    "material_split_shapekey_cleanup_threshold"
+)
 assert bpy.ops.surface_proxy.refresh_mmd_browser() == {"FINISHED"}
 next(item for item in settings.browser_items if item.material == material_b).selected = True
 assert bpy.ops.surface_proxy.reorder_checked_mmd_items(action="TOP") == {"FINISHED"}
@@ -207,6 +265,13 @@ assert external_conflict.mmd_material.material_id >= 3
 assert single_mesh.name == "000_Z_Mesh"
 assert multi_mesh.name == "A_Mesh"
 
+basis = multi_mesh.shape_key_add(name="Basis")
+tiny_key = multi_mesh.shape_key_add(name="TinyResidual")
+tiny_key.data[0].co.x = basis.data[0].co.x + 5e-5
+large_key = multi_mesh.shape_key_add(name="LargeResidual")
+large_key.data[3].co.x = basis.data[3].co.x + 2e-4
+settings.material_split_shapekey_cleanup_threshold = 1e-4
+
 bpy.ops.object.select_all(action="DESELECT")
 multi_mesh.select_set(True)
 bpy.context.view_layer.objects.active = multi_mesh
@@ -228,6 +293,15 @@ assert all(
     "mmd_normal" not in mesh_object.data.attributes
     for mesh_object in (material_owners[material_c], material_owners[material_a])
 )
+assert all(
+    "TinyResidual" not in mesh_object.data.shape_keys.key_blocks
+    for mesh_object in (material_owners[material_c], material_owners[material_a])
+)
+assert "LargeResidual" in material_owners[material_a].data.shape_keys.key_blocks
+assert (
+    material_owners[material_a].data.shape_keys.key_blocks["LargeResidual"].data[0].co
+    - material_owners[material_a].data.shape_keys.key_blocks["Basis"].data[0].co
+).length > settings.material_split_shapekey_cleanup_threshold
 
 # Auto sync handles a multi-selection as one stable block and only touches
 # positions whose material actually changed.
