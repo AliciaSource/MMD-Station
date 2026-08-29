@@ -1863,12 +1863,15 @@ def _mmd_rigid_components(rigids, joints):
 
 
 def _material_edge_alpha_needs_sync(mmd_material):
+    if not mmd_material.enabled_toon_edge:
+        return False
     material_alpha = float(mmd_material.alpha)
     edge_alpha = float(mmd_material.edge_color[3])
-    if math.isclose(material_alpha, edge_alpha, rel_tol=0.0, abs_tol=1e-6):
-        return False
-    return not math.isclose(material_alpha, 0.0, rel_tol=0.0, abs_tol=1e-6) or bool(
-        mmd_material.enabled_toon_edge
+    return not math.isclose(
+        material_alpha,
+        edge_alpha,
+        rel_tol=0.0,
+        abs_tol=1e-6,
     )
 
 

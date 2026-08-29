@@ -174,7 +174,7 @@ material_a.mmd_material.alpha = 0.0
 material_a.mmd_material.enabled_toon_edge = True
 material_a.mmd_material.edge_color = (0.1, 0.2, 0.3, 1.0)
 material_b.mmd_material.alpha = 1.0
-material_b.mmd_material.enabled_toon_edge = False
+material_b.mmd_material.enabled_toon_edge = True
 material_b.mmd_material.edge_color = (0.4, 0.5, 0.6, 0.5)
 material_c.mmd_material.alpha = 1.0
 material_c.mmd_material.enabled_toon_edge = True
@@ -184,7 +184,11 @@ material_c.mmd_material.alpha = 0.0
 material_c.mmd_material.enabled_toon_edge = False
 assert not _material_edge_alpha_needs_sync(material_c.mmd_material)
 material_c.mmd_material.alpha = 1.0
+material_c.mmd_material.edge_color = (0.0, 0.0, 0.0, 0.5)
+assert not _material_edge_alpha_needs_sync(material_c.mmd_material)
+material_c.mmd_material.alpha = 1.0
 material_c.mmd_material.enabled_toon_edge = True
+material_c.mmd_material.edge_color = (0.0, 0.0, 0.0, 1.0)
 settings.browser_kind = "DIAGNOSTIC"
 assert bpy.ops.surface_proxy.refresh_mmd_browser() == {"FINISHED"}
 edge_alpha_issues = {
@@ -227,7 +231,7 @@ assert all(
     for actual, expected in zip(material_b.mmd_material.edge_color[:3], (0.4, 0.5, 0.6))
 )
 assert material_b.mmd_material.alpha == 1.0
-assert not material_b.mmd_material.enabled_toon_edge
+assert material_b.mmd_material.enabled_toon_edge
 assert not any(
     item.code == "MATERIAL_EDGE_ALPHA_SYNC"
     for item in settings.browser_diagnostics

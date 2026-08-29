@@ -1,5 +1,11 @@
 # Development Log
 
+## 2026-08-29 - V0.1.8 描边关闭时不诊断 Alpha
+
+- 修正材质描边 Alpha 诊断的入口条件：现在无论材质 Alpha 是否为 `0`，都必须先确认“卡通边缘”已启用；描边关闭时描边 Alpha 不参与实际渲染，因此即使它与材质 Alpha 不一致也不报告。上一轮只在透明材质分支检查开关，导致 `Alpha 1 / 描边 0.5 / 卡通边缘关闭` 被误报，本轮已移除该错误行为。
+- 卡通边缘启用时规则保持不变：透明材质的描边 Alpha 应归零，非透明材质的描边 Alpha 应与材质 Alpha 一致；自动修复仍只同步描边 Alpha，不改变 RGB、材质 Alpha 或卡通边缘开关。
+- `tests/mmd_material_order_regression.py` 现在显式覆盖 `Alpha 1 / 描边 0.5 / 卡通边缘关闭` 与 `Alpha 0 / 描边 1 / 卡通边缘关闭` 均不误报，并让两种应报告案例都启用卡通边缘。Blender 4.4.3 focused regression 输出 `MMD_MATERIAL_ORDER_REGRESSION_OK`，`py_compile` 与 `git diff --check` 通过。版本保持 V0.1.8，真实 Blender 4.4 源码 Junction 已直接生效，不打包 ZIP、不 push；未进行人工 GUI 点击验收。
+
 ## 2026-08-29 - V0.1.8 材质描边 Alpha 诊断与修复
 
 - 诊断 Tab 新增材质描边 Alpha 一致性规则：材质 Alpha 为 `0` 时，仅在“卡通边缘”已启用且描边 Alpha 非 `0` 时报告；材质 Alpha 非 `0` 时，只要描边 Alpha 与材质 Alpha 不一致便报告。比较使用 `1e-6` 绝对容差，避免浮点存储微差产生误报；材质 Alpha 为 `0` 且卡通边缘未启用时不因无效描边值报警。
