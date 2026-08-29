@@ -1,5 +1,10 @@
 # Development Log
 
+## 2026-08-29 - V0.1.8 活动显示枠 Morph / 骨骼统计
+
+- 在显示枠编辑器的活动显示枠明细列表下方新增实时统计行，显示该枠的总项数、Morph 项数与骨骼项数；统计仅基于当前活动显示枠，不改变显示项选择、排序、清理、智能补充或 PMX 数据。
+- `tests/mmd_display_frame_regression.py` 新增表情枠纯 Morph 与普通枠纯骨骼两种统计回归。Blender 4.4.3 focused regression 输出 `MMD_DISPLAY_FRAME_REGRESSION_OK`，`py_compile` 与 `git diff --check` 通过。版本保持 V0.1.8，真实 Blender 4.4 源码 Junction 已直接生效，不打包 ZIP、不 push；本轮未进行人工 GUI 视觉验收。
+
 ## 2026-08-28 - V0.1.8 复制材质身份冲突与查看器漏项修复
 
 - 修复 Blender 复制材质时连同 MMD Station 的 `surface_proxy_pmx_material_id` 自定义属性一起复制，导致 MMD 查看器按身份建表时由复制材质覆盖原材质的问题。`ordered_materials()` 现在会在当前模型实际使用的材质中检测重复身份：较早创建的原材质保留既有身份，后续复制材质获得新的唯一身份，并紧跟原身份插入现有 PMX 排序；不修改 `mmd_material.material_id`、材质内容或工程中的对象关系。

@@ -802,6 +802,17 @@ def _draw_active_item_details(layout, root, frame):
         )
 
 
+def _draw_active_frame_statistics(layout, frame):
+    morph_count = sum(item.type == "MORPH" for item in frame.data)
+    bone_count = sum(item.type == "BONE" for item in frame.data)
+    layout.label(
+        text=(
+            f"当前显示枠：共 {len(frame.data)} 项；"
+            f"Morph：{morph_count} 项；骨骼：{bone_count} 项"
+        )
+    )
+
+
 def draw_display_frame_editor(layout, context):
     settings = context.scene.surface_proxy_creator
     root = _find_root(context, settings)
@@ -863,6 +874,7 @@ def draw_display_frame_editor(layout, context):
     )
     item_buttons.separator(factor=0.5)
     _draw_reorder_buttons(item_buttons, "surface_proxy.reorder_display_items")
+    _draw_active_frame_statistics(layout, frame)
     _draw_selection_buttons(
         layout,
         "surface_proxy.select_display_items",
