@@ -15,6 +15,7 @@ from bl_ext.blender_org.mmd_tools.core.model import Model
 from mmd_station.mmd_display_frame import (
     FRAME_SELECTED_PROPERTY,
     ITEM_SELECTED_PROPERTY,
+    _draw_active_frame_statistics,
 )
 
 
@@ -142,6 +143,23 @@ assert [(item.morph_type, item.name) for item in facial.data] == [
     ("uv_morphs", "UVDetailed"),
     ("bone_morphs", "BoneDetailed"),
     ("vertex_morphs", "VertexDetailed"),
+]
+
+
+class LabelCapture:
+    def __init__(self):
+        self.labels = []
+
+    def label(self, *, text):
+        self.labels.append(text)
+
+
+statistics_layout = LabelCapture()
+_draw_active_frame_statistics(statistics_layout, facial)
+_draw_active_frame_statistics(statistics_layout, frame)
+assert statistics_layout.labels == [
+    "当前显示枠：共 5 项；Morph：5 项；骨骼：0 项",
+    "当前显示枠：共 2 项；Morph：0 项；骨骼：2 项",
 ]
 assert root.mmd_root.material_morphs.get("MaterialEmpty") is not None
 assert root.mmd_root.vertex_morphs.get("VertexEmpty") is not None
