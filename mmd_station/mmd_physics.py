@@ -4526,6 +4526,18 @@ def register_settings(cls):
         description="材质顺序改变时，只更新实际换位材质的 ID 及其单材质物体编号；多材质物体不改名",
         default=False,
     )
+    properties["material_split_shapekey_cleanup_threshold"] = FloatProperty(
+        name="形态键清理阈值",
+        description=(
+            "按材质拆分后，若某形态键在子网格上所有顶点的最大位移不超过此阈值，"
+            "则视为无效并删除（单位：米，物体局部坐标）"
+        ),
+        default=1e-4,
+        min=0.0,
+        soft_max=1e-2,
+        precision=6,
+        step=0.01,
+    )
     properties["browser_search"] = StringProperty(name="搜索")
     properties["mirror_include_joints"] = BoolProperty(
         name="同时处理关联 Joint",

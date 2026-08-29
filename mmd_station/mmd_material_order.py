@@ -3,6 +3,7 @@ import json
 import uuid
 
 import bpy
+import numpy as np
 from bpy.props import EnumProperty
 from bpy.types import Operator
 
@@ -118,6 +119,32 @@ def _used_materials(mesh_object):
         seen.add(material)
         materials.append(material)
     return materials
+
+
+def _clean_near_zero_shape_keys(mesh_object, threshold):
+    if mesh_object.type != "MESH":
+        return 0
+    shape_keys = mesh_object.data.shape_keys
+    if shape_keys is None or len(shape_keys.key_blocks) <= 1:
+        return 0
+    vertex_count = len(shape_keys.key_blocks[0].data)
+    if vertex_count == 0:
+        return 0
+
+    basis_coordinates = np.empty(vertex_count * 3, dtype=np.float32)
+    shape_keys.key_blocks[0].data.foreach_get("co", basis_coordinates)
+    threshold_squared = float(threshold) ** 2
+    removable = []
+    for key_block in list(shape_keys.key_blocks)[1:]:
+        coordinates = np.empty(vertex_count * 3, dtype=np.float32)
+        key_block.data.foreach_get("co", coordinates)
+        displacement = coordinates - basis_coordinates
+        maximum_squared = (displacement * displacement).reshape(-1, 3).sum(axis=1).max()
+        if maximum_squared <= threshold_squared:
+            removable.append(key_block)
+    for key_block in removable:
+        mesh_object.shape_key_remove(key_block)
+    return len(removable)
 
 
 def _relocate_external_id_conflicts(material_set, reserved_ids):
@@ -579,11 +606,16 @@ class SPX_OT_SeparateActiveMeshByMaterials(Operator):
             if mesh_object is target or mesh_object not in before
         ]
         renamed = 0
+        cleaned_shape_keys = 0
         for mesh_object in results:
             used = _used_materials(mesh_object)
             if len(used) == 1 and used[0] in order_by_material:
                 MoveObject.set_index(mesh_object, order_by_material[used[0]])
                 renamed += 1
+            cleaned_shape_keys += _clean_near_zero_shape_keys(
+                mesh_object,
+                settings.material_split_shapekey_cleanup_threshold,
+            )
             FnMorph.clean_uv_morph_vertex_groups(mesh_object)
         for morph in root.mmd_root.material_morphs:
             FnMorph(morph, rig).update_mat_related_mesh()
@@ -591,29 +623,37 @@ class SPX_OT_SeparateActiveMeshByMaterials(Operator):
         bpy.ops.surface_proxy.refresh_mmd_browser()
         self.report(
             {"INFO"},
-            f"已按材质拆分为 {len(results)} 个物体，并校对其中 {renamed} 个编号；其它物体名称未改",
+            f"已按材质拆分为 {len(results)} 个物体，并校对其中 {renamed} 个编号、清理 {cleaned_shape_keys} 个近零形态键；其它物体名称未改",
         )
         return {"FINISHED"}
 
 
 def draw_name_sync(layout, settings):
     row = layout.row(align=True)
-    row.operator(
+    thirds = row.split(factor=1.0 / 3.0, align=True)
+    thirds.operator(
         SPX_OT_CalibrateMaterialOrder.bl_idname,
         text="校对材质 ID 与物体编号",
         icon="CHECKMARK",
     )
-    row.operator(
+    remaining = thirds.split(factor=0.5, align=True)
+    split_controls = remaining.row(align=True)
+    split_controls.operator(
         SPX_OT_SeparateActiveMeshByMaterials.bl_idname,
         text="按材质拆分（保留法向）",
         icon="MOD_EXPLODE",
     )
-    row.prop(
+    split_controls.prop(
         settings,
         "material_order_auto_sync",
-        text="自动同步",
+        text="",
         toggle=True,
         icon="FILE_REFRESH",
+    )
+    remaining.prop(
+        settings,
+        "material_split_shapekey_cleanup_threshold",
+        text="形态键清理阈值",
     )
     layout.label(text="材质 ID 和单材质物体前缀均从 000 开始；多材质物体只预留编号", icon="INFO")
     layout.label(text="首次先手动校对；自动同步只更新顺序实际变化的位置，支持多材质成块移动", icon="INFO")
