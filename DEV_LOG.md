@@ -1,5 +1,11 @@
 # Development Log
 
+## 2026-08-29 - V0.1.8 材质详情折叠栏恢复
+
+- MMD 查看器材质 Tab 的内嵌详情恢复为两个独立可折叠区域：“MMD 纹理”和“MMD 材质”标题现在使用原生三角箭头显示展开/收起状态，点击整段标题即可切换；两个区域分别保存展开状态，默认保持展开，因此不改变现有首次显示内容。
+- 收起时只停止绘制对应详情控件，不修改活动材质、纹理节点、MMD 材质字段、勾选状态或批量同步逻辑；再次展开后继续显示原有完整字段。改动仅涉及材质详情布局和两个 Scene 布尔状态，不影响其它查看器 Tab。
+- `tests/mmd_morph_editor_regression.py` 新增双区域默认展开、分别具备折叠状态及同时收起后详情字段和 Operator 均不再绘制的回归。Blender 4.4.3 focused regression 输出 `MMD_MORPH_EDITOR_REGRESSION_OK`，`py_compile` 与 `git diff --check` 通过。版本保持 V0.1.8，真实 Blender 4.4 源码 Junction 已直接生效，不打包 ZIP、不 push；未进行人工 GUI 点击验收。
+
 ## 2026-08-29 - V0.1.8 PMX Editor Morph 剪贴板互通
 
 - Morph 编辑器在五类 Tab 上方新增独立剪贴板操作区：“复制勾选 Morph”将勾选项（无勾选时回退活动项）写成 PMX Editor 的 Morph CSV 文本，“从剪贴板粘贴 Morph”读取 PMX Editor 复制内容并按原生 `material_morphs`、`bone_morphs`、`group_morphs` collection 自动归类；同类型同名 Morph 采用 PMX Editor 的追加/更新语义覆盖详情，不改变其它 Morph。

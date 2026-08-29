@@ -4516,6 +4516,14 @@ def register_settings(cls):
         default=False,
         update=_browser_kind_changed,
     )
+    properties["browser_material_texture_expanded"] = BoolProperty(
+        name="展开 MMD 纹理",
+        default=True,
+    )
+    properties["browser_mmd_material_expanded"] = BoolProperty(
+        name="展开 MMD 材质",
+        default=True,
+    )
     properties["browser_filter_by_prefix"] = BoolProperty(
         name="按前缀过滤",
         description="只显示可见名称或 Blender 名称以“名称前缀”开头的项目；可与当前代理过滤叠加",
@@ -5178,14 +5186,23 @@ def _draw_batchable_mmd_material_property(
     return row
 
 
-def _draw_browser_material_texture(layout, material):
+def _draw_browser_material_texture(layout, settings, material):
+    box = layout.box()
+    header = box.row(align=True)
+    header.prop(
+        settings,
+        "browser_material_texture_expanded",
+        text="MMD 纹理",
+        emboss=False,
+        icon="TRIA_DOWN" if settings.browser_material_texture_expanded else "TRIA_RIGHT",
+    )
+    if not settings.browser_material_texture_expanded:
+        return
     material_module = importlib.import_module(
         "bl_ext.blender_org.mmd_tools.core.material"
     )
     fn_material = material_module.FnMaterial(material)
     mmd_material = material.mmd_material
-    box = layout.box()
-    box.label(text="MMD 纹理", icon="TEXTURE")
     for texture_kind, label, texture in (
         ("MAIN", "纹理", fn_material.get_texture()),
         ("SPHERE", "球体纹理", fn_material.get_sphere_texture()),
@@ -5240,10 +5257,19 @@ def _draw_browser_material_texture(layout, material):
     )
 
 
-def _draw_browser_mmd_material(layout, material):
+def _draw_browser_mmd_material(layout, settings, material):
     mmd_material = material.mmd_material
     box = layout.box()
-    box.label(text="MMD 材质", icon="MATERIAL")
+    header = box.row(align=True)
+    header.prop(
+        settings,
+        "browser_mmd_material_expanded",
+        text="MMD 材质",
+        emboss=False,
+        icon="TRIA_DOWN" if settings.browser_mmd_material_expanded else "TRIA_RIGHT",
+    )
+    if not settings.browser_mmd_material_expanded:
+        return
     box.label(text="字段右侧复制图标：同步到勾选材质", icon="INFO")
     row = box.row(align=True)
     row.label(text="信息：")
@@ -5321,8 +5347,8 @@ def _draw_active_mmd_inspector(layout, settings):
             box = layout.box()
             box.label(text="材质已不存在", icon="ERROR")
             return
-        _draw_browser_material_texture(layout, material)
-        _draw_browser_mmd_material(layout, material)
+        _draw_browser_material_texture(layout, settings, material)
+        _draw_browser_mmd_material(layout, settings, material)
         return
     box = layout.box()
     box.label(text="活动项属性", icon="PROPERTIES")
