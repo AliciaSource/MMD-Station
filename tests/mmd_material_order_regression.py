@@ -21,6 +21,7 @@ from mmd_station.mmd_material_order import (
 from mmd_station.mmd_physics import (
     SPX_UL_MMDItems,
     _material_edge_alpha_needs_sync,
+    draw_browser,
 )
 
 
@@ -62,6 +63,18 @@ class MaterialControlsLayoutProbe:
     def split(self, **kwargs):
         return self._child("split", kwargs)
 
+    def column(self, **kwargs):
+        return self._child("column", kwargs)
+
+    def box(self):
+        return self._child("box", {})
+
+    def template_list(self, *args, **kwargs):
+        self.children.append(MaterialControlsLayoutProbe("template_list", {
+            "args": args,
+            **kwargs,
+        }))
+
     def operator(self, operator_id, **kwargs):
         self.children.append(MaterialControlsLayoutProbe("operator", {
             "operator_id": operator_id,
@@ -78,6 +91,11 @@ class MaterialControlsLayoutProbe:
 
     def label(self, **kwargs):
         self.children.append(MaterialControlsLayoutProbe("label", kwargs))
+
+    def descendants(self):
+        for child in self.children:
+            yield child
+            yield from child.descendants()
 
 
 def make_material(name, name_j, name_e):
@@ -199,13 +217,23 @@ edge_alpha_issues = {
 assert set(edge_alpha_issues) == {material_a.name, material_b.name}
 assert "材质 Alpha 为 0" in edge_alpha_issues[material_a.name].message
 assert "描边 Alpha 0.5" in edge_alpha_issues[material_b.name].message
-issue = edge_alpha_issues[material_a.name]
-assert bpy.ops.surface_proxy.repair_mmd_diagnostic(
-    code=issue.code,
-    target_kind=issue.target_kind,
-    target_name=issue.target_name,
-    diagnostic_message=issue.message,
-) == {"FINISHED"}
+diagnostic_probe = MaterialControlsLayoutProbe()
+draw_browser(diagnostic_probe, settings)
+bulk_repair_buttons = [
+    node
+    for node in diagnostic_probe.descendants()
+    if node.node_type == "operator"
+    and node.kwargs["operator_id"] == "surface_proxy.repair_all_mmd_diagnostics"
+]
+assert len(bulk_repair_buttons) == 1
+assert bulk_repair_buttons[0].kwargs["text"] == "一键修复"
+
+unrepairable = settings.browser_diagnostics.add()
+unrepairable.code = "MANUAL_REPAIR_ONLY_TEST"
+unrepairable.target_kind = "MATERIAL"
+unrepairable.target_name = material_c.name
+unrepairable.message = "Manual-only fixture"
+assert bpy.ops.surface_proxy.repair_all_mmd_diagnostics() == {"FINISHED"}
 assert material_a.mmd_material.edge_color[3] == 0.0
 assert all(
     abs(actual - expected) < 1e-6
@@ -213,18 +241,6 @@ assert all(
 )
 assert material_a.mmd_material.alpha == 0.0
 assert material_a.mmd_material.enabled_toon_edge
-issue = next(
-    item
-    for item in settings.browser_diagnostics
-    if item.code == "MATERIAL_EDGE_ALPHA_SYNC"
-    and item.target_name == material_b.name
-)
-assert bpy.ops.surface_proxy.repair_mmd_diagnostic(
-    code=issue.code,
-    target_kind=issue.target_kind,
-    target_name=issue.target_name,
-    diagnostic_message=issue.message,
-) == {"FINISHED"}
 assert material_b.mmd_material.edge_color[3] == 1.0
 assert all(
     abs(actual - expected) < 1e-6
