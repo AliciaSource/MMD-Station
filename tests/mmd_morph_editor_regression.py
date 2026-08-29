@@ -179,6 +179,15 @@ uv_data = uv_morph.data.add()
 uv_data.index = 0
 uv_data.offset = (0.0, 0.0, 0.0, 0.0)
 
+rename_uv_morph = root.mmd_root.uv_morphs.add()
+rename_uv_morph.name = "RenameUV"
+rename_uv_morph.name_e = "RenameUV"
+rename_uv_morph.uv_index = 0
+rename_uv_morph.data_type = "VERTEX_GROUP"
+rename_uv_morph.vertex_group_scale = 0.125
+rename_uv_group = mesh_a.vertex_groups.new(name="UV_RenameUV+X")
+rename_uv_group.add((0,), 1.0, "REPLACE")
+
 hide_morph = root.mmd_root.material_morphs.add()
 hide_morph.name = "Hide"
 hide_morph.name_e = "Hide"
@@ -1262,6 +1271,86 @@ assert abs(states["UVShift"].value - 1.0) < 1.0e-6
 assert abs(states["GroupHide"].value - 1.0) < 1.0e-6
 assert bool(root.get("spx_morph_lightweight_bound", False))
 assert "spx_morph_runtime_error" not in root, root.get("spx_morph_runtime_error")
+
+# Renaming a bound vertex-group UV Morph rebuilds the runtime scale path instead
+# of leaving the dummy-armature driver pointed at the old collection key.
+dummy_armature = model.morph_slider.dummy_armature
+
+
+def uv_runtime_target_paths():
+    return {
+        target.data_path
+        for curve in dummy_armature.animation_data.drivers
+        for variable in curve.driver.variables
+        for target in variable.targets
+        if target.data_path
+    }
+
+
+assert 'mmd_root.uv_morphs["RenameUV"].vertex_group_scale' in (
+    uv_runtime_target_paths()
+)
+rename_uv_state = next(
+    state
+    for state in root.spx_morph_states
+    if state.morph_type == "uv_morphs" and state.morph_name == "RenameUV"
+)
+rename_uv_state.value = 0.75
+rename_uv_morph.name = "RenamedUV"
+_refresh_morph_state_metadata(root)
+assert mesh_a.vertex_groups.get("UV_RenamedUV+X") is not None
+assert mesh_a.vertex_groups.get("UV_RenameUV+X") is None
+assert abs(model.morph_slider.get("RenamedUV").value - 0.75) < 1.0e-6
+assert 'mmd_root.uv_morphs["RenamedUV"].vertex_group_scale' in (
+    uv_runtime_target_paths()
+)
+assert 'mmd_root.uv_morphs["RenameUV"].vertex_group_scale' not in (
+    uv_runtime_target_paths()
+)
+
+# The UV-tab minus removes the Morph plus its encoded vertex groups and bound
+# runtime artifacts from every model mesh.
+delete_uv_morph = root.mmd_root.uv_morphs.add()
+delete_uv_morph.name = "DeleteUV"
+delete_uv_morph.name_e = "DeleteUV"
+delete_uv_morph.uv_index = 0
+delete_uv_morph.data_type = "VERTEX_GROUP"
+delete_uv_morph.vertex_group_scale = 0.25
+for mesh_object in (mesh_a, mesh_b):
+    group = mesh_object.vertex_groups.new(name="UV_DeleteUV+Y")
+    group.add((0,), 1.0, "REPLACE")
+similar_name_group = mesh_a.vertex_groups.new(name="UV_DeleteUVExtra+Y")
+similar_name_group.add((0,), 1.0, "REPLACE")
+ensure_morph_states(root)
+delete_uv_state = next(
+    state
+    for state in root.spx_morph_states
+    if state.morph_type == "uv_morphs" and state.morph_name == "DeleteUV"
+)
+delete_uv_state.value = 0.5
+assert model.morph_slider.get("DeleteUV") is not None
+assert any(
+    modifier.type == "UV_WARP" and modifier.vertex_group == "UV_DeleteUV+Y"
+    for mesh_object in (mesh_a, mesh_b)
+    for modifier in mesh_object.modifiers
+)
+for state in root.spx_morph_states:
+    state.selected = state.uid == delete_uv_state.uid
+settings.morph_editor_type = "uv_morphs"
+root.spx_morph_active_index = root.spx_morph_states.find(delete_uv_state.uid)
+assert bpy.ops.surface_proxy.remove_selected_morphs() == {"FINISHED"}
+assert root.mmd_root.uv_morphs.get("DeleteUV") is None
+assert model.morph_slider.get("DeleteUV") is None
+assert all(
+    mesh_object.vertex_groups.get("UV_DeleteUV+Y") is None
+    for mesh_object in (mesh_a, mesh_b)
+)
+assert mesh_a.vertex_groups.get("UV_DeleteUVExtra+Y") is not None
+assert not any(
+    modifier.type == "UV_WARP" and modifier.vertex_group == "UV_DeleteUV+Y"
+    for mesh_object in (mesh_a, mesh_b)
+    for modifier in mesh_object.modifiers
+)
 
 # NLA imports keep their strip timing while targeting the same stable UID path.
 root.animation_data_clear()

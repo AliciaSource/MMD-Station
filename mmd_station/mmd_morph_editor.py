@@ -244,11 +244,19 @@ def _morph_state_structure_is_current(root):
 
 
 def _refresh_morph_state_metadata(root):
+    uv_runtime_renamed = False
     for state in root.spx_morph_states:
         morph = _morph_by_uid(root, state.morph_type, state.uid)
         if morph is not None and state.morph_name != morph.name:
+            uv_runtime_renamed = uv_runtime_renamed or (
+                state.morph_type == "uv_morphs"
+                and _bound_placeholder(root) is not None
+                and bool(root.get(RUNTIME_BOUND_PROPERTY, False))
+            )
             state.morph_name = morph.name
     _sync_morph_order(root)
+    if uv_runtime_renamed:
+        _ensure_lightweight_bind(root, force_rebind=True)
 
 
 def _tag_view3d_redraw():
@@ -453,12 +461,24 @@ def _remove_official_vertex_bindings(root):
     root[VERTEX_BINDINGS_CLEAN_PROPERTY] = True
 
 
-def _ensure_lightweight_bind(root, required_morph=None):
+def _remove_invalid_drivers(id_data):
+    animation_data = getattr(id_data, "animation_data", None)
+    if animation_data is None:
+        return
+    for curve in tuple(animation_data.drivers):
+        try:
+            id_data.path_resolve(curve.data_path)
+        except ValueError:
+            animation_data.drivers.remove(curve)
+
+
+def _ensure_lightweight_bind(root, required_morph=None, force_rebind=False):
     _FnModel, Model = _mmd_api()
     slider = Model(root).morph_slider
     placeholder = _bound_placeholder(root)
     if (
-        placeholder is not None
+        not force_rebind
+        and placeholder is not None
         and bool(root.get(RUNTIME_BOUND_PROPERTY, False))
         and (required_morph is None or slider.get(required_morph.name) is not None)
     ):
@@ -471,7 +491,7 @@ def _ensure_lightweight_bind(root, required_morph=None):
             for morph_type in MORPH_TYPE_KEYS
             for morph in _morph_collection(root, morph_type)
         )
-    if placeholder is not None and not missing_sliders:
+    if not force_rebind and placeholder is not None and not missing_sliders:
         _remove_official_material_bindings(root)
         _remove_official_vertex_bindings(root)
         root[RUNTIME_BOUND_PROPERTY] = True
@@ -490,6 +510,10 @@ def _ensure_lightweight_bind(root, required_morph=None):
         slider.bind()
     finally:
         shader_module._MaterialMorph.setup_morph_nodes = descriptor
+    if force_rebind:
+        dummy_armature = slider.dummy_armature
+        if dummy_armature is not None:
+            _remove_invalid_drivers(dummy_armature)
     _remove_official_material_bindings(root)
     _remove_official_vertex_bindings(root)
     root[RUNTIME_BOUND_PROPERTY] = True
@@ -1516,6 +1540,43 @@ def _remove_vertex_morph_shape_keys(root, morph_names):
     return removed
 
 
+def _uv_morph_vertex_groups(mesh_object, morph_name):
+    prefix = f"UV_{morph_name}"
+    valid_suffixes = {f"{sign}{axis}" for sign in "+-" for axis in "XYZW"}
+    return tuple(
+        group
+        for group in mesh_object.vertex_groups
+        if group.name.startswith(prefix)
+        and group.name[len(prefix) :] in valid_suffixes
+    )
+
+
+def _remove_uv_morph_runtime_data(root, morph_names):
+    FnModel, Model = _mmd_api()
+    mesh_objects = tuple(FnModel.iterate_mesh_objects(root))
+    removed = 0
+    for mesh_object in mesh_objects:
+        for morph_name in morph_names:
+            for group in _uv_morph_vertex_groups(mesh_object, morph_name):
+                for modifier in tuple(mesh_object.modifiers):
+                    if (
+                        modifier.type == "UV_WARP"
+                        and modifier.vertex_group == group.name
+                    ):
+                        mesh_object.modifiers.remove(modifier)
+                mesh_object.vertex_groups.remove(group)
+                removed += 1
+
+    placeholder = Model(root).morph_slider.placeholder(create=False)
+    if placeholder is not None:
+        for morph_name in morph_names:
+            shape_keys = getattr(placeholder.data, "shape_keys", None)
+            key_block = shape_keys.key_blocks.get(morph_name) if shape_keys else None
+            if key_block is not None:
+                placeholder.shape_key_remove(key_block)
+    return removed
+
+
 def _shape_key_max_displacement_squared(key_blocks, key_block):
     basis = key_blocks[0]
     coordinate_count = len(basis.data) * 3
@@ -1656,15 +1717,21 @@ class SPX_OT_RemoveSelectedMorphs(Operator):
             if state.morph_type == settings.morph_editor_type:
                 selected.add(state.uid)
         morphs = _morph_collection(root, settings.morph_editor_type)
+        removed_names = [
+            morph.name
+            for morph in morphs
+            if str(morph.get(MORPH_UID_PROPERTY, "")) in selected
+        ]
+        runtime_needs_rebind = (
+            bool(removed_names)
+            and settings.morph_editor_type == "uv_morphs"
+            and _bound_placeholder(root) is not None
+            and bool(root.get(RUNTIME_BOUND_PROPERTY, False))
+        )
         if settings.morph_editor_type == "vertex_morphs":
-            _remove_vertex_morph_shape_keys(
-                root,
-                [
-                    morph.name
-                    for morph in morphs
-                    if str(morph.get(MORPH_UID_PROPERTY, "")) in selected
-                ],
-            )
+            _remove_vertex_morph_shape_keys(root, removed_names)
+        elif settings.morph_editor_type == "uv_morphs":
+            _remove_uv_morph_runtime_data(root, removed_names)
         removed = 0
         for index in reversed(range(len(morphs))):
             if str(morphs[index].get(MORPH_UID_PROPERTY, "")) in selected:
@@ -1676,6 +1743,8 @@ class SPX_OT_RemoveSelectedMorphs(Operator):
             max(0, len(root.spx_morph_states) - 1),
         )
         _sync_morph_order(root)
+        if runtime_needs_rebind:
+            _ensure_lightweight_bind(root, force_rebind=True)
         self.report({"INFO"}, f"已删除 {removed} 个 Morph")
         return {"FINISHED"}
 

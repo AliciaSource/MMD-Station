@@ -1,5 +1,11 @@
 # Development Log
 
+## 2026-08-29 - V0.1.8 UV Morph 改名 Runtime 失效与完整删除修复
+
+- 修复已建立 Runtime 的顶点组型 UV Morph 在修改日文主名称后失效的问题：`mmd_tools` 会同步改名 `.placeholder` slider 与 `UV_<Morph名>±X/Y/Z/W` 顶点组，但既有 dummy-armature driver 的 `vertex_group_scale` 仍指向旧 Morph collection key。MMD Station 现在在稳定 UID 元数据刷新检测到 UV Morph 改名时强制重建轻量 Runtime，并清理由重建遗留的无效 driver；英文名仍只是导出名称，不触碰 Runtime。
+- UV Tab 主列表的减号现在不再只删除 Morph 元数据：删除前会在模型全部 Mesh 中精确移除该 Morph 的 `UV_<Morph名>±X/Y/Z/W` 附属顶点组及引用它们的 `UV_WARP` modifier，同时删除 `.placeholder` 同名 slider，并在已有 Runtime 时重建绑定以清理 dummy-armature 残留。不会按模糊前缀误删名称相近的其它 UV Morph 顶点组。
+- `tests/mmd_morph_editor_regression.py` 新增已绑定 UV Morph 改名后的新 `vertex_group_scale` driver 路径、旧路径清除、附属顶点组保留，以及双 Mesh UV Morph 经减号删除后的元数据、顶点组、modifier、placeholder slider 全链路清理回归。Blender 4.4.3 focused regression 输出 `MMD_MORPH_EDITOR_REGRESSION_OK`，`py_compile` 与 `git diff --check` 通过。版本保持 V0.1.8，真实 Blender 4.4 源码 Junction 已直接生效，不打包 ZIP、不 push；本轮未进行人工 GUI 视觉验收。
+
 ## 2026-08-29 - V0.1.8 活动显示枠 Morph / 骨骼统计
 
 - 在显示枠编辑器的活动显示枠明细列表下方新增实时统计行，显示该枠的总项数、Morph 项数与骨骼项数；统计仅基于当前活动显示枠，不改变显示项选择、排序、清理、智能补充或 PMX 数据。
