@@ -1,5 +1,12 @@
 # Development Log
 
+## 2026-08-29 - V0.1.8 PMX 完整导出分阶段性能基线
+
+- 新增 `mmd_export_profile.py`，由 MMD Station 在注册时挂载 `mmd_tools` PMX exporter 顶层入口，并只在单次导出期间临时计时 Bones、逐 Mesh 数据读取、顶点/面/材质构建、各类 Morph、显示枠、刚体、Joint、贴图处理和 PMX serialization；不修改上游 `mmd_tools` 源码，导出结束或异常时都会恢复原方法，同时保留最近一次结构化结果供后续快速覆盖实现和回归使用。
+- 使用完成工程 `D:\MMD\模型\Alicia\鳴潮-達尼婭\達尼婭\36.blend` 的当前 Root `合并2` 做真实基准：98 个 Mesh、294632 个导出顶点、452226 个三角面、747 个骨骼、258 个 Morph、508 个刚体、701 个 Joint。关闭贴图复制后，临时 PMX 新增导出耗时 `28.244s`，紧接着覆盖同一文件耗时 `26.710s`，热缓存覆盖仅快约 `5.4%`；正式 `合并2.pmx` 的 SHA256 保持不变。
+- 覆盖导出的主要耗时为逐 Mesh 数据读取 `20.229s / 75.7%`、顶点/面/材质构建 `2.768s / 10.4%`、PMX serialization `1.869s / 7.0%`；刚体与 Joint 生成合计仅约 `0.008s / 0.03%`。同一 30.25 MB PMX 的完整解析实测 `6.225s` 和 `7.097s`，因此第一版“加载旧 PMX、仅替换刚体/Joint、重新写盘”的保守预期约 `8–10s`，已可避开约 `86%` 的 Mesh 重算；后续若记录节区偏移和稳定索引映射，可再研究不构建完整旧 PMX 对象的原始节区复用。
+- 新增 `tests/mmd_export_profile_regression.py`，覆盖阶段累计、调用次数、模型计数、serialization、输出大小、最近结果副本以及实际 hook 注册。Blender 4.4.3 focused regression 输出 `MMD_EXPORT_PROFILE_REGRESSION_OK`；真实新增/覆盖导出均成功，生成 PMX 又经 `pmx.load()` 解析验证。版本保持 V0.1.8，源码 Junction 直接生效，不打包 ZIP、不 push；基准临时 PMX、脚本和日志在本轮结束前清理。
+
 ## 2026-08-29 - V0.1.8 MMD I/O 快捷入口与自有代理层
 
 - 在 MMD Station 六个功能 Tab 上方增加固定 I/O 快捷区，按“模型 / 运动 / 姿态”三列提供导入、导出按钮，覆盖 PMD/PMX 模型、VMD 运动与 VPD 姿态；切换代理创建、MMD 查看器、Morph 编辑器、显示枠、物理预览或 MMD IK 时入口始终保留。
