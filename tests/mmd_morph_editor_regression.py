@@ -366,38 +366,61 @@ assert not _morph_states_are_current(root)
 ensure_morph_states(root)
 assert _morph_states_are_current(root)
 
-# Passive metadata refresh preserves facial-frame membership while updating
-# the reference of a Morph that is already present there.
+# Morph collection order is authoritative. A facial-frame order must never
+# reorder the Morph editor, including an empty Morph used as a separator.
+separator_morph = root.mmd_root.material_morphs.add()
+separator_morph.name = "--Separator--"
+root.mmd_root.material_morphs.move(
+    len(root.mmd_root.material_morphs) - 1,
+    root.mmd_root.material_morphs.find("Hide") + 1,
+)
+ensure_morph_states(root)
 material_order_before_rename = [
     morph.name for morph in root.mmd_root.material_morphs
 ]
-hide_index_before_rename = material_order_before_rename.index("Hide")
 Model(root).initialDisplayFrames(reset=False)
 facial = root.mmd_root.display_item_frames["表情"]
 facial.data.clear()
+show_display_item = facial.data.add()
+show_display_item.type = "MORPH"
+show_display_item.morph_type = "material_morphs"
+show_display_item.name = "ShowHidden"
 hide_display_item = facial.data.add()
 hide_display_item.type = "MORPH"
 hide_display_item.morph_type = "material_morphs"
 hide_display_item.name = "Hide"
+assert _morph_states_are_current(root)
 hide_morph.name = "HideRenamed"
 assert not _morph_states_are_current(root)
 assert _morph_state_structure_is_current(root)
 _refresh_morph_state_metadata(root)
 assert _morph_states_are_current(root)
-assert [morph.name for morph in root.mmd_root.material_morphs][
-    hide_index_before_rename
-] == "HideRenamed"
+assert [morph.name for morph in root.mmd_root.material_morphs] == [
+    "HideRenamed" if name == "Hide" else name
+    for name in material_order_before_rename
+]
 assert [(item.morph_type, item.name) for item in facial.data] == [
-    ("material_morphs", "HideRenamed")
+    ("material_morphs", "ShowHidden"),
+    ("material_morphs", "HideRenamed"),
 ]
 hide_morph.name = "Hide"
 _refresh_morph_state_metadata(root)
 assert _morph_states_are_current(root)
+assert [morph.name for morph in root.mmd_root.material_morphs] == (
+    material_order_before_rename
+)
 assert [(item.morph_type, item.name) for item in facial.data] == [
-    ("material_morphs", "Hide")
+    ("material_morphs", "ShowHidden"),
+    ("material_morphs", "Hide"),
 ]
+root.mmd_root.material_morphs.remove(
+    root.mmd_root.material_morphs.find("--Separator--")
+)
+ensure_morph_states(root)
+states = {state.morph_name: state for state in root.spx_morph_states}
 
-# Named state paths remain keyframeable and sorting updates the PMX facial frame.
+# Named state paths remain keyframeable, while Morph sorting stays independent
+# from the facial frame.
 states["Hide"].keyframe_insert(data_path="value", frame=1)
 hide_path = states["Hide"].path_from_id("value")
 assert any(
@@ -541,6 +564,9 @@ root.spx_morph_active_index = root.spx_morph_states.find(states["Hide"].uid)
 material_names_before_add = [
     morph.name for morph in root.mmd_root.material_morphs
 ]
+facial_items_before_add = [
+    (item.type, item.morph_type, item.name) for item in facial.data
+]
 assert bpy.ops.surface_proxy.add_morph() == {"FINISHED"}
 new_state = root.spx_morph_states[root.spx_morph_active_index]
 assert new_state.morph_name == "新建 Morph"
@@ -551,10 +577,8 @@ assert [morph.name for morph in root.mmd_root.material_morphs] == (
     + material_names_before_add[hide_index + 1 :]
 )
 assert [
-    item.name
-    for item in root.mmd_root.display_item_frames["表情"].data
-    if item.morph_type == "material_morphs"
-] == [morph.name for morph in root.mmd_root.material_morphs]
+    (item.type, item.morph_type, item.name) for item in facial.data
+] == facial_items_before_add
 for state in root.spx_morph_states:
     state.selected = state.uid == new_state.uid
 assert bpy.ops.surface_proxy.remove_selected_morphs() == {"FINISHED"}
@@ -653,6 +677,9 @@ assert bpy.ops.surface_proxy.copy_morph_japanese_names_to_english() == {
 }
 assert bpy.ops.surface_proxy.translate_morph_names_with_ai() == {"CANCELLED"}
 states["FadeMultiply"].selected = True
+facial_items_before_reorder = [
+    (item.type, item.morph_type, item.name) for item in facial.data
+]
 assert bpy.ops.surface_proxy.reorder_morphs(action="TOP") == {"FINISHED"}
 assert [morph.name for morph in root.mmd_root.material_morphs] == [
     "FadeMultiply",
@@ -660,8 +687,9 @@ assert [morph.name for morph in root.mmd_root.material_morphs] == [
     "ShowHidden",
     "PresetBatch",
 ]
-facial = root.mmd_root.display_item_frames["表情"]
-assert [item.name for item in facial.data[:2]] == ["FadeMultiply", "Hide"]
+assert [
+    (item.type, item.morph_type, item.name) for item in facial.data
+] == facial_items_before_reorder
 states = {state.morph_name: state for state in root.spx_morph_states}
 states["FadeMultiply"].selected = False
 states["Hide"].selected = True
@@ -739,6 +767,9 @@ assert bpy.ops.surface_proxy.reorder_morphs(action="AFTER") == {"CANCELLED"}
 assert [
     morph.name for morph in root.mmd_root.material_morphs
 ] == order_before_anchor_moves
+assert [
+    (item.type, item.morph_type, item.name) for item in facial.data
+] == facial_items_before_reorder
 root.animation_data_clear()
 states = {state.morph_name: state for state in root.spx_morph_states}
 
@@ -1381,6 +1412,7 @@ assert not any(
 )
 
 # NLA imports keep their strip timing while targeting the same stable UID path.
+states = {state.morph_name: state for state in root.spx_morph_states}
 root.animation_data_clear()
 placeholder_keys.animation_data_clear()
 nla_source = bpy.data.actions.new("SyntheticVmdNla_facial")

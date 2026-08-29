@@ -1,5 +1,12 @@
 # Development Log
 
+## 2026-08-29 - V0.1.8 Morph 顺序与显示枠彻底单向解耦
+
+- 纠正 Morph 编辑器与“表情”显示枠之间错误的双向排序设计：Morph 编辑器的状态顺序现在只读取并写回各类原生 Morph collection，不再读取显示枠顺序；Morph 的新增、删除和六种排序操作也不再清空、补全或重排“表情”枠。显示枠只由显示枠页的显式添加、删除、排序与“智能重排序”操作改变；其中智能重排序继续只收录有有效详情的 Morph、跳过用于分段的空 Morph。
+- Morph 日文主名称改变时仍只更新已经存在的显示项引用，以避免引用失效；该引用维护不改变 Morph collection 顺序、显示枠成员或显示枠顺序。回归加入反向排列的显示枠和位于 Morph collection 中间的空 `--Separator--`，断言被动刷新、Morph 新增与 Morph 排序均保持显示枠不变，空分隔 Morph 保持原位。
+- 对用户工程 `D:\MMD\模型\Alicia\鳴潮-達尼婭\達尼婭\33.blend` 进行了不保存的只读验证：`合并2` 的 44 个 Material Morph 中，`--衣服消失--`、`--BDSM--`、`----------` 原始索引为 `0 / 19 / 32`；模拟切换 Morph Tab 后 Morph collection 与 253 项表情枠均逐项不变，编辑器状态顺序重新服从 Morph collection，三个空分隔项仍位于 `0 / 19 / 32`。
+- Blender 4.4.3 回归输出 `MMD_MORPH_EDITOR_REGRESSION_OK` 与 `MMD_DISPLAY_FRAME_REGRESSION_OK`，`py_compile`、`git diff --check` 通过。版本保持 V0.1.8，真实 Blender 4.4 源码 Junction 已直接生效，不打包 ZIP、不 push；真实工程未保存，未进行人工 GUI 点击验收。
+
 ## 2026-08-29 - V0.1.8 切换 Morph Tab 不再改写表情显示枠
 
 - 修复从显示枠切到 Morph 编辑器再切回时，Morph 编辑器的被动状态刷新误调用完整 `_sync_morph_order()`，清空并用全部 Morph 重建“表情”枠的问题。被动刷新现在只重排编辑器状态缓存；若 Morph 确实被改名，只更新已经收录该 Morph 的显示项引用，不新增、删除或重排任何显示项。显式新增/删除/排序 Morph 与显示枠“智能重排序”的既有写回行为保持不变。
