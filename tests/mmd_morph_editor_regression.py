@@ -16,6 +16,11 @@ from mmd_station import mmd_morph_editor as morph_editor_module
 from mmd_station import mmd_physics as mmd_physics_module
 from bl_ext.blender_org.mmd_tools.core.model import FnModel, Model
 from mmd_station.mmd_material_order import ordered_materials, set_material_order
+from mmd_station.mmd_morph_clipboard import (
+    apply_pmx_editor_morphs,
+    parse_pmx_editor_morph_csv,
+    serialize_pmx_editor_morphs,
+)
 from mmd_station.mmd_morph_editor import (
     DETAIL_SELECTED_PROPERTY,
     OUTPUT_BRIDGE_PROPERTY,
@@ -67,6 +72,10 @@ class InspectorLayoutProbe:
         self.labels.append(text)
 
     def prop(self, data, name, **_kwargs):
+        assert hasattr(data, name), name
+        self.properties.append(name)
+
+    def prop_search(self, data, name, *_args, **_kwargs):
         assert hasattr(data, name), name
         self.properties.append(name)
 
@@ -1658,5 +1667,116 @@ assert convert_data.bone == "UpperArm.L"
 assert {
     item.target_name for item in settings.browser_items if item.selected
 } == {"UpperArm.L", "SleeveA1.R"}
+
+# PMX Editor CSV recognizes all five editor morph classes. Only the three
+# name-addressable classes are applied across models; unsafe PMX vertex-index
+# data is retained as an explicit skipped result.
+clipboard_bone_name = parent_pose_bone.mmd_bone.name_j or parent_pose_bone.name
+clipboard_material_name = material.mmd_material.name_j or material.name
+clipboard_text = f'''\
+;Morph header
+Morph,"ClipboardMaterial","ClipboardMaterial",4,8
+;MaterialMorph header
+MaterialMorph,"ClipboardMaterial","{clipboard_material_name}",1,0.1,0.2,0.3,-1,0.4,0.5,0.6,8,0.7,0.8,0.9,1.5,0.11,0.12,0.13,-1,0.21,0.22,0.23,0.24,0.31,0.32,0.33,0.34,0.41,0.42,0.43,0.44
+Morph,"ClipboardBone","ClipboardBone",4,2
+;BoneMorph header
+BoneMorph,"ClipboardBone","{clipboard_bone_name}",1,2,3,10,-20,30
+Morph,"ClipboardGroup","ClipboardGroup",4,0
+;GroupMorph header
+GroupMorph,"ClipboardGroup","ClipboardMaterial",0.75
+GroupMorph,"ClipboardGroup","MissingTarget",0.5
+Morph,"ClipboardVertex","ClipboardVertex",4,1
+;VertexMorph header
+VertexMorph,"ClipboardVertex",0,1,2,3
+Morph,"ClipboardUV","ClipboardUV",4,3
+;UVMorph header
+UVMorph,"ClipboardUV",0,0.1,0.2,0.3,0.4
+'''
+clipboard_records = parse_pmx_editor_morph_csv(clipboard_text)
+assert [record.morph_type for record in clipboard_records] == [
+    "material_morphs",
+    "bone_morphs",
+    "group_morphs",
+    "vertex_morphs",
+    "uv_morphs",
+]
+fixture_records = parse_pmx_editor_morph_csv(
+    (PROJECT_ROOT / "tests" / "fixtures" / "pmx_editor_morph_clipboard.csv").read_text(
+        encoding="utf-8"
+    )
+)
+assert [(record.name, record.morph_type, len(record.details)) for record in fixture_records] == [
+    ("[HalfBody]", "group_morphs", 5),
+    ("披风-*", "material_morphs", 2),
+    ("AnalToy1+", "bone_morphs", 1),
+    ("AnalToy幅", "bone_morphs", 3),
+]
+clipboard_result = apply_pmx_editor_morphs(root, clipboard_records)
+assert clipboard_result["created"] == 3
+assert clipboard_result["updated"] == 0
+assert clipboard_result["skipped"] == ["ClipboardVertex", "ClipboardUV"]
+assert clipboard_result["unresolved"] == []
+clipboard_material = root.mmd_root.material_morphs["ClipboardMaterial"]
+assert len(clipboard_material.data) == 1
+assert clipboard_material.data[0].material == material.name
+assert tuple(round(value, 3) for value in clipboard_material.data[0].diffuse_color) == (
+    0.1,
+    0.2,
+    0.3,
+    -1.0,
+)
+clipboard_bone = root.mmd_root.bone_morphs["ClipboardBone"]
+assert len(clipboard_bone.data) == 1
+assert clipboard_bone.data[0].bone == parent_pose_bone.name
+clipboard_group = root.mmd_root.group_morphs["ClipboardGroup"]
+assert [(item.name, item.morph_type, round(item.factor, 2)) for item in clipboard_group.data] == [
+    ("ClipboardMaterial", "material_morphs", 0.75),
+    ("MissingTarget", "vertex_morphs", 0.5),
+]
+
+# Dangling Group Morph references from PMX Editor must survive paste so the
+# user can replace them manually in the detail editor.
+user_group_records = parse_pmx_editor_morph_csv(
+    'Morph,"[HalfBody]","[HalfBody]",4,0\n'
+    'GroupMorph,"[HalfBody]","裙子1-*",1\n'
+    'GroupMorph,"[HalfBody]","胖次-*",1\n'
+)
+user_group_result = apply_pmx_editor_morphs(root, user_group_records)
+assert user_group_result["created"] == 1
+half_body = root.mmd_root.group_morphs["[HalfBody]"]
+assert [item.name for item in half_body.data] == ["裙子1-*", "胖次-*"]
+
+serialized_text, serialized_count, serialized_skipped = serialize_pmx_editor_morphs(
+    root,
+    (
+        ("material_morphs", clipboard_material),
+        ("bone_morphs", clipboard_bone),
+        ("group_morphs", clipboard_group),
+    ),
+)
+assert serialized_count == 3
+assert serialized_skipped == []
+serialized_records = parse_pmx_editor_morph_csv(serialized_text)
+assert [record.morph_type for record in serialized_records] == [
+    "material_morphs",
+    "bone_morphs",
+    "group_morphs",
+]
+assert len(serialized_records[0].details) == 1
+assert len(serialized_records[1].details) == 1
+assert len(serialized_records[2].details) == 2
+clipboard_bone_rotation = clipboard_bone.data[0].rotation.copy()
+roundtrip_result = apply_pmx_editor_morphs(root, serialized_records)
+assert roundtrip_result["updated"] == 3
+assert clipboard_bone_rotation.rotation_difference(
+    clipboard_bone.data[0].rotation
+).angle < 1.0e-6
+
+ensure_morph_states(root)
+settings.morph_editor_root = root
+clipboard_layout = InspectorLayoutProbe()
+morph_editor_module.draw_morph_editor(clipboard_layout, bpy.context)
+assert "surface_proxy.copy_selected_morphs_to_clipboard" in clipboard_layout.operators
+assert "surface_proxy.paste_morphs_from_clipboard" in clipboard_layout.operators
 
 print("MMD_MORPH_EDITOR_REGRESSION_OK")

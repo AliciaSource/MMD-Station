@@ -1,5 +1,11 @@
 # Development Log
 
+## 2026-08-29 - V0.1.8 PMX Editor Morph 剪贴板互通
+
+- Morph 编辑器在五类 Tab 上方新增独立剪贴板操作区：“复制勾选 Morph”将勾选项（无勾选时回退活动项）写成 PMX Editor 的 Morph CSV 文本，“从剪贴板粘贴 Morph”读取 PMX Editor 复制内容并按原生 `material_morphs`、`bone_morphs`、`group_morphs` collection 自动归类；同类型同名 Morph 采用 PMX Editor 的追加/更新语义覆盖详情，不改变其它 Morph。
+- 跨模型粘贴按 MMD 日文名、英文名及 Blender 名称解析骨骼与材质。Group Morph 的每一条引用都会原样保留：当前模型不存在目标 Morph 时也不丢弃该详情，继续由现有 Group 列表显示三角感叹号，用户可在详情区手动改成正确的 Morph；若剪贴板或当前模型能判定目标类型则自动填写，否则保守落到 Vertex 类型以保留名称。Vertex Morph 与 UV Morph 的 PMX 顶点索引依赖源模型拓扑，粘贴时明确安全跳过；复制同样跳过 Vertex 与顶点组型 UV，只允许可直接表达为 PMX Editor 索引行的旧式 `DATA` UV。
+- `tests/mmd_morph_editor_regression.py` 覆盖 Material、UV、Bone、Vertex、Group 五类 CSV 识别，三类可移植 Morph 的写入/序列化回读、Vertex/UV 跳过、缺失 Group 引用保留及按钮真实布局；`tests/fixtures/pmx_editor_morph_clipboard.csv` 固化用户提供的 PMX Editor 样本。Blender 4.4.3 focused regression 输出 `MMD_MORPH_EDITOR_REGRESSION_OK`；另对 `D:\MMD\模型\Alicia\鳴潮-達尼婭\達尼婭\合并5.pmx` 确认五类 Morph 均存在，并在 `34.blend` 的 `合并2` Root 内存中粘贴样本，4 个 Morph 均更新成功、Group 的 5 条引用及 Material/Bone 详情数量正确，工程未保存。`py_compile`、`git diff --check` 通过。版本保持 V0.1.8，真实 Blender 4.4 源码 Junction 直接生效，不打包 ZIP、不 push；未进行人工 GUI 点击验收。
+
 ## 2026-08-29 - V0.1.8 智能重排序跳过隐藏 Morph
 
 - “智能重排序表情枠”现在把 `mmd_tools` 中 `category == "SYSTEM"`（UI 显示为 Hidden/隐藏）的 Morph 与空 Morph 一样排除：即使隐藏 Morph 具备有效 Material/UV/Bone/Vertex/Group 详情，也不会被自动收录。该过滤仅作用于智能重排序；不删除或移动 Morph，不改变 Morph 编辑器顺序，也不限制用户通过显示枠页加号手动收录隐藏 Morph。

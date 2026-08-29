@@ -22,6 +22,11 @@ from bpy.types import AddonPreferences, Operator, PropertyGroup, UIList
 from mathutils import Vector
 
 from .mmd_material_order import ordered_materials
+from .mmd_morph_clipboard import (
+    apply_pmx_editor_morphs,
+    parse_pmx_editor_morph_csv,
+    serialize_pmx_editor_morphs,
+)
 
 
 MORPH_TYPES = (
@@ -1609,6 +1614,95 @@ class SPX_OT_RefreshMorphEditor(Operator):
             self.report({"INFO"}, f"已补充 {restored} 个顶点 Morph")
         elif rebound:
             self.report({"INFO"}, "已刷新 Morph 并重建 Bone/UV Runtime")
+        return {"FINISHED"}
+
+
+class SPX_OT_CopySelectedMorphsToClipboard(Operator):
+    bl_idname = "surface_proxy.copy_selected_morphs_to_clipboard"
+    bl_label = "复制勾选 Morph"
+    bl_description = (
+        "按 PMX Editor CSV 格式复制勾选的 Morph；Bone、Material、Group 可跨模型，"
+        "旧式 DATA UV 可复制，Vertex 与顶点组型 UV 会跳过"
+    )
+
+    def execute(self, context):
+        settings = context.scene.surface_proxy_creator
+        root = _find_root(context, settings)
+        if root is None:
+            self.report({"ERROR"}, "找不到 MMD 模型 Root")
+            return {"CANCELLED"}
+        ensure_morph_states(root)
+        selected = [state for state in root.spx_morph_states if state.selected]
+        if not selected and 0 <= root.spx_morph_active_index < len(
+            root.spx_morph_states
+        ):
+            selected = [root.spx_morph_states[root.spx_morph_active_index]]
+        typed_morphs = []
+        for state in selected:
+            morph = _morph_by_uid(root, state.morph_type, state.uid)
+            if morph is not None:
+                typed_morphs.append((state.morph_type, morph))
+        text, copied, skipped = serialize_pmx_editor_morphs(root, typed_morphs)
+        if copied == 0:
+            self.report(
+                {"ERROR"},
+                "没有可安全复制的 Morph；Vertex 与顶点组型 UV 不支持跨模型复制",
+            )
+            return {"CANCELLED"}
+        context.window_manager.clipboard = text
+        message = f"已复制 {copied} 个 Morph 到剪贴板"
+        if skipped:
+            message += f"；跳过 {len(skipped)} 个 Vertex/顶点组型 UV Morph"
+        self.report({"WARNING"} if skipped else {"INFO"}, message)
+        return {"FINISHED"}
+
+
+class SPX_OT_PasteMorphsFromClipboard(Operator):
+    bl_idname = "surface_proxy.paste_morphs_from_clipboard"
+    bl_label = "从剪贴板粘贴 Morph"
+    bl_description = (
+        "读取 PMX Editor Morph CSV，并按类型自动写入 Bone、Material、Group；"
+        "Group 中不存在的引用仍会保留，Vertex 与 UV 会安全跳过"
+    )
+    bl_options = {"REGISTER", "UNDO"}
+
+    def execute(self, context):
+        settings = context.scene.surface_proxy_creator
+        root = _find_root(context, settings)
+        if root is None:
+            self.report({"ERROR"}, "找不到 MMD 模型 Root")
+            return {"CANCELLED"}
+        try:
+            records = parse_pmx_editor_morph_csv(context.window_manager.clipboard)
+        except ValueError as exc:
+            self.report({"ERROR"}, str(exc))
+            return {"CANCELLED"}
+        result = apply_pmx_editor_morphs(root, records)
+        ensure_morph_states(root)
+        if result["applied"]:
+            morph_type, morph_name = result["applied"][-1]
+            settings.morph_editor_type = morph_type
+            morph = _morph_collection(root, morph_type).get(morph_name)
+            if morph is not None:
+                uid = str(morph.get(MORPH_UID_PROPERTY, ""))
+                index = root.spx_morph_states.find(uid)
+                if index >= 0:
+                    root.spx_morph_active_index = index
+            if _bound_placeholder(root) is not None:
+                _ensure_lightweight_bind(root, force_rebind=True)
+                ensure_morph_states(root)
+                evaluate_morph_root(root)
+        imported = result["created"] + result["updated"]
+        message = (
+            f"已粘贴 {imported} 个 Morph"
+            f"（新增 {result['created']}，更新 {result['updated']}）"
+        )
+        if result["skipped"]:
+            message += f"；安全跳过 {len(result['skipped'])} 个 Vertex/UV Morph"
+        if result["unresolved"]:
+            message += f"；{len(result['unresolved'])} 个骨骼/材质引用未匹配"
+        level = {"WARNING"} if result["skipped"] or result["unresolved"] else {"INFO"}
+        self.report(level, message)
         return {"FINISHED"}
 
 
@@ -3408,6 +3502,18 @@ def draw_morph_editor(layout, context):
         if not _morph_state_structure_is_current(root):
             layout.label(text="正在读取 Morph…", icon="TIME")
             return
+    clipboard_box = layout.box()
+    clipboard_row = clipboard_box.row(align=True)
+    clipboard_row.operator(
+        SPX_OT_CopySelectedMorphsToClipboard.bl_idname,
+        text="复制勾选 Morph",
+        icon="COPYDOWN",
+    )
+    clipboard_row.operator(
+        SPX_OT_PasteMorphsFromClipboard.bl_idname,
+        text="从剪贴板粘贴 Morph",
+        icon="PASTEDOWN",
+    )
     tabs = layout.row(align=True)
     tabs.prop(settings, "morph_editor_type", expand=True)
     controls = layout.row(align=True)
@@ -3619,6 +3725,8 @@ CLASSES = (
     SPX_UL_BoneMorphOffsets,
     SPX_UL_GroupMorphOffsets,
     SPX_OT_RefreshMorphEditor,
+    SPX_OT_CopySelectedMorphsToClipboard,
+    SPX_OT_PasteMorphsFromClipboard,
     SPX_OT_AddMorph,
     SPX_OT_RemoveSelectedMorphs,
     SPX_OT_CleanSelectedEmptyMorphs,
