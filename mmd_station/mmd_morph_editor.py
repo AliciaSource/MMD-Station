@@ -154,43 +154,12 @@ def _morph_lookup(root):
     }
 
 
-def _morph_by_name(root, morph_type, name):
-    if morph_type not in MORPH_TYPE_KEYS:
-        return None
-    return _morph_collection(root, morph_type).get(name)
-
-
-def _facial_order(root):
-    frame = root.mmd_root.display_item_frames.get("表情")
-    if frame is None:
-        return []
-    result = []
-    for item in frame.data:
-        if item.type != "MORPH" or item.morph_type not in MORPH_TYPE_KEYS:
-            continue
-        morph = _morph_by_name(root, item.morph_type, item.name)
-        if morph is not None:
-            result.append((item.morph_type, morph))
-    return result
-
-
 def _ordered_morphs(root):
-    ordered = []
-    seen_pointers = set()
-    for morph_type, morph in _facial_order(root):
-        pointer = morph.as_pointer()
-        if pointer in seen_pointers:
-            continue
-        ordered.append((morph_type, morph))
-        seen_pointers.add(pointer)
-    for morph_type in MORPH_TYPE_KEYS:
-        for morph in _morph_collection(root, morph_type):
-            pointer = morph.as_pointer()
-            if pointer in seen_pointers:
-                continue
-            ordered.append((morph_type, morph))
-            seen_pointers.add(pointer)
-    return ordered
+    return [
+        (morph_type, morph)
+        for morph_type in MORPH_TYPE_KEYS
+        for morph in _morph_collection(root, morph_type)
+    ]
 
 
 def _morph_states_are_current(root):
@@ -1482,24 +1451,6 @@ def _sync_morph_order(root):
             current_index = morphs.find(name)
             if current_index >= 0 and current_index != target_index:
                 morphs.move(current_index, target_index)
-
-    frame = root.mmd_root.display_item_frames.get("表情")
-    if frame is None:
-        frame = root.mmd_root.display_item_frames.add()
-        frame.name = "表情"
-        frame.name_e = "Facial"
-        frame.is_special = True
-    for index in reversed(range(len(frame.data))):
-        if frame.data[index].type == "MORPH":
-            frame.data.remove(index)
-    for state in states:
-        morph = _morph_by_uid(root, state.morph_type, state.uid)
-        if morph is None:
-            continue
-        item = frame.data.add()
-        item.type = "MORPH"
-        item.morph_type = state.morph_type
-        item.name = morph.name
 
 
 def _restore_missing_vertex_morphs(root):
