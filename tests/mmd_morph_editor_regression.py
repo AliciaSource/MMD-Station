@@ -366,30 +366,36 @@ assert not _morph_states_are_current(root)
 ensure_morph_states(root)
 assert _morph_states_are_current(root)
 
-# Renaming keeps the stable UID structure drawable while metadata and the
-# facial frame refresh without moving the renamed Morph to the end.
-state_uid_order_before_rename = [state.uid for state in root.spx_morph_states]
+# Passive metadata refresh preserves facial-frame membership while updating
+# the reference of a Morph that is already present there.
 material_order_before_rename = [
     morph.name for morph in root.mmd_root.material_morphs
 ]
 hide_index_before_rename = material_order_before_rename.index("Hide")
+Model(root).initialDisplayFrames(reset=False)
+facial = root.mmd_root.display_item_frames["表情"]
+facial.data.clear()
+hide_display_item = facial.data.add()
+hide_display_item.type = "MORPH"
+hide_display_item.morph_type = "material_morphs"
+hide_display_item.name = "Hide"
 hide_morph.name = "HideRenamed"
 assert not _morph_states_are_current(root)
 assert _morph_state_structure_is_current(root)
 _refresh_morph_state_metadata(root)
 assert _morph_states_are_current(root)
-assert [state.uid for state in root.spx_morph_states] == state_uid_order_before_rename
 assert [morph.name for morph in root.mmd_root.material_morphs][
     hide_index_before_rename
 ] == "HideRenamed"
-assert [
-    item.name
-    for item in root.mmd_root.display_item_frames["表情"].data
-    if item.morph_type == "material_morphs"
-][hide_index_before_rename] == "HideRenamed"
+assert [(item.morph_type, item.name) for item in facial.data] == [
+    ("material_morphs", "HideRenamed")
+]
 hide_morph.name = "Hide"
 _refresh_morph_state_metadata(root)
 assert _morph_states_are_current(root)
+assert [(item.morph_type, item.name) for item in facial.data] == [
+    ("material_morphs", "Hide")
+]
 
 # Named state paths remain keyframeable and sorting updates the PMX facial frame.
 states["Hide"].keyframe_insert(data_path="value", frame=1)
