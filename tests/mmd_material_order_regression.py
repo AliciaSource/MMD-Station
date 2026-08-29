@@ -111,6 +111,17 @@ def make_mesh(name, armature, material_positions):
     return obj
 
 
+def set_material_targets(settings, active_material, checked_materials=()):
+    checked_materials = set(checked_materials)
+    active_index = None
+    for index, item in enumerate(settings.browser_items):
+        item.selected = item.material in checked_materials
+        if item.material is active_material:
+            active_index = index
+    assert active_index is not None
+    settings.browser_index = active_index
+
+
 mmd_station.register()
 model = Model.create("MaterialOrderRegression", add_root_bone=True)
 root = model.rootObject()
@@ -256,13 +267,22 @@ external_conflict = make_material(
     "ExternalConflict",
 )
 external_conflict.mmd_material.material_id = 0
+set_material_targets(settings, material_b)
+material_c_id = material_c.mmd_material.material_id
+material_a_id = material_a.mmd_material.material_id
+assert bpy.ops.surface_proxy.calibrate_material_order() == {"FINISHED"}
+assert material_b.mmd_material.material_id == 0
+assert material_c.mmd_material.material_id == material_c_id
+assert material_a.mmd_material.material_id == material_a_id
+assert single_mesh.name == "000_Z_Mesh"
+assert multi_mesh.name == "A_Mesh"
+set_material_targets(settings, material_b, {material_c, material_a})
 assert bpy.ops.surface_proxy.calibrate_material_order() == {"FINISHED"}
 assert [
     material.mmd_material.material_id
     for material in (material_b, material_c, material_a)
 ] == [0, 1, 2]
 assert external_conflict.mmd_material.material_id >= 3
-assert single_mesh.name == "000_Z_Mesh"
 assert multi_mesh.name == "A_Mesh"
 
 basis = multi_mesh.shape_key_add(name="Basis")
@@ -313,6 +333,11 @@ multi_guard = make_mesh(
     ((material_c, 40.0), (material_a, 50.0)),
 )
 assert bpy.ops.surface_proxy.refresh_mmd_browser() == {"FINISHED"}
+set_material_targets(
+    settings,
+    material_b,
+    {material_b, material_c, material_a, material_d},
+)
 assert bpy.ops.surface_proxy.calibrate_material_order() == {"FINISHED"}
 assert ordered_materials(root) == [material_b, material_c, material_a, material_d]
 unaffected_mesh.name = "777_D_Mesh"
@@ -338,14 +363,24 @@ assert ordered_materials(root) == [material_b, material_c, material_a, material_
 bpy.data.objects.remove(unaffected_mesh, do_unlink=True)
 bpy.data.materials.remove(material_d)
 assert bpy.ops.surface_proxy.refresh_mmd_browser() == {"FINISHED"}
+set_material_targets(settings, material_b, {material_b, material_c, material_a})
 assert bpy.ops.surface_proxy.calibrate_material_order() == {"FINISHED"}
 assert ordered_materials(root) == [material_b, material_c, material_a]
 assert multi_guard.name == "MultiGuard"
 
+set_material_targets(settings, material_b)
 assert bpy.ops.surface_proxy.sync_material_names(direction="BLENDER_TO_MMD") == {
     "FINISHED"
 }
-for material in (material_a, material_b, material_c):
+assert material_b.mmd_material.name_j == material_b.name
+assert material_b.mmd_material.name_e == material_b.name
+assert material_a.mmd_material.name_j == "PMX_A"
+assert material_c.mmd_material.name_j == "PMX_C"
+set_material_targets(settings, material_b, {material_c, material_a})
+assert bpy.ops.surface_proxy.sync_material_names(direction="BLENDER_TO_MMD") == {
+    "FINISHED"
+}
+for material in (material_a, material_c):
     assert material.mmd_material.name_j == material.name
     assert material.mmd_material.name_e == material.name
 for material, name_j, name_e in (
@@ -355,6 +390,14 @@ for material, name_j, name_e in (
 ):
     material.mmd_material.name_j = name_j
     material.mmd_material.name_e = name_e
+set_material_targets(settings, material_b)
+assert bpy.ops.surface_proxy.sync_material_names(direction="MMD_TO_BLENDER") == {
+    "FINISHED"
+}
+assert material_b.name == "PMX_B"
+assert material_c.name == "BL_C"
+assert material_a.name == "BL_A"
+set_material_targets(settings, material_b, {material_c, material_a})
 assert bpy.ops.surface_proxy.sync_material_names(direction="MMD_TO_BLENDER") == {
     "FINISHED"
 }

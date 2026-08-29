@@ -244,7 +244,7 @@ def sync_changed_material_order(root, previous, current, FnModel=None):
     return True, len(changed_materials), renamed, len(moved_conflicts)
 
 
-def calibrate_material_ids_and_object_names(root):
+def calibrate_material_ids_and_object_names(root, target_materials=None):
     model_module = importlib.import_module(
         "bl_ext.blender_org.mmd_tools.core.model"
     )
@@ -254,34 +254,45 @@ def calibrate_material_ids_and_object_names(root):
     FnModel = model_module.FnModel
     MoveObject = misc_module.MoveObject
     materials = ordered_materials(root, FnModel)
+    if target_materials is None:
+        target_materials = materials
+    target_set = set(target_materials) & set(materials)
+    if not target_set:
+        return 0, 0, 0, 0
     material_set = set(materials)
-    reserved_ids = set(range(len(materials)))
+    order_by_material = {
+        material: index
+        for index, material in enumerate(materials)
+        if material in target_set
+    }
+    reserved_ids = set(order_by_material.values())
     moved_conflicts = _relocate_external_id_conflicts(
         material_set,
         reserved_ids,
     )
 
-    order_by_material = {material: index for index, material in enumerate(materials)}
     for material, index in order_by_material.items():
         material.mmd_material.material_id = index
 
-    _sync_material_morph_ids(material_set | moved_conflicts)
+    _sync_material_morph_ids(target_set | moved_conflicts)
 
     renamed = 0
     multi_material = 0
     for mesh_object in FnModel.iterate_mesh_objects(root):
-        used = [
+        used = {
             material
             for material in _used_materials(mesh_object)
-            if material in order_by_material
-        ]
-        if len(used) == 1:
-            MoveObject.set_index(mesh_object, order_by_material[used[0]])
+            if material in material_set
+        }
+        targets_used = used & target_set
+        if len(used) == 1 and targets_used:
+            material = next(iter(targets_used))
+            MoveObject.set_index(mesh_object, order_by_material[material])
             renamed += 1
-        elif len(used) > 1:
+        elif len(used) > 1 and targets_used:
             multi_material += 1
-    root[CALIBRATED_PROPERTY] = True
-    return len(materials), renamed, multi_material, len(moved_conflicts)
+    material_ids_are_calibrated(root, materials)
+    return len(target_set), renamed, multi_material, len(moved_conflicts)
 
 
 def _reorder_exported_material_blocks(exporter, material_names):
@@ -428,9 +439,30 @@ def unregister_export_hook():
         setattr(importer_class, import_materials_name, original_import_materials)
 
 
+def _material_action_targets(settings, root):
+    materials = ordered_materials(root)
+    material_set = set(materials)
+    checked = {
+        item.material
+        for item in settings.browser_items
+        if item.kind == "MATERIAL"
+        and item.selected
+        and item.material in material_set
+    }
+    if checked:
+        return [material for material in materials if material in checked]
+    index = settings.browser_index
+    if 0 <= index < len(settings.browser_items):
+        item = settings.browser_items[index]
+        if item.kind == "MATERIAL" and item.material in material_set:
+            return [item.material]
+    return []
+
+
 class SPX_OT_SyncMaterialNames(Operator):
     bl_idname = "surface_proxy.sync_material_names"
     bl_label = "同步材质名称"
+    bl_description = "有勾选时只同步勾选材质，否则只同步查看器中的活动材质"
     bl_options = {"REGISTER", "UNDO"}
 
     direction: EnumProperty(
@@ -447,7 +479,10 @@ class SPX_OT_SyncMaterialNames(Operator):
         if root is None:
             self.report({"ERROR"}, "请先选择 MMD 模型")
             return {"CANCELLED"}
-        materials = ordered_materials(root)
+        materials = _material_action_targets(settings, root)
+        if not materials:
+            self.report({"WARNING"}, "没有可同步的活动材质")
+            return {"CANCELLED"}
         for material in materials:
             if self.direction == "BLENDER_TO_MMD":
                 material.mmd_material.name_j = material.name
@@ -518,7 +553,7 @@ class SPX_OT_TranslateSelectedMaterialNamesWithAI(Operator):
 class SPX_OT_CalibrateMaterialOrder(Operator):
     bl_idname = "surface_proxy.calibrate_material_order"
     bl_label = "校对材质 ID 与物体编号"
-    bl_description = "按查看器的 0-based PMX 顺序写入材质 ID，并只校对单材质物体的三位编号前缀"
+    bl_description = "有勾选时只校对勾选材质，否则只校对活动材质；按查看器的 0-based PMX 顺序写入材质 ID，并只修改对应单材质物体的三位编号前缀"
     bl_options = {"REGISTER", "UNDO"}
 
     def execute(self, context):
@@ -527,9 +562,13 @@ class SPX_OT_CalibrateMaterialOrder(Operator):
         if root is None:
             self.report({"ERROR"}, "请先选择 MMD 模型")
             return {"CANCELLED"}
+        materials = _material_action_targets(settings, root)
+        if not materials:
+            self.report({"WARNING"}, "没有可校对的活动材质")
+            return {"CANCELLED"}
         try:
             material_count, renamed, multi_material, moved_conflicts = (
-                calibrate_material_ids_and_object_names(root)
+                calibrate_material_ids_and_object_names(root, materials)
             )
         except (ImportError, RuntimeError) as error:
             self.report({"ERROR"}, str(error))
