@@ -18,7 +18,10 @@ from mmd_station.mmd_material_order import (
     material_identity,
     ordered_materials,
 )
-from mmd_station.mmd_physics import SPX_UL_MMDItems
+from mmd_station.mmd_physics import (
+    SPX_UL_MMDItems,
+    _material_edge_alpha_needs_sync,
+)
 
 
 class RecordingUILayout:
@@ -165,6 +168,71 @@ threshold_control = remaining_thirds.children[1]
 assert threshold_control.kwargs["property_name"] == (
     "material_split_shapekey_cleanup_threshold"
 )
+assert bpy.ops.surface_proxy.refresh_mmd_browser() == {"FINISHED"}
+
+material_a.mmd_material.alpha = 0.0
+material_a.mmd_material.enabled_toon_edge = True
+material_a.mmd_material.edge_color = (0.1, 0.2, 0.3, 1.0)
+material_b.mmd_material.alpha = 1.0
+material_b.mmd_material.enabled_toon_edge = False
+material_b.mmd_material.edge_color = (0.4, 0.5, 0.6, 0.5)
+material_c.mmd_material.alpha = 1.0
+material_c.mmd_material.enabled_toon_edge = True
+material_c.mmd_material.edge_color = (0.0, 0.0, 0.0, 1.0)
+assert not _material_edge_alpha_needs_sync(material_c.mmd_material)
+material_c.mmd_material.alpha = 0.0
+material_c.mmd_material.enabled_toon_edge = False
+assert not _material_edge_alpha_needs_sync(material_c.mmd_material)
+material_c.mmd_material.alpha = 1.0
+material_c.mmd_material.enabled_toon_edge = True
+settings.browser_kind = "DIAGNOSTIC"
+assert bpy.ops.surface_proxy.refresh_mmd_browser() == {"FINISHED"}
+edge_alpha_issues = {
+    item.target_name: item
+    for item in settings.browser_diagnostics
+    if item.code == "MATERIAL_EDGE_ALPHA_SYNC"
+}
+assert set(edge_alpha_issues) == {material_a.name, material_b.name}
+assert "材质 Alpha 为 0" in edge_alpha_issues[material_a.name].message
+assert "描边 Alpha 0.5" in edge_alpha_issues[material_b.name].message
+issue = edge_alpha_issues[material_a.name]
+assert bpy.ops.surface_proxy.repair_mmd_diagnostic(
+    code=issue.code,
+    target_kind=issue.target_kind,
+    target_name=issue.target_name,
+    diagnostic_message=issue.message,
+) == {"FINISHED"}
+assert material_a.mmd_material.edge_color[3] == 0.0
+assert all(
+    abs(actual - expected) < 1e-6
+    for actual, expected in zip(material_a.mmd_material.edge_color[:3], (0.1, 0.2, 0.3))
+)
+assert material_a.mmd_material.alpha == 0.0
+assert material_a.mmd_material.enabled_toon_edge
+issue = next(
+    item
+    for item in settings.browser_diagnostics
+    if item.code == "MATERIAL_EDGE_ALPHA_SYNC"
+    and item.target_name == material_b.name
+)
+assert bpy.ops.surface_proxy.repair_mmd_diagnostic(
+    code=issue.code,
+    target_kind=issue.target_kind,
+    target_name=issue.target_name,
+    diagnostic_message=issue.message,
+) == {"FINISHED"}
+assert material_b.mmd_material.edge_color[3] == 1.0
+assert all(
+    abs(actual - expected) < 1e-6
+    for actual, expected in zip(material_b.mmd_material.edge_color[:3], (0.4, 0.5, 0.6))
+)
+assert material_b.mmd_material.alpha == 1.0
+assert not material_b.mmd_material.enabled_toon_edge
+assert not any(
+    item.code == "MATERIAL_EDGE_ALPHA_SYNC"
+    for item in settings.browser_diagnostics
+)
+settings.browser_kind = "MATERIAL"
 assert bpy.ops.surface_proxy.refresh_mmd_browser() == {"FINISHED"}
 next(item for item in settings.browser_items if item.material == material_b).selected = True
 assert bpy.ops.surface_proxy.reorder_checked_mmd_items(action="TOP") == {"FINISHED"}

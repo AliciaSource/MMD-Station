@@ -1862,8 +1862,42 @@ def _mmd_rigid_components(rigids, joints):
     return components, neighbors, incident_joints
 
 
+def _material_edge_alpha_needs_sync(mmd_material):
+    material_alpha = float(mmd_material.alpha)
+    edge_alpha = float(mmd_material.edge_color[3])
+    if math.isclose(material_alpha, edge_alpha, rel_tol=0.0, abs_tol=1e-6):
+        return False
+    return not math.isclose(material_alpha, 0.0, rel_tol=0.0, abs_tol=1e-6) or bool(
+        mmd_material.enabled_toon_edge
+    )
+
+
 def _scan_mmd_diagnostics(settings, root, FnModel):
     settings.browser_diagnostics.clear()
+    for material in ordered_materials(root, FnModel):
+        mmd_material = material.mmd_material
+        if not _material_edge_alpha_needs_sync(mmd_material):
+            continue
+        material_alpha = float(mmd_material.alpha)
+        edge_alpha = float(mmd_material.edge_color[3])
+        label = mmd_material.name_j or material.name
+        if math.isclose(material_alpha, 0.0, rel_tol=0.0, abs_tol=1e-6):
+            message = f"材质 Alpha 为 0，但卡通边缘已启用且描边 Alpha 为 {edge_alpha:.6g}"
+        else:
+            message = (
+                f"描边 Alpha {edge_alpha:.6g} 与材质 Alpha {material_alpha:.6g} 不一致"
+            )
+        _add_mmd_diagnostic(
+            settings,
+            "WARNING",
+            "MATERIAL",
+            material.name,
+            f"材质：{label}",
+            message,
+            "点击工具按钮，将描边 Alpha 同步为材质 Alpha。",
+            search_text=f"{material.name} {mmd_material.name_j} {mmd_material.name_e}",
+            code="MATERIAL_EDGE_ALPHA_SYNC",
+        )
     armature = FnModel.find_armature_object(root)
     armature_name = armature.name if armature is not None else ""
     if armature is None:
@@ -2840,6 +2874,25 @@ class SPX_OT_RepairMMDDiagnostic(Operator):
     diagnostic_message: StringProperty()
 
     def execute(self, context):
+        if self.code == "MATERIAL_EDGE_ALPHA_SYNC":
+            material = bpy.data.materials.get(self.target_name)
+            if material is None or not hasattr(material, "mmd_material"):
+                self.report({"ERROR"}, "问题材质已不存在；请重新运行诊断")
+                return {"CANCELLED"}
+            mmd_material = material.mmd_material
+            material_alpha = float(mmd_material.alpha)
+            edge_color = list(mmd_material.edge_color)
+            edge_color[3] = material_alpha
+            mmd_material.edge_color = edge_color
+            if not _refresh_mmd_browser_from_changes():
+                self.report({"ERROR"}, "描边 Alpha 已同步，但诊断刷新失败；请手动刷新")
+                return {"CANCELLED"}
+            self.report(
+                {"INFO"},
+                f"已将“{material.name}”的描边 Alpha 同步为 {material_alpha:.6g}",
+            )
+            return {"FINISHED"}
+
         if self.code in {
             "RIGID_SCALE_BAKE",
             "RIGID_SCALE_NORMALIZE",

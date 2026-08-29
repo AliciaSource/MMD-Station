@@ -1,5 +1,11 @@
 # Development Log
 
+## 2026-08-29 - V0.1.8 材质描边 Alpha 诊断与修复
+
+- 诊断 Tab 新增材质描边 Alpha 一致性规则：材质 Alpha 为 `0` 时，仅在“卡通边缘”已启用且描边 Alpha 非 `0` 时报告；材质 Alpha 非 `0` 时，只要描边 Alpha 与材质 Alpha 不一致便报告。比较使用 `1e-6` 绝对容差，避免浮点存储微差产生误报；材质 Alpha 为 `0` 且卡通边缘未启用时不因无效描边值报警。
+- 诊断项以 `MATERIAL_EDGE_ALPHA_SYNC` 标识并可直接跳转到对应材质。安全修复统一读取修复时的当前材质 Alpha，再只改写 `mmd_material.edge_color[3]`：透明材质会把描边 Alpha 归零，非透明材质会把描边 Alpha 同步成材质 Alpha；RGB、材质 Alpha、卡通边缘开关和其它材质字段均不改动，修复后立即重新扫描诊断。
+- `tests/mmd_material_order_regression.py` 新增三种材质回归：`Alpha 0 / 描边 1 / 卡通边缘开启`、`Alpha 1 / 描边 0.5` 均进入诊断并分别修复为 `0 / 1`，`Alpha 1 / 描边 1` 不误报；同时断言修复后两项诊断自动消失。Blender 4.4.3 focused regression 输出 `MMD_MATERIAL_ORDER_REGRESSION_OK`，`py_compile` 与 `git diff --check` 通过。版本保持 V0.1.8，真实 Blender 4.4 源码 Junction 已直接生效，不打包 ZIP、不 push；未进行人工 GUI 点击验收。
+
 ## 2026-08-29 - V0.1.8 材质详情折叠栏恢复
 
 - MMD 查看器材质 Tab 的内嵌详情恢复为两个独立可折叠区域：“MMD 纹理”和“MMD 材质”标题现在使用原生三角箭头显示展开/收起状态，点击整段标题即可切换；两个区域分别保存展开状态，默认保持展开，因此不改变现有首次显示内容。
