@@ -5,11 +5,14 @@ import uuid
 import bpy
 from bpy.props import EnumProperty, FloatProperty, IntProperty, StringProperty
 from bpy.types import Operator
+from mathutils import Euler, Matrix, Quaternion, Vector
 
 from . import runtime
+from . import cache as physics_cache
 
 
 BAKE_SCHEMA = 1
+REPAIR_SCHEMA = 1
 _ACTIVE_JOB = None
 
 
@@ -70,6 +73,171 @@ def _store_segments(action, segments):
         ensure_ascii=False,
         separators=(",", ":"),
     )
+
+
+def _repair_layers(action):
+    if action is None:
+        return []
+    try:
+        value = json.loads(str(action.get("mmd_station_physics_repairs", "[]")))
+    except (TypeError, ValueError, json.JSONDecodeError):
+        return []
+    return value if isinstance(value, list) else []
+
+
+def _store_repair_layers(action, layers):
+    action["mmd_station_physics_repairs"] = json.dumps(
+        layers,
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+
+
+def _active_repair_layer(settings, output, create=False):
+    layers = _repair_layers(output)
+    layer_id = str(settings.physics_repair_layer_id)
+    layer = next(
+        (item for item in layers if str(item.get("id", "")) == layer_id),
+        None,
+    )
+    if layer is None and create:
+        layer = {
+            "id": uuid.uuid4().hex,
+            "schema": REPAIR_SCHEMA,
+            "start": int(settings.physics_repair_start),
+            "end": int(settings.physics_repair_end),
+            "status": "DRAFT",
+            "anchors": {},
+        }
+        layers.append(layer)
+        settings.physics_repair_layer_id = layer["id"]
+    return layer, layers
+
+
+def _update_repair_range(settings, layer):
+    start = int(settings.physics_repair_start)
+    end = int(settings.physics_repair_end)
+    if end <= start + 1:
+        raise RuntimeError("物理修复范围至少需要 3 帧，以保留首尾零修正")
+    layer["start"] = start
+    layer["end"] = end
+    layer["anchors"] = {
+        frame: bones
+        for frame, bones in layer.get("anchors", {}).items()
+        if start < int(frame) < end
+    }
+    layer["status"] = "DRAFT"
+
+
+def _curve_value(action, data_path, index, frame, fallback):
+    curve = action.fcurves.find(data_path, index=index)
+    return fallback if curve is None else float(curve.evaluate(frame))
+
+
+def _action_basis(action, pose_bone, frame):
+    escaped = _escape_bone_name(pose_bone.name)
+    prefix = f'pose.bones["{escaped}"].'
+    location = Vector(
+        _curve_value(action, prefix + "location", index, frame, 0.0)
+        for index in range(3)
+    )
+    scale = Vector(
+        _curve_value(action, prefix + "scale", index, frame, 1.0)
+        for index in range(3)
+    )
+    if pose_bone.rotation_mode == "QUATERNION":
+        rotation = Quaternion(
+            _curve_value(
+                action,
+                prefix + "rotation_quaternion",
+                index,
+                frame,
+                1.0 if index == 0 else 0.0,
+            )
+            for index in range(4)
+        )
+    elif pose_bone.rotation_mode == "AXIS_ANGLE":
+        values = [
+            _curve_value(
+                action,
+                prefix + "rotation_axis_angle",
+                index,
+                frame,
+                0.0 if index == 0 else 1.0 if index == 1 else 0.0,
+            )
+            for index in range(4)
+        ]
+        rotation = Quaternion(Vector(values[1:]), values[0])
+    else:
+        rotation = Euler(
+            (
+                _curve_value(
+                    action,
+                    prefix + "rotation_euler",
+                    index,
+                    frame,
+                    0.0,
+                )
+                for index in range(3)
+            ),
+            pose_bone.rotation_mode,
+        ).to_quaternion()
+    return Matrix.LocRotScale(location, rotation, scale)
+
+
+def _matrix_record(matrix):
+    location, rotation, _scale = matrix.decompose()
+    return {
+        "location": [float(value) for value in location],
+        "rotation": [float(value) for value in rotation],
+    }
+
+
+def _record_matrix(value):
+    return Matrix.LocRotScale(
+        Vector(value["location"]),
+        Quaternion(value["rotation"]),
+        Vector((1.0, 1.0, 1.0)),
+    )
+
+
+def _smoothstep(value):
+    value = min(max(float(value), 0.0), 1.0)
+    return value * value * (3.0 - 2.0 * value)
+
+
+def _repair_delta(layer, bone_name, frame):
+    start = int(layer["start"])
+    end = int(layer["end"])
+    keyed = []
+    for frame_text, bones in layer.get("anchors", {}).items():
+        value = bones.get(bone_name)
+        if value is not None:
+            keyed.append((int(frame_text), _record_matrix(value)))
+    if not keyed or frame <= start or frame >= end:
+        return Matrix.Identity(4), 0.0
+    keyed.sort(key=lambda item: item[0])
+    points = [(start, Matrix.Identity(4)), *keyed, (end, Matrix.Identity(4))]
+    left, right = points[0], points[-1]
+    for candidate_left, candidate_right in zip(points, points[1:]):
+        if candidate_left[0] <= frame <= candidate_right[0]:
+            left, right = candidate_left, candidate_right
+            break
+    span = max(right[0] - left[0], 1)
+    factor = _smoothstep((frame - left[0]) / span)
+    left_location, left_rotation, _left_scale = left[1].decompose()
+    right_location, right_rotation, _right_scale = right[1].decompose()
+    location = left_location.lerp(right_location, factor)
+    rotation = left_rotation.slerp(right_rotation, factor)
+    first_anchor = keyed[0][0]
+    last_anchor = keyed[-1][0]
+    if frame < first_anchor:
+        strength = _smoothstep((frame - start) / max(first_anchor - start, 1))
+    elif frame > last_anchor:
+        strength = 1.0 - _smoothstep((frame - last_anchor) / max(end - last_anchor, 1))
+    else:
+        strength = 1.0
+    return Matrix.LocRotScale(location, rotation, Vector((1.0, 1.0, 1.0))), strength
 
 
 def current_bake_set(settings):
@@ -145,6 +313,69 @@ def _capture_pose(session, previous_rotations):
         previous_rotations[name] = previous
         result[name] = (location, rotation_path, rotation)
     return result
+
+
+def _sample_matrix(sample, rotation_mode="XYZ"):
+    location, rotation_path, rotation = sample
+    if rotation_path == "rotation_quaternion":
+        quaternion = Quaternion(rotation)
+    elif rotation_path == "rotation_axis_angle":
+        quaternion = Quaternion(Vector(rotation[1:]), rotation[0])
+    else:
+        quaternion = Euler(rotation, rotation_mode).to_quaternion()
+    return Matrix.LocRotScale(
+        Vector(location),
+        quaternion,
+        Vector((1.0, 1.0, 1.0)),
+    )
+
+
+def _matrix_sample(matrix, rotation_path, rotation_mode, previous_rotation):
+    location, quaternion, _scale = matrix.decompose()
+    if rotation_path == "rotation_quaternion":
+        if previous_rotation is not None and quaternion.dot(Quaternion(previous_rotation)) < 0.0:
+            quaternion.negate()
+        rotation = tuple(quaternion)
+    elif rotation_path == "rotation_axis_angle":
+        axis, angle = quaternion.to_axis_angle()
+        rotation = (angle, *axis)
+    else:
+        compatible = Euler(previous_rotation, rotation_mode) if previous_rotation else None
+        rotation = tuple(quaternion.to_euler(rotation_mode, compatible))
+    return tuple(location), rotation_path, rotation
+
+
+def _blend_repair_tail(job):
+    anchor_frames = [int(frame) for frame in job.repair_layer.get("anchors", {})]
+    blend_start = max(anchor_frames) if anchor_frames else job.start
+    if blend_start >= job.end:
+        return
+    for bone_name, poses in job.samples_by_bone.items():
+        pose_bone = job.work_armature.pose.bones.get(bone_name)
+        if pose_bone is None:
+            continue
+        previous_rotation = None
+        for index, (frame, sample) in enumerate(zip(job.output_frames, poses)):
+            if frame < blend_start:
+                previous_rotation = sample[2]
+                continue
+            factor = _smoothstep((frame - blend_start) / max(job.end - blend_start, 1))
+            current = _sample_matrix(sample, pose_bone.rotation_mode)
+            base = _action_basis(job.output_action, pose_bone, frame)
+            current_location, current_rotation, _current_scale = current.decompose()
+            base_location, base_rotation, _base_scale = base.decompose()
+            blended = Matrix.LocRotScale(
+                current_location.lerp(base_location, factor),
+                current_rotation.slerp(base_rotation, factor),
+                Vector((1.0, 1.0, 1.0)),
+            )
+            poses[index] = _matrix_sample(
+                blended,
+                sample[1],
+                pose_bone.rotation_mode,
+                previous_rotation,
+            )
+            previous_rotation = poses[index][2]
 
 
 def _point_snapshot(point):
@@ -338,8 +569,23 @@ def _continuation_origin(segments, start):
     return simulation_start, max(simulation_preroll, 0)
 
 
+def _range_is_baked(segments, start, end):
+    cursor = start
+    for segment in sorted(segments, key=lambda item: int(item.get("start", 0))):
+        segment_start = int(segment.get("start", 0))
+        segment_end = int(segment.get("end", -1))
+        if segment_end < cursor:
+            continue
+        if segment_start > cursor or segment.get("status") == "STALE":
+            return False
+        cursor = segment_end + 1
+        if cursor > end:
+            return True
+    return False
+
+
 class BakeJob:
-    def __init__(self, context, mode):
+    def __init__(self, context, mode, repair_layer=None):
         self.context = context
         self.scene = context.scene
         self.settings = self.scene.surface_proxy_creator
@@ -355,12 +601,26 @@ class BakeJob:
         _action_uid(self.source_action)
         self.output_action = _output_action(self.root, self.source_action)
         self.existing_segments = _segments(self.output_action)
-        self.start = int(self.settings.physics_bake_start)
-        self.end = int(self.settings.physics_bake_end)
+        self.repair_layer = repair_layer
+        self.fast_mode = mode in {"FAST", "REPAIR"}
+        if repair_layer is None:
+            self.start = int(self.settings.physics_bake_start)
+            self.end = int(self.settings.physics_bake_end)
+        else:
+            if self.output_action is None:
+                raise RuntimeError("当前动作还没有可修复的物理烘焙结果")
+            self.start = int(repair_layer["start"])
+            self.end = int(repair_layer["end"])
+            if not _range_is_baked(self.existing_segments, self.start, self.end):
+                raise RuntimeError("物理修复范围必须完整位于未过期的已烘焙区间内")
         if self.end < self.start:
             raise RuntimeError("烘焙结束帧不能早于起始帧")
         self.mode = mode
-        self.continuation = self.settings.physics_bake_continuity
+        self.continuation = (
+            self.settings.physics_bake_continuity
+            if repair_layer is None
+            else "REPAIR"
+        )
         self.preroll = int(self.settings.physics_bake_preroll)
         if self.continuation == "CONTINUE":
             self.simulation_start, self.simulation_preroll = _continuation_origin(
@@ -374,19 +634,27 @@ class BakeJob:
                     for frame in range(self.simulation_start, self.end + 1)
                 ),
             ]
-        else:
+        elif self.continuation == "INDEPENDENT":
             self.simulation_start = self.start
             self.simulation_preroll = self.preroll
             self.steps = [
                 *((self.start, False) for _index in range(self.preroll)),
                 *((frame, True) for frame in range(self.start, self.end + 1)),
             ]
+        else:
+            self.simulation_start = self.start
+            self.simulation_preroll = 0
+            self.steps = []
         self.frame_index = 0
         self.current_frame = self.simulation_start
         self.output_frames_completed = 0
         self.output_frame_count = self.end - self.start + 1
         self.output_frames = []
         self.samples_by_bone = {}
+        self.cache_context_hash = ""
+        self.cached_checkpoints = {}
+        self.new_checkpoints = {}
+        self.restored_checkpoint = None
         self.previous_rotations = {}
         self.started_at = time.perf_counter()
         self.next_playback_time = self.started_at
@@ -422,7 +690,7 @@ class BakeJob:
         self.world = None
         self.closed = False
         try:
-            if self.mode == "FAST":
+            if self.fast_mode:
                 self._create_working_copy()
             self.action_bindings = self._build_action_bindings()
             self._prepare()
@@ -441,7 +709,7 @@ class BakeJob:
     def _prepare(self):
         self.work_armature.animation_data_create()
         self.work_armature.animation_data.action = self.source_action
-        if self.mode == "FAST":
+        if self.fast_mode:
             self._reset_working_physics_pose()
             self._evaluate_source_action(self.simulation_start)
         else:
@@ -453,7 +721,7 @@ class BakeJob:
             self.work_root,
             armature=self.work_armature,
         )
-        self.session.suppress_redraw = self.mode == "FAST"
+        self.session.suppress_redraw = self.fast_mode
         self.session.offline_bake = True
         self.world = runtime.PreviewWorld(
             ("bake", self.work_root.name, id(self)),
@@ -463,7 +731,43 @@ class BakeJob:
         )
         self.world.add(self.session)
         self.world.reset(prepared_session=self.session)
+        self.cache_context_hash = physics_cache.context_hash(
+            self.root,
+            self.source_action,
+            self.session,
+            self.settings,
+        )
+        _header, self.cached_checkpoints = physics_cache.read_cache(
+            self.output_action,
+            expected_hash=self.cache_context_hash,
+        )
+        if self.repair_layer is not None:
+            checkpoint_frame = physics_cache.nearest_checkpoint(
+                self.cached_checkpoints,
+                self.start,
+                strictly_before=True,
+            )
+            if checkpoint_frame is None:
+                raise RuntimeError("修复起点之前没有可用物理恢复点，请先重新烘焙该动作")
+            self.world.solver.restore_snapshot(
+                self.cached_checkpoints[checkpoint_frame]
+            )
+            self.session.mmd_step_count = 4
+            self.steps = [
+                (frame, frame >= self.start)
+                for frame in range(checkpoint_frame + 1, self.end + 1)
+            ]
+            self.frame_index = 0
+            self.current_frame = checkpoint_frame + 1
+            self.restored_checkpoint = checkpoint_frame
+        if (
+            self.continuation == "INDEPENDENT"
+            and self.simulation_preroll == 0
+        ):
+            self.new_checkpoints[self.start - 1] = self.world.solver.snapshot()
         self.phase = "预热" if self.simulation_preroll else "烘焙"
+        if self.restored_checkpoint is not None:
+            self.phase = f"恢复第 {self.restored_checkpoint} 帧物理状态"
 
     def _create_working_copy(self):
         collection = bpy.data.collections.new(
@@ -587,7 +891,7 @@ class BakeJob:
 
     def restore_display_state(self):
         self.armature.animation_data.action = self.original_action
-        if self.mode != "FAST":
+        if not self.fast_mode:
             self.scene.frame_set(self.original_frame)
             self.context.view_layer.update()
         self.root.matrix_world = self.original_root_matrix
@@ -618,11 +922,13 @@ class BakeJob:
         self.current_frame = frame
         if self.work_armature.animation_data.action is not self.source_action:
             self.work_armature.animation_data.action = self.source_action
-        if self.mode == "FAST":
+        if self.fast_mode:
             self._evaluate_source_action(frame)
         else:
             self.scene.frame_set(frame)
         self.session.prepare_step()
+        if self.repair_layer is not None and frame >= self.start:
+            self._apply_repair_guides(frame)
         fps = self.scene.render.fps / max(self.scene.render.fps_base, 1.0e-6)
         self.world.pending_step_seconds = 1.0 / max(fps, 1.0e-6)
         if self.world.step():
@@ -641,11 +947,80 @@ class BakeJob:
                 self.output_frames_completed / max(self.output_frame_count, 1)
             )
             self.phase = "烘焙"
+            if (
+                (frame - self.start) % physics_cache.CHECKPOINT_INTERVAL == 0
+                or frame == self.end
+            ):
+                self.new_checkpoints[frame] = self.world.solver.snapshot()
+        elif (
+            self.continuation == "INDEPENDENT"
+            and self.frame_index + 1 < len(self.steps)
+            and self.steps[self.frame_index + 1][1]
+        ):
+            self.new_checkpoints[self.start - 1] = self.world.solver.snapshot()
         self.frame_index += 1
         return self.frame_index < len(self.steps)
 
+    def _apply_repair_guides(self, frame):
+        anchored_bones = {
+            bone_name
+            for bones in self.repair_layer.get("anchors", {}).values()
+            for bone_name in bones
+        }
+        if not anchored_bones:
+            return
+        source_basis = {
+            pose_bone.name: pose_bone.matrix_basis.copy()
+            for pose_bone in self.session.ordered_pose_bones
+        }
+        try:
+            for pose_bone in self.session.ordered_pose_bones:
+                base = _action_basis(self.output_action, pose_bone, frame)
+                delta, _strength = _repair_delta(
+                    self.repair_layer,
+                    pose_bone.name,
+                    frame,
+                )
+                pose_bone.matrix_basis = delta @ base
+            self.work_armature.update_tag(refresh={"OBJECT"})
+            self.context.view_layer.update()
+            for bone_name in anchored_bones:
+                index = self.session.bone_drivers.get(bone_name)
+                pose_bone = self.work_armature.pose.bones.get(bone_name)
+                if index is None or pose_bone is None:
+                    continue
+                _delta, strength = _repair_delta(
+                    self.repair_layer,
+                    bone_name,
+                    frame,
+                )
+                if strength <= 0.0:
+                    continue
+                rigid_world = (
+                    self.work_armature.matrix_world
+                    @ pose_bone.matrix
+                    @ self.session.bone_offsets[index]
+                )
+                target = runtime._pmx_native_matrix_transform(
+                    rigid_world,
+                    self.session.import_scale,
+                    library=self.session.library,
+                )
+                self.world.solver.guide_body(
+                    self.session.body_offset + index,
+                    target,
+                    strength,
+                )
+        finally:
+            for bone_name, matrix_basis in source_basis.items():
+                pose_bone = self.work_armature.pose.bones.get(bone_name)
+                if pose_bone is not None:
+                    pose_bone.matrix_basis = matrix_basis
+
     def finish(self):
         self.phase = "写入 Action"
+        if self.repair_layer is not None:
+            _blend_repair_tail(self)
         previous_output = self.output_action
         output = (
             previous_output.copy()
@@ -671,7 +1046,10 @@ class BakeJob:
             "seconds": round(elapsed, 6),
             "frames_per_second": round(self.output_frame_count / max(elapsed, 1.0e-6), 3),
             "bones": sorted(self.samples_by_bone),
+            "cache_checkpoint": self.end,
         }
+        if self.repair_layer is not None:
+            segment["repair_id"] = self.repair_layer["id"]
         try:
             _write_samples(
                 output,
@@ -680,11 +1058,55 @@ class BakeJob:
                 self.start,
                 self.end,
             )
-            _store_segments(output, _upsert_segment(self.existing_segments, segment))
+            if self.repair_layer is None:
+                _store_segments(output, _upsert_segment(self.existing_segments, segment))
+            else:
+                _store_segments(output, self.existing_segments)
+                layers = _repair_layers(self.output_action)
+                completed_layer = dict(self.repair_layer)
+                completed_layer["status"] = "COMPLETED"
+                layers = [
+                    item
+                    for item in layers
+                    if str(item.get("id", "")) != completed_layer["id"]
+                ]
+                layers.append(completed_layer)
+                _store_repair_layers(output, layers)
+            checkpoints = {
+                frame: snapshot
+                for frame, snapshot in self.cached_checkpoints.items()
+                if frame < self.start
+                or self.repair_layer is not None and frame >= self.end
+            }
+            new_checkpoints = self.new_checkpoints
+            if self.repair_layer is not None:
+                anchor_frames = [
+                    int(frame)
+                    for frame in self.repair_layer.get("anchors", {})
+                ]
+                blend_start = max(anchor_frames) if anchor_frames else self.start
+                new_checkpoints = {
+                    frame: snapshot
+                    for frame, snapshot in new_checkpoints.items()
+                    if frame < blend_start
+                }
+            checkpoints.update(new_checkpoints)
+            physics_cache.write_cache(
+                output,
+                {
+                    "context_hash": self.cache_context_hash,
+                    "root": self.root.name,
+                    "source_uid": _action_uid(self.source_action),
+                    "solver_target": self.session.solver_target,
+                },
+                checkpoints,
+            )
         except Exception:
             bpy.data.actions.remove(output, do_unlink=True)
             raise
         if previous_output is not None:
+            previous_output.pop("mmd_station_physics_cache_id", None)
+            previous_output.pop("mmd_station_physics_cache_frames", None)
             if previous_output.users == 0:
                 bpy.data.actions.remove(previous_output)
             else:
@@ -729,6 +1151,7 @@ class SPX_OT_BakeMMDPhysics(Operator):
         items=(
             ("FAST", "快速烘焙", "在临时复制体上求解，本体保持原姿势且不播放时间轴"),
             ("PLAYBACK", "播放烘焙", "逐帧显示物理结果并同步写入烘焙数据"),
+            ("REPAIR", "修复物理", "从持久化物理快照恢复并重新解算修复范围"),
         ),
         options={"HIDDEN"},
     )
@@ -739,7 +1162,18 @@ class SPX_OT_BakeMMDPhysics(Operator):
             self.report({"ERROR"}, "已有物理烘焙正在运行")
             return {"CANCELLED"}
         try:
-            _ACTIVE_JOB = BakeJob(context, self.mode)
+            repair_layer = None
+            if self.mode == "REPAIR":
+                settings = context.scene.surface_proxy_creator
+                _source, output, _segments_value = current_bake_set(settings)
+                if output is None:
+                    raise RuntimeError("当前动作还没有可修复的物理烘焙结果")
+                repair_layer, _layers = _active_repair_layer(settings, output)
+                if repair_layer is None or not repair_layer.get("anchors"):
+                    raise RuntimeError("请先在修复范围内记录至少一个骨骼修正帧")
+                _update_repair_range(settings, repair_layer)
+                _store_repair_layers(output, _layers)
+            _ACTIVE_JOB = BakeJob(context, self.mode, repair_layer=repair_layer)
         except (RuntimeError, OSError, ValueError) as error:
             _ACTIVE_JOB = None
             self.report({"ERROR"}, str(error))
@@ -766,10 +1200,10 @@ class SPX_OT_BakeMMDPhysics(Operator):
             return {"RUNNING_MODAL"}
         try:
             running = True
-            deadline = time.perf_counter() + (0.25 if job.mode == "FAST" else 0.0)
+            deadline = time.perf_counter() + (0.25 if job.fast_mode else 0.0)
             while running:
                 running = job.step()
-                if job.mode != "FAST" or time.perf_counter() >= deadline:
+                if not job.fast_mode or time.perf_counter() >= deadline:
                     break
             if job.mode == "PLAYBACK":
                 fps = context.scene.render.fps / max(
@@ -789,9 +1223,10 @@ class SPX_OT_BakeMMDPhysics(Operator):
             return {"CANCELLED"}
         self._finish_modal(context)
         _ACTIVE_JOB = None
+        operation = "已修复" if segment.get("repair_id") else "已烘焙"
         self.report(
             {"INFO"},
-            f"已烘焙 {segment['start']}–{segment['end']}，"
+            f"{operation} {segment['start']}–{segment['end']}，"
             f"平均 {segment['frames_per_second']:.1f} 帧/秒",
         )
         return {"FINISHED"}
@@ -825,6 +1260,7 @@ class SPX_OT_ClearMMDPhysicsBake(Operator):
         armature = runtime._model_armature(root)
         if armature.animation_data is not None and armature.animation_data.action is output:
             armature.animation_data.action = source
+        physics_cache.remove_cache(output)
         bpy.data.actions.remove(output, do_unlink=True)
         return {"FINISHED"}
 
@@ -857,6 +1293,90 @@ class SPX_OT_DeleteMMDPhysicsBakeSegment(Operator):
             ):
                 item["status"] = "STALE"
         _store_segments(output, remaining)
+        header, checkpoints = physics_cache.read_cache(output)
+        if header is not None:
+            checkpoints = {
+                frame: snapshot
+                for frame, snapshot in checkpoints.items()
+                if frame < int(segment["start"])
+            }
+            physics_cache.write_cache(output, header, checkpoints)
+        return {"FINISHED"}
+
+
+class SPX_OT_RecordMMDPhysicsRepairPose(Operator):
+    bl_idname = "surface_proxy.record_mmd_physics_repair_pose"
+    bl_label = "记录当前帧修正"
+    bl_description = "把当前所选物理骨骼相对原烘焙结果的姿势记录为引导帧"
+    bl_options = {"REGISTER", "UNDO"}
+
+    def execute(self, context):
+        settings = context.scene.surface_proxy_creator
+        _source, output, segments = current_bake_set(settings)
+        if output is None or not segments:
+            self.report({"ERROR"}, "当前动作还没有物理烘焙结果")
+            return {"CANCELLED"}
+        armature = runtime._model_armature(settings.mmd_root)
+        if armature is None or armature.animation_data is None:
+            self.report({"ERROR"}, "所选 MMD 模型没有可编辑 Armature")
+            return {"CANCELLED"}
+        if armature.animation_data.action is not output:
+            self.report({"ERROR"}, "请先切换到输出动作，再调整并记录物理骨骼")
+            return {"CANCELLED"}
+        frame = int(context.scene.frame_current)
+        start = int(settings.physics_repair_start)
+        end = int(settings.physics_repair_end)
+        if not start < frame < end:
+            self.report({"ERROR"}, "当前帧必须位于修复起始帧与结束帧之间")
+            return {"CANCELLED"}
+        selected = tuple(context.selected_pose_bones or ())
+        dynamic_bones = {
+            rigid.mmd_rigid.bone
+            for rigid in runtime._rigid_objects(settings.mmd_root)
+            if int(rigid.mmd_rigid.type) != 0 and rigid.mmd_rigid.bone
+        }
+        selected = tuple(bone for bone in selected if bone.name in dynamic_bones)
+        if not selected:
+            self.report({"ERROR"}, "请在 Pose Mode 选择至少一根动态物理骨骼")
+            return {"CANCELLED"}
+        try:
+            layer, layers = _active_repair_layer(settings, output, create=True)
+            _update_repair_range(settings, layer)
+            anchors = layer.setdefault("anchors", {})
+            frame_anchor = anchors.setdefault(str(frame), {})
+            for pose_bone in selected:
+                base = _action_basis(output, pose_bone, frame)
+                delta = pose_bone.matrix_basis.copy() @ base.inverted_safe()
+                frame_anchor[pose_bone.name] = _matrix_record(delta)
+            _store_repair_layers(output, layers)
+        except (RuntimeError, ValueError, TypeError) as error:
+            self.report({"ERROR"}, str(error))
+            return {"CANCELLED"}
+        self.report(
+            {"INFO"},
+            f"已记录第 {frame} 帧的 {len(selected)} 根物理骨骼修正",
+        )
+        return {"FINISHED"}
+
+
+class SPX_OT_ClearMMDPhysicsRepairLayer(Operator):
+    bl_idname = "surface_proxy.clear_mmd_physics_repair_layer"
+    bl_label = "清空修复引导"
+    bl_options = {"REGISTER", "UNDO"}
+
+    def execute(self, context):
+        settings = context.scene.surface_proxy_creator
+        _source, output, _segments_value = current_bake_set(settings)
+        if output is None:
+            return {"CANCELLED"}
+        layer_id = str(settings.physics_repair_layer_id)
+        layers = [
+            item
+            for item in _repair_layers(output)
+            if str(item.get("id", "")) != layer_id
+        ]
+        _store_repair_layers(output, layers)
+        settings.physics_repair_layer_id = ""
         return {"FINISHED"}
 
 
@@ -885,6 +1405,17 @@ def register_settings(cls):
         max=1.0,
         options={"HIDDEN", "SKIP_SAVE"},
     )
+    annotations["physics_repair_start"] = IntProperty(
+        name="修复起始",
+        description="此帧保持原烘焙结果，物理从前一个持久化快照恢复",
+        default=1,
+    )
+    annotations["physics_repair_end"] = IntProperty(
+        name="修复结束",
+        description="此帧恢复原烘焙结果，用于平滑衔接后续干净物理",
+        default=250,
+    )
+    annotations["physics_repair_layer_id"] = StringProperty(options={"HIDDEN"})
 
 
 def draw_bake(layout, settings):
@@ -905,7 +1436,11 @@ def draw_bake(layout, settings):
     progress = active_progress()
     if progress is not None:
         progress_box = box.box()
-        mode = "快速烘焙" if progress["mode"] == "FAST" else "播放烘焙"
+        mode = {
+            "FAST": "快速烘焙",
+            "PLAYBACK": "播放烘焙",
+            "REPAIR": "物理修复",
+        }.get(progress["mode"], "物理求解")
         progress_box.label(text=f"{mode}：{progress['phase']}", icon="TIME")
         progress_row = progress_box.row()
         progress_row.enabled = False
@@ -943,6 +1478,16 @@ def draw_bake(layout, settings):
         box.label(text=f"源动作：{source.name}", icon="ACTION")
     if output is not None:
         box.label(text=f"输出动作：{output.name}")
+        snapshot_count = int(output.get("mmd_station_physics_cache_frames", 0))
+        snapshot_path = physics_cache.cache_path(output)
+        if snapshot_count and snapshot_path is not None and snapshot_path.is_file():
+            suffix = "随工程保存" if bpy.data.filepath else "首次保存工程时迁移"
+            box.label(
+                text=f"物理快照：{snapshot_count} 个恢复点 · {suffix}",
+                icon="FILE_TICK",
+            )
+        elif snapshot_count:
+            box.label(text="物理快照文件缺失，需要重新烘焙", icon="ERROR")
     if segments:
         completed = box.box()
         header = completed.row(align=True)
@@ -971,6 +1516,42 @@ def draw_bake(layout, settings):
             )
             delete.segment_id = str(segment.get("id", ""))
 
+    if output is not None and segments:
+        repair = box.box()
+        repair.label(text="物理修复层", icon="MOD_PHYSICS")
+        repair.label(text="首尾自动保持 0 修正；中间可记录任意多个修正帧")
+        repair_range = repair.row(align=True)
+        repair_range.enabled = _ACTIVE_JOB is None
+        repair_range.prop(settings, "physics_repair_start")
+        repair_range.prop(settings, "physics_repair_end")
+        layer, _layers = _active_repair_layer(settings, output)
+        anchors = sorted(
+            int(frame) for frame in (layer or {}).get("anchors", {})
+        )
+        if anchors:
+            repair.label(text="已记录修正帧：" + "、".join(map(str, anchors)), icon="KEY_HLT")
+        else:
+            repair.label(text="在范围内调整所选物理骨骼，然后记录当前帧", icon="INFO")
+        controls = repair.row(align=True)
+        controls.enabled = _ACTIVE_JOB is None
+        controls.operator(
+            SPX_OT_RecordMMDPhysicsRepairPose.bl_idname,
+            text="记录当前帧修正",
+            icon="KEY_HLT",
+        )
+        solve = controls.operator(
+            SPX_OT_BakeMMDPhysics.bl_idname,
+            text="重新解算并衔接",
+            icon="PLAY",
+        )
+        solve.mode = "REPAIR"
+        if layer is not None:
+            controls.operator(
+                SPX_OT_ClearMMDPhysicsRepairLayer.bl_idname,
+                text="",
+                icon="TRASH",
+            )
+
 
 def cancel_active_bake():
     global _ACTIVE_JOB
@@ -983,4 +1564,6 @@ CLASSES = (
     SPX_OT_BakeMMDPhysics,
     SPX_OT_ClearMMDPhysicsBake,
     SPX_OT_DeleteMMDPhysicsBakeSegment,
+    SPX_OT_RecordMMDPhysicsRepairPose,
+    SPX_OT_ClearMMDPhysicsRepairLayer,
 )

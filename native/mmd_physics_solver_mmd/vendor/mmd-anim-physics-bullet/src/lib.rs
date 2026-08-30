@@ -17,8 +17,8 @@ mod test_support;
 
 #[cfg(feature = "native")]
 pub use native::{
-    BulletError, BulletWorld, ConstraintHandle, ContactPoint, RigidBodyDesc, RigidBodyHandle,
-    MatrixTransform, RigidBodyShape, SixDofSpringJointDesc, Transform,
+    BulletError, BulletWorld, ConstraintHandle, ContactPoint, MatrixTransform, RigidBodyDesc,
+    RigidBodyHandle, RigidBodyShape, RigidBodyState, SixDofSpringJointDesc, Transform,
     quaternion_rotation_yaw_pitch_roll,
 };
 #[cfg(all(feature = "native", feature = "pmx-format"))]

@@ -59,6 +59,21 @@ typedef struct mmd_anim_bullet_contact_point {
     float normal_world_on_b[3];
 } mmd_anim_bullet_contact_point;
 
+typedef struct mmd_anim_bullet_rigidbody_state {
+    float position[3];
+    float rotation_xyzw[4];
+    float interpolation_position[3];
+    float interpolation_rotation_xyzw[4];
+    float linear_velocity[3];
+    float angular_velocity[3];
+    float interpolation_linear_velocity[3];
+    float interpolation_angular_velocity[3];
+    float total_force[3];
+    float total_torque[3];
+    int32_t activation_state;
+    float deactivation_time;
+} mmd_anim_bullet_rigidbody_state;
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -119,6 +134,16 @@ mmd_anim_bullet_world_apply_world_delta(
     int32_t count,
     const float position[3],
     const float rotation_xyzw[4]);
+MMD_ANIM_BULLET_API int32_t
+mmd_anim_bullet_world_get_rigidbody_states(
+    const mmd_anim_bullet_world *world,
+    mmd_anim_bullet_rigidbody_state *out_states,
+    int32_t capacity);
+MMD_ANIM_BULLET_API mmd_anim_bullet_status
+mmd_anim_bullet_world_set_rigidbody_states(
+    mmd_anim_bullet_world *world,
+    const mmd_anim_bullet_rigidbody_state *states,
+    int32_t count);
 MMD_ANIM_BULLET_API mmd_anim_bullet_status
 mmd_anim_bullet_world_add_6dof_spring_joint(
     mmd_anim_bullet_world *world,

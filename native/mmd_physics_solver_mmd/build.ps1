@@ -117,7 +117,7 @@ if ($cargoExitCode -ne 0) {
 New-Item -ItemType Directory -Force -Path $destination | Out-Null
 Copy-Item `
     -LiteralPath (Join-Path $crateRoot "target\release\mmd_physics_solver_mmd.dll") `
-    -Destination (Join-Path $destination "mmd_physics_solver_mmd.dll") `
+    -Destination (Join-Path $destination "mmd_physics_solver_mmd_abi5.dll") `
     -Force
 
-Get-FileHash (Join-Path $destination "mmd_physics_solver_mmd.dll") -Algorithm SHA256
+Get-FileHash (Join-Path $destination "mmd_physics_solver_mmd_abi5.dll") -Algorithm SHA256

@@ -1,5 +1,5 @@
 use mmd_anim_physics_bullet::{
-    BulletWorld, RigidBodyDesc as BulletBodyDesc, RigidBodyHandle, RigidBodyShape,
+    BulletWorld, RigidBodyDesc as BulletBodyDesc, RigidBodyHandle, RigidBodyShape, RigidBodyState,
     SixDofSpringJointDesc, Transform as BulletTransform, quaternion_rotation_yaw_pitch_roll,
 };
 use std::ffi::c_void;
@@ -7,7 +7,12 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::ptr;
 use std::slice;
 
-const ABI_VERSION: u32 = 4;
+const ABI_VERSION: u32 = 5;
+const SNAPSHOT_MAGIC: &[u8; 4] = b"MSPS";
+const SNAPSHOT_VERSION: u32 = 1;
+const SNAPSHOT_HEADER_SIZE: usize = 20;
+const SNAPSHOT_BODY_SIZE: usize = 136;
+const SNAPSHOT_BINDING_SIZE: usize = 56;
 #[cfg(test)]
 const DEFAULT_WORLD_SCALE: f32 = 1.0;
 const MMD_GRAVITY_SCALE: f32 = 10.0;
@@ -22,7 +27,11 @@ pub struct Vec3 {
 
 impl Vec3 {
     fn from_array(value: [f32; 3]) -> Self {
-        Self { x: value[0], y: value[1], z: value[2] }
+        Self {
+            x: value[0],
+            y: value[1],
+            z: value[2],
+        }
     }
 
     fn array(self) -> [f32; 3] {
@@ -88,7 +97,12 @@ impl Default for Quat {
 
 impl Quat {
     fn from_array(value: [f32; 4]) -> Self {
-        Self { x: value[0], y: value[1], z: value[2], w: value[3] }
+        Self {
+            x: value[0],
+            y: value[1],
+            z: value[2],
+            w: value[3],
+        }
     }
 
     fn array(self) -> [f32; 4] {
@@ -156,6 +170,25 @@ impl Quat {
             y: 2.0 * dot_uv * u.y + (q.w * q.w - dot_uu) * value.y + 2.0 * q.w * cross.y,
             z: 2.0 * dot_uv * u.z + (q.w * q.w - dot_uu) * value.z + 2.0 * q.w * cross.z,
         }
+    }
+
+    fn nlerp(self, mut other: Self, factor: f32) -> Self {
+        if self.x * other.x + self.y * other.y + self.z * other.z + self.w * other.w < 0.0 {
+            other = Self {
+                x: -other.x,
+                y: -other.y,
+                z: -other.z,
+                w: -other.w,
+            };
+        }
+        let inverse = 1.0 - factor;
+        Self {
+            x: self.x * inverse + other.x * factor,
+            y: self.y * inverse + other.y * factor,
+            z: self.z * inverse + other.z * factor,
+            w: self.w * inverse + other.w * factor,
+        }
+        .normalized()
     }
 }
 
@@ -352,23 +385,17 @@ impl Solver {
                 .get(desc.body_b as usize)
                 .ok_or_else(|| format!("joint body B {} is out of range", desc.body_b))?;
             let joint = SixDofSpringJointDesc {
-                    rigidbody_a: body_a,
-                    rigidbody_b: body_b,
-                    position: transform.position.scaled_array(world_scale),
-                    rotation_xyzw: transform.rotation.array(),
-                    translation_lower_limit: desc
-                        .linear_lower
-                        .mmd_basis()
-                        .scaled_array(world_scale),
-                    translation_upper_limit: desc
-                        .linear_upper
-                        .mmd_basis()
-                        .scaled_array(world_scale),
-                    rotation_lower_limit: desc.angular_upper.mmd_angular_basis().array(),
-                    rotation_upper_limit: desc.angular_lower.mmd_angular_basis().array(),
-                    spring_translation_factor: desc.linear_spring.mmd_basis().array(),
-                    spring_rotation_factor: desc.angular_spring.mmd_basis().array(),
-                };
+                rigidbody_a: body_a,
+                rigidbody_b: body_b,
+                position: transform.position.scaled_array(world_scale),
+                rotation_xyzw: transform.rotation.array(),
+                translation_lower_limit: desc.linear_lower.mmd_basis().scaled_array(world_scale),
+                translation_upper_limit: desc.linear_upper.mmd_basis().scaled_array(world_scale),
+                rotation_lower_limit: desc.angular_upper.mmd_angular_basis().array(),
+                rotation_upper_limit: desc.angular_lower.mmd_angular_basis().array(),
+                spring_translation_factor: desc.linear_spring.mmd_basis().array(),
+                spring_rotation_factor: desc.angular_spring.mmd_basis().array(),
+            };
             let (frame_a, frame_b) = if let Some((body_eulers, joint_eulers)) = source_eulers {
                 let (_, frame_a, frame_b) = world
                     .add_mmd_6dof_spring_joint(
@@ -447,12 +474,14 @@ impl Solver {
             .bodies
             .get(index)
             .ok_or_else(|| format!("rigid body {} is out of range", index))?;
-        let translation_only = target.rotation.array()
-            == binding.initial_animation_bone.rotation.array();
+        let translation_only =
+            target.rotation.array() == binding.initial_animation_bone.rotation.array();
         let body_target = if translation_only {
             Transform {
                 position: binding.initial_body.position.add(
-                    target.position.add(binding.initial_animation_bone.position.neg()),
+                    target
+                        .position
+                        .add(binding.initial_animation_bone.position.neg()),
                 ),
                 rotation: binding.initial_body.rotation,
             }
@@ -462,10 +491,7 @@ impl Solver {
         binding.last_body_target = body_target;
         if translation_only {
             self.world
-                .set_rigidbody_position(
-                    handle,
-                    body_target.position.scaled_array(self.world_scale),
-                )
+                .set_rigidbody_position(handle, body_target.position.scaled_array(self.world_scale))
                 .map_err(|error| error.to_string())?;
             if let Some(source_euler) = binding.source_euler {
                 self.world
@@ -479,10 +505,7 @@ impl Solver {
             }
         } else {
             self.world
-                .set_rigidbody_position(
-                    handle,
-                    body_target.position.scaled_array(self.world_scale),
-                )
+                .set_rigidbody_position(handle, body_target.position.scaled_array(self.world_scale))
                 .map_err(|error| error.to_string())?;
             self.world
                 .set_rigidbody_motion_state_rotation(handle, body_target.rotation.array())
@@ -509,7 +532,43 @@ impl Solver {
             .map_err(|error| error.to_string())
     }
 
-    fn set_body_target_basis(&mut self, index: usize, target: BasisTransform) -> Result<(), String> {
+    fn guide_body(&mut self, index: usize, target: Transform, strength: f32) -> Result<(), String> {
+        let handle = *self
+            .bodies
+            .get(index)
+            .ok_or_else(|| format!("rigid body {} is out of range", index))?;
+        let current = self
+            .world
+            .rigidbody_transform(handle)
+            .map_err(|error| error.to_string())?;
+        let target = target.mmd_basis();
+        let factor = strength.clamp(0.0, 1.0);
+        let inverse = 1.0 - factor;
+        self.world
+            .set_rigidbody_transform(
+                handle,
+                BulletTransform {
+                    position: [
+                        current.position[0] * inverse
+                            + target.position.x * self.world_scale * factor,
+                        current.position[1] * inverse
+                            + target.position.y * self.world_scale * factor,
+                        current.position[2] * inverse
+                            + target.position.z * self.world_scale * factor,
+                    ],
+                    rotation_xyzw: Quat::from_array(current.rotation_xyzw)
+                        .nlerp(target.rotation, factor)
+                        .array(),
+                },
+            )
+            .map_err(|error| error.to_string())
+    }
+
+    fn set_body_target_basis(
+        &mut self,
+        index: usize,
+        target: BasisTransform,
+    ) -> Result<(), String> {
         let binding = self
             .bindings
             .get(index)
@@ -707,6 +766,163 @@ impl Solver {
         }
         Ok(())
     }
+
+    fn snapshot_size(&self) -> usize {
+        SNAPSHOT_HEADER_SIZE
+            + self.bodies.len() * SNAPSHOT_BODY_SIZE
+            + self.bindings.len() * SNAPSHOT_BINDING_SIZE
+    }
+
+    fn write_snapshot(&self) -> Result<Vec<u8>, String> {
+        let states = self
+            .world
+            .rigidbody_states()
+            .map_err(|error| error.to_string())?;
+        if states.len() != self.bodies.len() || self.bindings.len() != self.bodies.len() {
+            return Err("solver snapshot topology is inconsistent".to_owned());
+        }
+        let mut output = Vec::with_capacity(self.snapshot_size());
+        output.extend_from_slice(SNAPSHOT_MAGIC);
+        push_u32(&mut output, SNAPSHOT_VERSION);
+        push_u32(&mut output, states.len() as u32);
+        push_u32(&mut output, self.bindings.len() as u32);
+        push_f32(&mut output, self.world_scale);
+        for state in states {
+            push_f32_slice(&mut output, &state.position);
+            push_f32_slice(&mut output, &state.rotation_xyzw);
+            push_f32_slice(&mut output, &state.interpolation_position);
+            push_f32_slice(&mut output, &state.interpolation_rotation_xyzw);
+            push_f32_slice(&mut output, &state.linear_velocity);
+            push_f32_slice(&mut output, &state.angular_velocity);
+            push_f32_slice(&mut output, &state.interpolation_linear_velocity);
+            push_f32_slice(&mut output, &state.interpolation_angular_velocity);
+            push_f32_slice(&mut output, &state.total_force);
+            push_f32_slice(&mut output, &state.total_torque);
+            push_i32(&mut output, state.activation_state);
+            push_f32(&mut output, state.deactivation_time);
+        }
+        for binding in &self.bindings {
+            push_transform(&mut output, binding.animation_bone);
+            push_transform(&mut output, binding.last_body_target);
+        }
+        Ok(output)
+    }
+
+    fn restore_snapshot(&mut self, input: &[u8]) -> Result<(), String> {
+        if input.len() != self.snapshot_size() || input.get(..4) != Some(SNAPSHOT_MAGIC) {
+            return Err("solver snapshot size or magic does not match".to_owned());
+        }
+        let mut cursor = 4;
+        let version = read_u32(input, &mut cursor)?;
+        let body_count = read_u32(input, &mut cursor)? as usize;
+        let binding_count = read_u32(input, &mut cursor)? as usize;
+        let world_scale = read_f32(input, &mut cursor)?;
+        if version != SNAPSHOT_VERSION
+            || body_count != self.bodies.len()
+            || binding_count != self.bindings.len()
+            || world_scale.to_bits() != self.world_scale.to_bits()
+        {
+            return Err("solver snapshot metadata does not match".to_owned());
+        }
+        let mut states = Vec::with_capacity(body_count);
+        for _ in 0..body_count {
+            states.push(RigidBodyState {
+                position: read_f32_array(input, &mut cursor)?,
+                rotation_xyzw: read_f32_array(input, &mut cursor)?,
+                interpolation_position: read_f32_array(input, &mut cursor)?,
+                interpolation_rotation_xyzw: read_f32_array(input, &mut cursor)?,
+                linear_velocity: read_f32_array(input, &mut cursor)?,
+                angular_velocity: read_f32_array(input, &mut cursor)?,
+                interpolation_linear_velocity: read_f32_array(input, &mut cursor)?,
+                interpolation_angular_velocity: read_f32_array(input, &mut cursor)?,
+                total_force: read_f32_array(input, &mut cursor)?,
+                total_torque: read_f32_array(input, &mut cursor)?,
+                activation_state: read_i32(input, &mut cursor)?,
+                deactivation_time: read_f32(input, &mut cursor)?,
+            });
+        }
+        let mut binding_states = Vec::with_capacity(binding_count);
+        for _ in 0..binding_count {
+            binding_states.push((
+                read_transform(input, &mut cursor)?,
+                read_transform(input, &mut cursor)?,
+            ));
+        }
+        if cursor != input.len() {
+            return Err("solver snapshot has trailing data".to_owned());
+        }
+        self.world
+            .set_rigidbody_states(&states)
+            .map_err(|error| error.to_string())?;
+        for (binding, (animation_bone, last_body_target)) in
+            self.bindings.iter_mut().zip(binding_states)
+        {
+            binding.animation_bone = animation_bone;
+            binding.last_body_target = last_body_target;
+        }
+        Ok(())
+    }
+}
+
+fn push_u32(output: &mut Vec<u8>, value: u32) {
+    output.extend_from_slice(&value.to_le_bytes());
+}
+
+fn push_i32(output: &mut Vec<u8>, value: i32) {
+    output.extend_from_slice(&value.to_le_bytes());
+}
+
+fn push_f32(output: &mut Vec<u8>, value: f32) {
+    output.extend_from_slice(&value.to_bits().to_le_bytes());
+}
+
+fn push_f32_slice(output: &mut Vec<u8>, values: &[f32]) {
+    for value in values {
+        push_f32(output, *value);
+    }
+}
+
+fn push_transform(output: &mut Vec<u8>, value: Transform) {
+    push_f32_slice(output, &value.position.array());
+    push_f32_slice(output, &value.rotation.array());
+}
+
+fn read_bytes<const N: usize>(input: &[u8], cursor: &mut usize) -> Result<[u8; N], String> {
+    let end = cursor.saturating_add(N);
+    let Some(value) = input.get(*cursor..end) else {
+        return Err("solver snapshot ended unexpectedly".to_owned());
+    };
+    *cursor = end;
+    value
+        .try_into()
+        .map_err(|_| "solver snapshot field size is invalid".to_owned())
+}
+
+fn read_u32(input: &[u8], cursor: &mut usize) -> Result<u32, String> {
+    Ok(u32::from_le_bytes(read_bytes(input, cursor)?))
+}
+
+fn read_i32(input: &[u8], cursor: &mut usize) -> Result<i32, String> {
+    Ok(i32::from_le_bytes(read_bytes(input, cursor)?))
+}
+
+fn read_f32(input: &[u8], cursor: &mut usize) -> Result<f32, String> {
+    Ok(f32::from_bits(read_u32(input, cursor)?))
+}
+
+fn read_f32_array<const N: usize>(input: &[u8], cursor: &mut usize) -> Result<[f32; N], String> {
+    let mut output = [0.0; N];
+    for value in &mut output {
+        *value = read_f32(input, cursor)?;
+    }
+    Ok(output)
+}
+
+fn read_transform(input: &[u8], cursor: &mut usize) -> Result<Transform, String> {
+    Ok(Transform {
+        position: Vec3::from_array(read_f32_array(input, cursor)?),
+        rotation: Quat::from_array(read_f32_array(input, cursor)?),
+    })
 }
 
 fn ffi_guard<T: Copy>(fallback: T, callback: impl FnOnce() -> T) -> T {
@@ -788,9 +1004,8 @@ pub unsafe extern "C" fn mmd_solver_create_mmd(
             return ptr::null_mut();
         }
         let body_slice = unsafe { slice::from_raw_parts(bodies, body_count as usize) };
-        let body_euler_slice = unsafe {
-            slice::from_raw_parts(body_source_eulers, body_count as usize)
-        };
+        let body_euler_slice =
+            unsafe { slice::from_raw_parts(body_source_eulers, body_count as usize) };
         let joint_slice = if joint_count == 0 {
             &[]
         } else {
@@ -886,6 +1101,78 @@ pub unsafe extern "C" fn mmd_solver_apply_world_delta(
 }
 
 #[unsafe(no_mangle)]
+pub unsafe extern "C" fn mmd_solver_snapshot_size(handle: *mut c_void) -> u32 {
+    ffi_guard(0, || {
+        let Some(solver) = (unsafe { (handle as *mut Solver).as_ref() }) else {
+            return 0;
+        };
+        solver.snapshot_size().try_into().unwrap_or(0)
+    })
+}
+
+#[unsafe(no_mangle)]
+/// # Safety
+///
+/// `output` must reference writable storage for at least `capacity` bytes.
+pub unsafe extern "C" fn mmd_solver_write_snapshot(
+    handle: *mut c_void,
+    output: *mut u8,
+    capacity: u32,
+) -> u32 {
+    ffi_guard(0, || {
+        let Some(solver) = (unsafe { (handle as *mut Solver).as_ref() }) else {
+            return 0;
+        };
+        let Ok(snapshot) = solver.write_snapshot() else {
+            return 0;
+        };
+        if output.is_null() || capacity < snapshot.len() as u32 {
+            return 0;
+        }
+        unsafe {
+            ptr::copy_nonoverlapping(snapshot.as_ptr(), output, snapshot.len());
+        }
+        snapshot.len() as u32
+    })
+}
+
+#[unsafe(no_mangle)]
+/// # Safety
+///
+/// `input` must reference `size` readable bytes.
+pub unsafe extern "C" fn mmd_solver_restore_snapshot(
+    handle: *mut c_void,
+    input: *const u8,
+    size: u32,
+) -> i32 {
+    ffi_guard(0, || {
+        let Some(solver) = (unsafe { (handle as *mut Solver).as_mut() }) else {
+            return 0;
+        };
+        if input.is_null() {
+            return 0;
+        }
+        let snapshot = unsafe { slice::from_raw_parts(input, size as usize) };
+        solver.restore_snapshot(snapshot).is_ok() as i32
+    })
+}
+
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn mmd_solver_guide_body(
+    handle: *mut c_void,
+    index: u32,
+    target: Transform,
+    strength: f32,
+) -> i32 {
+    ffi_guard(0, || {
+        let Some(solver) = (unsafe { (handle as *mut Solver).as_mut() }) else {
+            return 0;
+        };
+        solver.guide_body(index as usize, target, strength).is_ok() as i32
+    })
+}
+
+#[unsafe(no_mangle)]
 /// # Safety
 ///
 /// `handle` must be a live handle returned by `mmd_solver_create`.
@@ -971,7 +1258,9 @@ pub unsafe extern "C" fn mmd_solver_set_body_target_transform(
         let Some(solver) = (unsafe { (handle as *mut Solver).as_mut() }) else {
             return 0;
         };
-        solver.set_body_target_transform(index as usize, target).is_ok() as i32
+        solver
+            .set_body_target_transform(index as usize, target)
+            .is_ok() as i32
     })
 }
 
@@ -985,7 +1274,9 @@ pub unsafe extern "C" fn mmd_solver_set_body_target_position(
         let Some(solver) = (unsafe { (handle as *mut Solver).as_mut() }) else {
             return 0;
         };
-        solver.set_body_target_position(index as usize, position).is_ok() as i32
+        solver
+            .set_body_target_position(index as usize, position)
+            .is_ok() as i32
     })
 }
 
@@ -1085,6 +1376,51 @@ mod tests {
         let mut output = [Transform::default()];
         solver.transforms(&mut output).unwrap();
         assert!(output[0].position.z < 0.0);
+    }
+
+    #[test]
+    fn solver_snapshot_restores_deterministic_motion() {
+        let body = BodyDesc {
+            mode: 1,
+            shape: 0,
+            transform: Transform {
+                position: Vec3 {
+                    x: 0.0,
+                    y: 0.0,
+                    z: 5.0,
+                },
+                rotation: Quat::default(),
+            },
+            size: Vec3 {
+                x: 0.2,
+                y: 0.2,
+                z: 0.2,
+            },
+            mass: 1.0,
+            collision_mask: u16::MAX as u32,
+            ..BodyDesc::default()
+        };
+        let mut solver = Solver::new_with_world_scale(&[body], &[], 1.0).unwrap();
+        solver
+            .set_gravity(Vec3 {
+                x: 0.0,
+                y: 0.0,
+                z: -9.8,
+            })
+            .unwrap();
+        for _ in 0..17 {
+            solver.step(1.0 / 60.0, 10).unwrap();
+        }
+        let checkpoint = solver.write_snapshot().unwrap();
+        for _ in 0..11 {
+            solver.step(1.0 / 60.0, 10).unwrap();
+        }
+        let expected = solver.write_snapshot().unwrap();
+        solver.restore_snapshot(&checkpoint).unwrap();
+        for _ in 0..11 {
+            solver.step(1.0 / 60.0, 10).unwrap();
+        }
+        assert_eq!(solver.write_snapshot().unwrap(), expected);
     }
 
     #[test]
@@ -1280,7 +1616,10 @@ mod tests {
         let mut output_010 = [Transform::default()];
         solver_008.transforms(&mut output_008).unwrap();
         solver_010.transforms(&mut output_010).unwrap();
-        assert_eq!(output_008[0].position.array(), output_010[0].position.array());
+        assert_eq!(
+            output_008[0].position.array(),
+            output_010[0].position.array()
+        );
     }
 
     #[test]
@@ -1465,10 +1804,7 @@ mod tests {
             blender_upper.mmd_angular_basis().array(),
             [-0.75, -1.25, -0.5]
         );
-        assert_eq!(
-            blender_lower.mmd_angular_basis().array(),
-            [0.5, 1.0, 0.25]
-        );
+        assert_eq!(blender_lower.mmd_angular_basis().array(), [0.5, 1.0, 0.25]);
     }
 
     #[test]
