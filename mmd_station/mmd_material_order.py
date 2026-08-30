@@ -1,3 +1,4 @@
+from .i18n import report
 import importlib
 import json
 import uuid
@@ -477,11 +478,11 @@ class SPX_OT_SyncMaterialNames(Operator):
         settings = context.scene.surface_proxy_creator
         root = settings.mmd_root
         if root is None:
-            self.report({"ERROR"}, "请先选择 MMD 模型")
+            report(self, {"ERROR"}, "请先选择 MMD 模型")
             return {"CANCELLED"}
         materials = _material_action_targets(settings, root)
         if not materials:
-            self.report({"WARNING"}, "没有可同步的活动材质")
+            report(self, {"WARNING"}, "没有可同步的活动材质")
             return {"CANCELLED"}
         for material in materials:
             if self.direction == "BLENDER_TO_MMD":
@@ -492,7 +493,7 @@ class SPX_OT_SyncMaterialNames(Operator):
                 if name:
                     material.name = name
         bpy.ops.surface_proxy.refresh_mmd_browser()
-        self.report({"INFO"}, f"已同步 {len(materials)} 个材质名称")
+        report(self, {"INFO"}, f"已同步 {len(materials)} 个材质名称")
         return {"FINISHED"}
 
 
@@ -521,7 +522,7 @@ class SPX_OT_TranslateSelectedMaterialNamesWithAI(Operator):
             materials.append(material)
         if not materials:
             message = "勾选材质没有可翻译的 MMD 日文名" if skipped_empty else "请先勾选材质"
-            self.report({"WARNING"}, message)
+            report(self, {"WARNING"}, message)
             return {"CANCELLED"}
 
         from .mmd_morph_editor import (
@@ -531,7 +532,7 @@ class SPX_OT_TranslateSelectedMaterialNamesWithAI(Operator):
 
         preferences = _addon_preferences(context)
         if preferences is None:
-            self.report({"ERROR"}, "无法读取插件全局 AI 设置")
+            report(self, {"ERROR"}, "无法读取插件全局 AI 设置")
             return {"CANCELLED"}
         try:
             translations = _request_morph_name_translations(
@@ -539,14 +540,14 @@ class SPX_OT_TranslateSelectedMaterialNamesWithAI(Operator):
                 [material.mmd_material.name_j for material in materials],
             )
         except (ValueError, RuntimeError) as exc:
-            self.report({"ERROR"}, str(exc))
+            report(self, {"ERROR"}, str(exc))
             return {"CANCELLED"}
         for material, translation in zip(materials, translations, strict=True):
             material.mmd_material.name_e = translation
         message = f"已翻译并填写 {len(materials)} 个材质的 MMD 英文名"
         if skipped_empty:
             message += f"；跳过 {skipped_empty} 个空日文名"
-        self.report({"INFO"}, message)
+        report(self, {"INFO"}, message)
         return {"FINISHED"}
 
 
@@ -560,21 +561,21 @@ class SPX_OT_CalibrateMaterialOrder(Operator):
         settings = context.scene.surface_proxy_creator
         root = settings.mmd_root
         if root is None:
-            self.report({"ERROR"}, "请先选择 MMD 模型")
+            report(self, {"ERROR"}, "请先选择 MMD 模型")
             return {"CANCELLED"}
         materials = _material_action_targets(settings, root)
         if not materials:
-            self.report({"WARNING"}, "没有可校对的活动材质")
+            report(self, {"WARNING"}, "没有可校对的活动材质")
             return {"CANCELLED"}
         try:
             material_count, renamed, multi_material, moved_conflicts = (
                 calibrate_material_ids_and_object_names(root, materials)
             )
         except (ImportError, RuntimeError) as error:
-            self.report({"ERROR"}, str(error))
+            report(self, {"ERROR"}, str(error))
             return {"CANCELLED"}
         bpy.ops.surface_proxy.refresh_mmd_browser()
-        self.report(
+        report(self,
             {"INFO"},
             f"已校对 {material_count} 个材质 ID、{renamed} 个单材质物体；保留 {multi_material} 个多材质物体名称；迁移 {moved_conflicts} 个外部冲突 ID",
         )
@@ -610,7 +611,7 @@ class SPX_OT_SeparateActiveMeshByMaterials(Operator):
                 "bl_ext.blender_org.mmd_tools.utils"
             )
         except ImportError:
-            self.report({"ERROR"}, "需要先启用官方 mmd_tools 插件")
+            report(self, {"ERROR"}, "需要先启用官方 mmd_tools 插件")
             return {"CANCELLED"}
 
         FnModel = model_module.FnModel
@@ -619,11 +620,11 @@ class SPX_OT_SeparateActiveMeshByMaterials(Operator):
         MoveObject = misc_module.MoveObject
         root = FnModel.find_root_object(target)
         if root is None or root != FnModel.find_root_object(requested_root):
-            self.report({"ERROR"}, "活动 Mesh 不属于当前 MMD 模型")
+            report(self, {"ERROR"}, "活动 Mesh 不属于当前 MMD 模型")
             return {"CANCELLED"}
         source_materials = _used_materials(target)
         if len(source_materials) < 2:
-            self.report({"WARNING"}, "活动 Mesh 没有至少两个实际使用的材质")
+            report(self, {"WARNING"}, "活动 Mesh 没有至少两个实际使用的材质")
             return {"CANCELLED"}
 
         materials = ordered_materials(root, FnModel)
@@ -660,7 +661,7 @@ class SPX_OT_SeparateActiveMeshByMaterials(Operator):
             FnMorph(morph, rig).update_mat_related_mesh()
         utils_module.clearUnusedMeshes()
         bpy.ops.surface_proxy.refresh_mmd_browser()
-        self.report(
+        report(self,
             {"INFO"},
             f"已按材质拆分为 {len(results)} 个物体，并校对其中 {renamed} 个编号、清理 {cleaned_shape_keys} 个近零形态键；其它物体名称未改",
         )

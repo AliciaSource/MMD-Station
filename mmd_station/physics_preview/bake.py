@@ -1,3 +1,4 @@
+from ..i18n import iface, report
 import json
 import time
 import uuid
@@ -1159,7 +1160,7 @@ class SPX_OT_BakeMMDPhysics(Operator):
     def invoke(self, context, _event):
         global _ACTIVE_JOB
         if _ACTIVE_JOB is not None:
-            self.report({"ERROR"}, "已有物理烘焙正在运行")
+            report(self, {"ERROR"}, "已有物理烘焙正在运行")
             return {"CANCELLED"}
         try:
             repair_layer = None
@@ -1176,7 +1177,7 @@ class SPX_OT_BakeMMDPhysics(Operator):
             _ACTIVE_JOB = BakeJob(context, self.mode, repair_layer=repair_layer)
         except (RuntimeError, OSError, ValueError) as error:
             _ACTIVE_JOB = None
-            self.report({"ERROR"}, str(error))
+            report(self, {"ERROR"}, str(error))
             return {"CANCELLED"}
         self._timer = context.window_manager.event_timer_add(
             0.001,
@@ -1219,12 +1220,12 @@ class SPX_OT_BakeMMDPhysics(Operator):
             segment = job.finish()
         except Exception as error:
             self._cancel(context, f"物理烘焙失败：{error}")
-            self.report({"ERROR"}, str(error))
+            report(self, {"ERROR"}, str(error))
             return {"CANCELLED"}
         self._finish_modal(context)
         _ACTIVE_JOB = None
         operation = "已修复" if segment.get("repair_id") else "已烘焙"
-        self.report(
+        report(self,
             {"INFO"},
             f"{operation} {segment['start']}–{segment['end']}，"
             f"平均 {segment['frames_per_second']:.1f} 帧/秒",
@@ -1242,7 +1243,7 @@ class SPX_OT_BakeMMDPhysics(Operator):
             _ACTIVE_JOB.close(restore_action=True)
         _ACTIVE_JOB = None
         self._finish_modal(context)
-        self.report({"WARNING"}, message)
+        report(self, {"WARNING"}, message)
 
 
 class SPX_OT_ClearMMDPhysicsBake(Operator):
@@ -1254,7 +1255,7 @@ class SPX_OT_ClearMMDPhysicsBake(Operator):
         settings = context.scene.surface_proxy_creator
         source, output, segments = current_bake_set(settings)
         if source is None or output is None or not segments:
-            self.report({"WARNING"}, "当前动作没有物理烘焙")
+            report(self, {"WARNING"}, "当前动作没有物理烘焙")
             return {"CANCELLED"}
         root = settings.mmd_root
         armature = runtime._model_armature(root)
@@ -1280,7 +1281,7 @@ class SPX_OT_DeleteMMDPhysicsBakeSegment(Operator):
             None,
         )
         if source is None or output is None or segment is None:
-            self.report({"WARNING"}, "烘焙区间已不存在")
+            report(self, {"WARNING"}, "烘焙区间已不存在")
             return {"CANCELLED"}
         armature = runtime._model_armature(settings.mmd_root)
         _restore_segment_curves(output, source, segment, armature)
@@ -1314,20 +1315,20 @@ class SPX_OT_RecordMMDPhysicsRepairPose(Operator):
         settings = context.scene.surface_proxy_creator
         _source, output, segments = current_bake_set(settings)
         if output is None or not segments:
-            self.report({"ERROR"}, "当前动作还没有物理烘焙结果")
+            report(self, {"ERROR"}, "当前动作还没有物理烘焙结果")
             return {"CANCELLED"}
         armature = runtime._model_armature(settings.mmd_root)
         if armature is None or armature.animation_data is None:
-            self.report({"ERROR"}, "所选 MMD 模型没有可编辑 Armature")
+            report(self, {"ERROR"}, "所选 MMD 模型没有可编辑 Armature")
             return {"CANCELLED"}
         if armature.animation_data.action is not output:
-            self.report({"ERROR"}, "请先切换到输出动作，再调整并记录物理骨骼")
+            report(self, {"ERROR"}, "请先切换到输出动作，再调整并记录物理骨骼")
             return {"CANCELLED"}
         frame = int(context.scene.frame_current)
         start = int(settings.physics_repair_start)
         end = int(settings.physics_repair_end)
         if not start < frame < end:
-            self.report({"ERROR"}, "当前帧必须位于修复起始帧与结束帧之间")
+            report(self, {"ERROR"}, "当前帧必须位于修复起始帧与结束帧之间")
             return {"CANCELLED"}
         selected = tuple(context.selected_pose_bones or ())
         dynamic_bones = {
@@ -1337,7 +1338,7 @@ class SPX_OT_RecordMMDPhysicsRepairPose(Operator):
         }
         selected = tuple(bone for bone in selected if bone.name in dynamic_bones)
         if not selected:
-            self.report({"ERROR"}, "请在 Pose Mode 选择至少一根动态物理骨骼")
+            report(self, {"ERROR"}, "请在 Pose Mode 选择至少一根动态物理骨骼")
             return {"CANCELLED"}
         try:
             layer, layers = _active_repair_layer(settings, output, create=True)
@@ -1350,9 +1351,9 @@ class SPX_OT_RecordMMDPhysicsRepairPose(Operator):
                 frame_anchor[pose_bone.name] = _matrix_record(delta)
             _store_repair_layers(output, layers)
         except (RuntimeError, ValueError, TypeError) as error:
-            self.report({"ERROR"}, str(error))
+            report(self, {"ERROR"}, str(error))
             return {"CANCELLED"}
-        self.report(
+        report(self,
             {"INFO"},
             f"已记录第 {frame} 帧的 {len(selected)} 根物理骨骼修正",
         )
@@ -1441,20 +1442,20 @@ def draw_bake(layout, settings):
             "PLAYBACK": "播放烘焙",
             "REPAIR": "物理修复",
         }.get(progress["mode"], "物理求解")
-        progress_box.label(text=f"{mode}：{progress['phase']}", icon="TIME")
+        progress_box.label(text=iface(f"{mode}：{progress['phase']}"), icon="TIME")
         progress_row = progress_box.row()
         progress_row.enabled = False
         progress_row.prop(
             settings,
             "physics_bake_progress",
-            text=f"{progress['completed']} / {progress['total']}",
+            text=iface(f"{progress['completed']} / {progress['total']}"),
             slider=True,
         )
         progress_box.label(
             text=(
-                f"当前帧 {progress['frame']}  ·  "
+                iface(f"当前帧 {progress['frame']}  ·  "
                 f"{progress['speed']:.1f} 帧/秒  ·  "
-                f"预计剩余 {progress['eta']:.1f} 秒"
+                f"预计剩余 {progress['eta']:.1f} 秒")
             )
         )
         progress_box.label(text="按 Esc 或鼠标右键取消", icon="INFO")
@@ -1475,15 +1476,15 @@ def draw_bake(layout, settings):
 
     source, output, segments = current_bake_set(settings)
     if source is not None:
-        box.label(text=f"源动作：{source.name}", icon="ACTION")
+        box.label(text=iface(f"源动作：{source.name}"), icon="ACTION")
     if output is not None:
-        box.label(text=f"输出动作：{output.name}")
+        box.label(text=iface(f"输出动作：{output.name}"))
         snapshot_count = int(output.get("mmd_station_physics_cache_frames", 0))
         snapshot_path = physics_cache.cache_path(output)
         if snapshot_count and snapshot_path is not None and snapshot_path.is_file():
             suffix = "随工程保存" if bpy.data.filepath else "首次保存工程时迁移"
             box.label(
-                text=f"物理快照：{snapshot_count} 个恢复点 · {suffix}",
+                text=iface(f"物理快照：{snapshot_count} 个恢复点 · {suffix}"),
                 icon="FILE_TICK",
             )
         elif snapshot_count:
@@ -1504,9 +1505,9 @@ def draw_bake(layout, settings):
             status = "  ·  已过期" if segment.get("status") == "STALE" else ""
             segment_row.label(
                 text=(
-                    f"{int(segment['start'])}–{int(segment['end'])}  ·  "
+                    iface(f"{int(segment['start'])}–{int(segment['end'])}  ·  "
                     f"{continuity}  ·  {mode}  ·  "
-                    f"{float(segment.get('frames_per_second', 0.0)):.1f} 帧/秒{status}"
+                    f"{float(segment.get('frames_per_second', 0.0)):.1f} 帧/秒{status}")
                 )
             )
             delete = segment_row.operator(
@@ -1529,7 +1530,7 @@ def draw_bake(layout, settings):
             int(frame) for frame in (layer or {}).get("anchors", {})
         )
         if anchors:
-            repair.label(text="已记录修正帧：" + "、".join(map(str, anchors)), icon="KEY_HLT")
+            repair.label(text=iface("已记录修正帧：" + "、".join(map(str, anchors))), icon="KEY_HLT")
         else:
             repair.label(text="在范围内调整所选物理骨骼，然后记录当前帧", icon="INFO")
         controls = repair.row(align=True)

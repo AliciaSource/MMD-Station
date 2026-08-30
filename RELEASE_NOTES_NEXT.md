@@ -10,6 +10,11 @@
   progress in Blender.
 - Added an in-panel GitHub shortcut and development-aware version display.
 - Added a release-ready English README and a pure `pack.ps1` packaging command.
+- Added automatic Chinese/English interface selection based on Blender's
+  language, including labels, hover descriptions, enum text, runtime status
+  messages, warnings, and errors.
+- Added a localization coverage gate so future UI additions must include their
+  English catalog entry and use the shared runtime translation boundary.
 
 ### Changed
 

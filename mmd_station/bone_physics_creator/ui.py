@@ -1,3 +1,4 @@
+from ..i18n import report
 import bpy
 from bpy.props import BoolProperty, EnumProperty, FloatProperty, FloatVectorProperty, IntProperty
 from bpy.types import Operator
@@ -17,7 +18,7 @@ class SPX_OT_SyncSelectedBonesToBrowser(Operator):
             armature = resolve_armature(settings)
             selected_names, active_name = selected_bones_from_view(context, armature)
         except (BonePhysicsError, BoneSelectionError) as error:
-            self.report({"ERROR"}, str(error))
+            report(self, {"ERROR"}, str(error))
             return {"CANCELLED"}
         settings.browser_kind = "BONE"
         try:
@@ -36,12 +37,12 @@ class SPX_OT_SyncSelectedBonesToBrowser(Operator):
         if active_index is not None:
             settings.browser_index = active_index
         if matched != len(selected):
-            self.report(
+            report(self,
                 {"WARNING"},
                 f"已同步 {matched}/{len(selected)} 根骨骼；关闭“仅显示当前代理”可显示其余骨骼",
             )
         else:
-            self.report({"INFO"}, f"已同步 {matched} 根骨骼到查看器")
+            report(self, {"INFO"}, f"已同步 {matched} 根骨骼到查看器")
         return {"FINISHED"}
 
 
@@ -69,7 +70,7 @@ class SPX_OT_CreatePhysicsFromSelectedBones(Operator):
                 self.mode,
             )
         except (BonePhysicsError, BoneSelectionError, RuntimeError, ValueError) as error:
-            self.report({"ERROR"}, str(error))
+            report(self, {"ERROR"}, str(error))
             return {"CANCELLED"}
         target_kind = "JOINT" if self.mode in {"JOINT", "COMBINED"} else "RIGID"
         target_names = set(
@@ -91,7 +92,7 @@ class SPX_OT_CreatePhysicsFromSelectedBones(Operator):
                 active_index = index
         if active_index is not None:
             settings.browser_index = active_index
-        self.report(
+        report(self,
             {"INFO"},
             f"选中 {result.selected} 根；创建刚体 {result.created_rigids}、复用 {result.reused_rigids}、创建 Joint {result.created_joints}、跳过 Joint {result.skipped_joints}",
         )

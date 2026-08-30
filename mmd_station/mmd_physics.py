@@ -1,3 +1,4 @@
+from .i18n import iface, report
 import importlib
 import math
 import os
@@ -1706,7 +1707,7 @@ class SPX_UL_MMDItems(UIList):
             ) = _material_table_columns(row)
             selection.prop(item, "selected", text="")
             order.alignment = "CENTER"
-            order.label(text=f"{item.order_index:03d}")
+            order.label(text=iface(f"{item.order_index:03d}"))
             material = item.material
             if material is None:
                 blender_name.label(text="材质已不存在", icon="ERROR")
@@ -1728,9 +1729,9 @@ class SPX_UL_MMDItems(UIList):
         )
         row = layout.row(align=True)
         row.prop(item, "selected", text="")
-        row.label(text=f"{item.order_index:03d}")
-        row.label(text=item.label, icon=icon)
-        row.label(text=item.detail)
+        row.label(text=iface(f"{item.order_index:03d}"))
+        row.label(text=iface(item.label), icon=icon)
+        row.label(text=iface(item.detail))
         operator = row.operator("surface_proxy.select_mmd_item", text="", icon="RESTRICT_SELECT_OFF")
         operator.kind = item.kind
         operator.target_name = item.target_name
@@ -1766,8 +1767,8 @@ class SPX_UL_MMDDiagnostics(UIList):
     ):
         icon = "ERROR" if item.severity == "ERROR" else "INFO"
         row = layout.row(align=True)
-        row.label(text=item.label, icon=icon)
-        row.label(text=item.message)
+        row.label(text=iface(item.label), icon=icon)
+        row.label(text=iface(item.message))
         if item.target_name:
             operator = row.operator(
                 "surface_proxy.jump_to_mmd_diagnostic",
@@ -2325,10 +2326,10 @@ class SPX_OT_CreateMMDPhysics(Operator):
                 settings,
             )
         except (ProxyBuildError, RuntimeError, ValueError) as error:
-            self.report({"ERROR"}, str(error))
+            report(self, {"ERROR"}, str(error))
             return {"CANCELLED"}
         action = "已重建" if rebuilt else "已创建"
-        self.report({"INFO"}, f"{action} {rigid_count} 个刚体、{joint_count} 个 Joint")
+        report(self, {"INFO"}, f"{action} {rigid_count} 个刚体、{joint_count} 个 Joint")
         return {"FINISHED"}
 
 
@@ -2348,7 +2349,7 @@ class SPX_OT_ApplyStableLongSkirtPreset(Operator):
 
     def execute(self, context):
         _apply_stable_long_skirt_preset(context.scene.surface_proxy_creator)
-        self.report({"INFO"}, "已填入“稳定中长裙”物理参数；点击应用参数后更新当前代理")
+        report(self, {"INFO"}, "已填入“稳定中长裙”物理参数；点击应用参数后更新当前代理")
         return {"FINISHED"}
 
 
@@ -2380,7 +2381,7 @@ class SPX_OT_AddPhysicsPreset(AddPresetBase, Operator):
                         os.remove(entry.path)
                         menu_class.bl_label = "自定义预设"
                         return {"FINISHED"}
-        self.report({"WARNING"}, "没有找到可删除的当前自定义预设")
+        report(self, {"WARNING"}, "没有找到可删除的当前自定义预设")
         return {"CANCELLED"}
 
 
@@ -2405,7 +2406,7 @@ class SPX_OT_UpdateMMDPhysics(Operator):
                 settings,
             )
         except (ProxyBuildError, RuntimeError, ValueError) as error:
-            self.report({"ERROR"}, str(error))
+            report(self, {"ERROR"}, str(error))
             return {"CANCELLED"}
         message = f"已更新 {rigid_count} 个刚体、{joint_count} 个 Joint"
         if horizontal_created:
@@ -2414,7 +2415,7 @@ class SPX_OT_UpdateMMDPhysics(Operator):
             message += f"；移除 {horizontal_removed} 个横 Joint"
         if horizontal_skipped:
             message += f"；跳过 {horizontal_skipped} 个缺少刚体端点的横 Joint"
-        self.report({"INFO"}, message)
+        report(self, {"INFO"}, message)
         return {"FINISHED"}
 
 
@@ -2431,9 +2432,9 @@ class SPX_OT_SyncMMDPhysics(Operator):
                 _selected_proxy(context, settings)
             )
         except (ProxyBuildError, RuntimeError, ValueError) as error:
-            self.report({"ERROR"}, str(error))
+            report(self, {"ERROR"}, str(error))
             return {"CANCELLED"}
-        self.report(
+        report(self,
             {"INFO"},
             f"已同步当前代理的 {rigid_count} 个刚体、{joint_count} 个 Joint",
         )
@@ -2451,7 +2452,7 @@ class SPX_OT_RefreshMMDBrowser(Operator):
             root = _resolve_root(context, settings.mmd_root)
             FnModel, _FnRigidBody, _rigid_module = _mmd_api()
         except ProxyBuildError as error:
-            self.report({"ERROR"}, str(error))
+            report(self, {"ERROR"}, str(error))
             return {"CANCELLED"}
         register_material_export_hook()
         checked = {
@@ -2483,7 +2484,7 @@ class SPX_OT_RefreshMMDBrowser(Operator):
                 proxy_armature = _proxy_armature(proxy)
                 prefix, row_counts = _proxy_structure(proxy, proxy_armature)
             except ProxyBuildError as error:
-                self.report({"ERROR"}, str(error))
+                report(self, {"ERROR"}, str(error))
                 return {"CANCELLED"}
             proxy_bones = {
                 proxy_bone_name(proxy, prefix, column, row)
@@ -2664,7 +2665,7 @@ class SPX_OT_OpenBrowserMaterialTexture(Operator):
     def execute(self, _context):
         material = bpy.data.materials.get(self.material_name)
         if material is None:
-            self.report({"ERROR"}, "材质已不存在")
+            report(self, {"ERROR"}, "材质已不存在")
             return {"CANCELLED"}
         material_module = importlib.import_module(
             "bl_ext.blender_org.mmd_tools.core.material"
@@ -2691,7 +2692,7 @@ class SPX_OT_RemoveBrowserMaterialTexture(Operator):
     def execute(self, _context):
         material = bpy.data.materials.get(self.material_name)
         if material is None:
-            self.report({"ERROR"}, "材质已不存在")
+            report(self, {"ERROR"}, "材质已不存在")
             return {"CANCELLED"}
         material_module = importlib.import_module(
             "bl_ext.blender_org.mmd_tools.core.material"
@@ -2738,11 +2739,11 @@ class SPX_OT_CopyBrowserMaterialPropertyToChecked(Operator):
 
     def execute(self, context):
         if self.property_name not in _BATCH_EDITABLE_MMD_MATERIAL_PROPERTIES:
-            self.report({"ERROR"}, "该字段不支持批量编辑")
+            report(self, {"ERROR"}, "该字段不支持批量编辑")
             return {"CANCELLED"}
         source_material = bpy.data.materials.get(self.material_name)
         if source_material is None:
-            self.report({"ERROR"}, "活动材质已不存在")
+            report(self, {"ERROR"}, "活动材质已不存在")
             return {"CANCELLED"}
         settings = context.scene.surface_proxy_creator
         targets = [
@@ -2751,7 +2752,7 @@ class SPX_OT_CopyBrowserMaterialPropertyToChecked(Operator):
             if item.material is not None
         ]
         if not targets:
-            self.report({"WARNING"}, "请先勾选要批量编辑的材质")
+            report(self, {"WARNING"}, "请先勾选要批量编辑的材质")
             return {"CANCELLED"}
         value = getattr(source_material.mmd_material, self.property_name)
         if hasattr(value, "to_tuple"):
@@ -2760,7 +2761,7 @@ class SPX_OT_CopyBrowserMaterialPropertyToChecked(Operator):
             value = tuple(value)
         for material in targets:
             setattr(material.mmd_material, self.property_name, value)
-        self.report({"INFO"}, f"已将字段同步到 {len(targets)} 个勾选材质")
+        report(self, {"INFO"}, f"已将字段同步到 {len(targets)} 个勾选材质")
         return {"FINISHED"}
 
 
@@ -2782,7 +2783,7 @@ class SPX_OT_SelectMMDItem(Operator):
             settings = context.scene.surface_proxy_creator
             material = bpy.data.materials.get(self.target_name)
             if material is None:
-                self.report({"ERROR"}, "材质已不存在")
+                report(self, {"ERROR"}, "材质已不存在")
                 return {"CANCELLED"}
             try:
                 root = _resolve_root(context, settings.mmd_root)
@@ -2794,13 +2795,13 @@ class SPX_OT_SelectMMDItem(Operator):
                     [material],
                 )
             except (ProxyBuildError, RuntimeError) as error:
-                self.report({"ERROR"}, str(error))
+                report(self, {"ERROR"}, str(error))
                 return {"CANCELLED"}
             for index, item in enumerate(settings.browser_items):
                 if item.kind == "MATERIAL" and item.material == material:
                     settings.browser_index = index
                     break
-            self.report(
+            report(self,
                 {"INFO"},
                 f"已在 Object Mode 选中 {object_count} 个 Mesh",
             )
@@ -2855,7 +2856,7 @@ class SPX_OT_JumpToMMDDiagnostic(Operator):
                 settings.browser_index = index
                 break
         else:
-            self.report({"ERROR"}, "问题项已不存在；请重新运行诊断")
+            report(self, {"ERROR"}, "问题项已不存在；请重新运行诊断")
             return {"CANCELLED"}
         return bpy.ops.surface_proxy.select_mmd_item(
             kind=self.target_kind,
@@ -2888,7 +2889,7 @@ class SPX_OT_RepairMMDDiagnostic(Operator):
         if self.code == "MATERIAL_EDGE_ALPHA_SYNC":
             material = bpy.data.materials.get(self.target_name)
             if material is None or not hasattr(material, "mmd_material"):
-                self.report({"ERROR"}, "问题材质已不存在；请重新运行诊断")
+                report(self, {"ERROR"}, "问题材质已不存在；请重新运行诊断")
                 return {"CANCELLED"}
             mmd_material = material.mmd_material
             material_alpha = float(mmd_material.alpha)
@@ -2896,9 +2897,9 @@ class SPX_OT_RepairMMDDiagnostic(Operator):
             edge_color[3] = material_alpha
             mmd_material.edge_color = edge_color
             if not _refresh_mmd_browser_from_changes():
-                self.report({"ERROR"}, "描边 Alpha 已同步，但诊断刷新失败；请手动刷新")
+                report(self, {"ERROR"}, "描边 Alpha 已同步，但诊断刷新失败；请手动刷新")
                 return {"CANCELLED"}
-            self.report(
+            report(self,
                 {"INFO"},
                 f"已将“{material.name}”的描边 Alpha 同步为 {material_alpha:.6g}",
             )
@@ -2911,32 +2912,32 @@ class SPX_OT_RepairMMDDiagnostic(Operator):
         }:
             rigid = bpy.data.objects.get(self.target_name)
             if rigid is None or getattr(rigid, "mmd_type", "") != "RIGID_BODY":
-                self.report({"ERROR"}, "问题刚体已不存在；请重新运行诊断")
+                report(self, {"ERROR"}, "问题刚体已不存在；请重新运行诊断")
                 return {"CANCELLED"}
             if not (
                 rigid_world_scale_is_invalid(rigid)
                 or rigid_object_scale_needs_bake(rigid)
             ):
                 _refresh_mmd_browser_from_changes()
-                self.report({"INFO"}, "该刚体的缩放问题已经消失")
+                report(self, {"INFO"}, "该刚体的缩放问题已经消失")
                 return {"FINISHED"}
             new_size, reason = rigid_scale_repair_plan(rigid)
             if new_size is None:
-                self.report({"ERROR"}, f"无法安全自动修复：{reason}")
+                report(self, {"ERROR"}, f"无法安全自动修复：{reason}")
                 return {"CANCELLED"}
             bake_rigid_object_scale(rigid)
             context.view_layer.update()
             if rigid_world_scale_is_invalid(rigid):
-                self.report({"ERROR"}, "尺寸已经折算，但父级仍使刚体保持非均匀缩放")
+                report(self, {"ERROR"}, "尺寸已经折算，但父级仍使刚体保持非均匀缩放")
                 return {"CANCELLED"}
             if rigid_object_scale_needs_bake(rigid):
-                self.report({"ERROR"}, "尺寸已经折算，但对象 Scale 未能归一")
+                report(self, {"ERROR"}, "尺寸已经折算，但对象 Scale 未能归一")
                 return {"CANCELLED"}
             if not _refresh_mmd_browser_from_changes():
-                self.report({"ERROR"}, "刚体缩放已修复，但诊断刷新失败；请手动刷新")
+                report(self, {"ERROR"}, "刚体缩放已修复，但诊断刷新失败；请手动刷新")
                 return {"CANCELLED"}
             size_text = ", ".join(f"{float(value):.6g}" for value in new_size)
-            self.report(
+            report(self,
                 {"INFO"},
                 f"已将缩放折算进 MMD 刚体尺寸：({size_text})",
             )
@@ -2950,7 +2951,7 @@ class SPX_OT_RepairMMDDiagnostic(Operator):
                 else None
             )
             if pose_bone is None:
-                self.report({"ERROR"}, "问题骨骼已不存在；请重新运行诊断")
+                report(self, {"ERROR"}, "问题骨骼已不存在；请重新运行诊断")
                 return {"CANCELLED"}
             name_j, name_e = bone_mmd_names(pose_bone, pose_bone.name)
             if not pose_bone.mmd_bone.name_j.strip():
@@ -2958,13 +2959,13 @@ class SPX_OT_RepairMMDDiagnostic(Operator):
             if not pose_bone.mmd_bone.name_e.strip():
                 pose_bone.mmd_bone.name_e = name_e
             if not _refresh_mmd_browser_from_changes():
-                self.report({"ERROR"}, "已写入骨骼名称，但诊断刷新失败；请手动刷新")
+                report(self, {"ERROR"}, "已写入骨骼名称，但诊断刷新失败；请手动刷新")
                 return {"CANCELLED"}
-            self.report({"INFO"}, f"已将 MMD 骨骼名称补为：{name_j}")
+            report(self, {"INFO"}, f"已将 MMD 骨骼名称补为：{name_j}")
             return {"FINISHED"}
 
         message = self.diagnostic_message or "当前问题"
-        self.report(
+        report(self,
             {"ERROR"},
             f"无法安全自动修复“{message}”：缺少唯一可靠的目标数据，请跳转后手动处理",
         )
@@ -2990,7 +2991,7 @@ class SPX_OT_RepairAllMMDDiagnostics(Operator):
             for item in settings.browser_diagnostics
         ]
         if not issues:
-            self.report({"INFO"}, "当前没有诊断项")
+            report(self, {"INFO"}, "当前没有诊断项")
             return {"FINISHED"}
 
         repaired_count = 0
@@ -3011,7 +3012,7 @@ class SPX_OT_RepairAllMMDDiagnostics(Operator):
 
         _refresh_mmd_browser_from_changes()
         remaining_count = len(settings.browser_diagnostics)
-        self.report(
+        report(self,
             {"INFO"},
             f"一键修复完成：已修复 {repaired_count} 项，跳过 {skipped_count} 项，剩余 {remaining_count} 项",
         )
@@ -3182,14 +3183,14 @@ class SPX_OT_SetMMDBrowserChecks(Operator):
                 index for index, item in enumerate(visible_items) if item.selected
             ]
             if len(selected_indices) < 2:
-                self.report({"WARNING"}, "区间选组至少需要勾选两个可见项目")
+                report(self, {"WARNING"}, "区间选组至少需要勾选两个可见项目")
                 return {"CANCELLED"}
             added = 0
             for item in visible_items[selected_indices[0] : selected_indices[-1] + 1]:
                 if not item.selected:
                     item.selected = True
                     added += 1
-            self.report({"INFO"}, f"已补选区间内 {added} 个项目")
+            report(self, {"INFO"}, f"已补选区间内 {added} 个项目")
             return {"FINISHED"}
         for item in items:
             if self.action == "ALL":
@@ -3313,9 +3314,9 @@ class SPX_OT_QuickCheckMMDGroup(Operator):
             try:
                 added, unmatched = _add_mirror_browser_checks(context, settings)
             except (ProxyBuildError, RuntimeError, ValueError) as error:
-                self.report({"ERROR"}, str(error))
+                report(self, {"ERROR"}, str(error))
                 return {"CANCELLED"}
-            self.report(
+            report(self,
                 {"INFO"},
                 f"已加选 {added} 个镜像项；{unmatched} 个勾选项没有匹配镜像",
             )
@@ -3327,7 +3328,7 @@ class SPX_OT_QuickCheckMMDGroup(Operator):
         if self.mode == "PREFIX":
             prefix = settings.browser_prefix
             if not prefix:
-                self.report({"ERROR"}, "名称前缀不能为空")
+                report(self, {"ERROR"}, "名称前缀不能为空")
                 return {"CANCELLED"}
             names = {
                 item.target_name
@@ -3337,13 +3338,13 @@ class SPX_OT_QuickCheckMMDGroup(Operator):
         elif self.mode == "LOCKED_VERTEX_GROUPS":
             mesh_object = context.active_object
             if mesh_object is None or mesh_object.type != "MESH":
-                self.report({"ERROR"}, "请先选择一个 Mesh 物体")
+                report(self, {"ERROR"}, "请先选择一个 Mesh 物体")
                 return {"CANCELLED"}
             locked_names = {
                 group.name for group in mesh_object.vertex_groups if group.lock_weight
             }
             if not locked_names:
-                self.report({"ERROR"}, "当前物体没有锁定顶点组")
+                report(self, {"ERROR"}, "当前物体没有锁定顶点组")
                 return {"CANCELLED"}
             matched = 0
             for item in settings.browser_items:
@@ -3351,7 +3352,7 @@ class SPX_OT_QuickCheckMMDGroup(Operator):
                     item.selected = True
                     matched += 1
             if not matched:
-                self.report({"INFO"}, "锁定顶点组中没有当前骨架对应的骨骼")
+                report(self, {"INFO"}, "锁定顶点组中没有当前骨架对应的骨骼")
             return {"FINISHED"}
         elif self.mode == "BONE_BRANCH":
             checked = [
@@ -3360,7 +3361,7 @@ class SPX_OT_QuickCheckMMDGroup(Operator):
                 if item.kind == "BONE" and item.selected
             ]
             if not checked:
-                self.report({"ERROR"}, "请先勾选至少一根骨骼")
+                report(self, {"ERROR"}, "请先勾选至少一根骨骼")
                 return {"CANCELLED"}
             branch_keys = set()
             for item in checked:
@@ -3380,7 +3381,7 @@ class SPX_OT_QuickCheckMMDGroup(Operator):
         elif self.mode == "BONE_COLUMN":
             match = re.match(r"^(.*_C\d+)_R\d+$", active.target_name)
             if match is None:
-                self.report({"ERROR"}, "当前骨骼名称不包含代理列信息")
+                report(self, {"ERROR"}, "当前骨骼名称不包含代理列信息")
                 return {"CANCELLED"}
             prefix = match.group(1)
             names = {
@@ -3500,7 +3501,7 @@ class SPX_OT_TranslateSelectedBoneNamesWithAI(Operator):
         settings = context.scene.surface_proxy_creator
         checked_items = _checked_items(settings, "BONE")
         if not checked_items:
-            self.report({"ERROR"}, "请先勾选至少一个骨骼")
+            report(self, {"ERROR"}, "请先勾选至少一个骨骼")
             return {"CANCELLED"}
         try:
             root = _resolve_root(context, settings.mmd_root)
@@ -3583,13 +3584,13 @@ class SPX_OT_TranslateSelectedBoneNamesWithAI(Operator):
 
             bpy.ops.surface_proxy.refresh_mmd_browser()
         except (ProxyBuildError, ValueError, RuntimeError) as error:
-            self.report({"ERROR"}, str(error))
+            report(self, {"ERROR"}, str(error))
             return {"CANCELLED"}
 
         message = f"已翻译并同步 {len(translation_targets)} 个骨骼名称"
         if skipped:
             message += f"；跳过 {skipped} 个无效或空名称骨骼"
-        self.report({"INFO"}, message)
+        report(self, {"INFO"}, message)
         return {"FINISHED"}
 
 
@@ -3601,7 +3602,7 @@ class SPX_OT_SelectCheckedMMDItems(Operator):
         settings = context.scene.surface_proxy_creator
         items = _checked_items(settings, settings.browser_kind)
         if not items:
-            self.report({"ERROR"}, "没有勾选项目")
+            report(self, {"ERROR"}, "没有勾选项目")
             return {"CANCELLED"}
         if settings.browser_kind == "MATERIAL":
             try:
@@ -3614,9 +3615,9 @@ class SPX_OT_SelectCheckedMMDItems(Operator):
                     [item.material for item in items],
                 )
             except (ProxyBuildError, RuntimeError) as error:
-                self.report({"ERROR"}, str(error))
+                report(self, {"ERROR"}, str(error))
                 return {"CANCELLED"}
-            self.report(
+            report(self,
                 {"INFO"},
                 f"已在 Object Mode 选中 {object_count} 个 Mesh",
             )
@@ -3666,10 +3667,10 @@ class SPX_OT_SyncSelectedMMDObjectsToBrowser(Operator):
                     )
                 )
             except ProxyBuildError as error:
-                self.report({"ERROR"}, str(error))
+                report(self, {"ERROR"}, str(error))
                 return {"CANCELLED"}
             if not selected_materials:
-                self.report(
+                report(self,
                     {"ERROR"},
                     "3D 视图中没有选中使用有效材质的 Mesh",
                 )
@@ -3688,19 +3689,19 @@ class SPX_OT_SyncSelectedMMDObjectsToBrowser(Operator):
             if active_index is not None:
                 settings.browser_index = active_index
             if matched != len(selected_materials):
-                self.report(
+                report(self,
                     {"WARNING"},
                     f"已同步 {matched}/{len(selected_materials)} 个材质；清除搜索或名称前缀过滤可显示其余材质",
                 )
             else:
-                self.report({"INFO"}, f"已同步 {matched} 个材质到查看器")
+                report(self, {"INFO"}, f"已同步 {matched} 个材质到查看器")
             return {"FINISHED"}
         expected_type = {
             "RIGID": "RIGID_BODY",
             "JOINT": "JOINT",
         }.get(settings.browser_kind)
         if expected_type is None:
-            self.report({"ERROR"}, "该入口只处理刚体和 Joint")
+            report(self, {"ERROR"}, "该入口只处理刚体和 Joint")
             return {"CANCELLED"}
         selected_names = {
             obj.name
@@ -3709,7 +3710,7 @@ class SPX_OT_SyncSelectedMMDObjectsToBrowser(Operator):
         }
         if not selected_names:
             label = "刚体" if settings.browser_kind == "RIGID" else "Joint"
-            self.report({"ERROR"}, f"3D 视图中没有选中 {label}")
+            report(self, {"ERROR"}, f"3D 视图中没有选中 {label}")
             return {"CANCELLED"}
         active = context.active_object
         active_name = (
@@ -3730,12 +3731,12 @@ class SPX_OT_SyncSelectedMMDObjectsToBrowser(Operator):
             settings.browser_index = active_index
         count_label = "个刚体" if settings.browser_kind == "RIGID" else "个 Joint"
         if matched != len(selected_names):
-            self.report(
+            report(self,
                 {"WARNING"},
                 f"已同步 {matched}/{len(selected_names)} {count_label}；关闭“仅显示当前代理”可显示其余项目",
             )
         else:
-            self.report({"INFO"}, f"已同步 {matched} {count_label} 到查看器")
+            report(self, {"INFO"}, f"已同步 {matched} {count_label} 到查看器")
         return {"FINISHED"}
 
 
@@ -3763,11 +3764,11 @@ class SPX_OT_CreateJointFromCheckedRigids(Operator):
         settings = context.scene.surface_proxy_creator
         checked = _checked_items(settings, "RIGID")
         if len(checked) != 2:
-            self.report({"ERROR"}, "必须且只能勾选两个刚体")
+            report(self, {"ERROR"}, "必须且只能勾选两个刚体")
             return {"CANCELLED"}
         active = _active_browser_item(settings)
         if active is None or active.kind != "RIGID" or active not in checked:
-            self.report({"ERROR"}, "请将两个勾选刚体中的一个设为查看器活动项；该项将作为刚体 B")
+            report(self, {"ERROR"}, "请将两个勾选刚体中的一个设为查看器活动项；该项将作为刚体 B")
             return {"CANCELLED"}
 
         rigid_b = bpy.data.objects.get(active.target_name)
@@ -3779,12 +3780,12 @@ class SPX_OT_CreateJointFromCheckedRigids(Operator):
             or rigid_a.mmd_type != "RIGID_BODY"
             or rigid_b.mmd_type != "RIGID_BODY"
         ):
-            self.report({"ERROR"}, "勾选的刚体已不存在；请刷新查看器")
+            report(self, {"ERROR"}, "勾选的刚体已不存在；请刷新查看器")
             return {"CANCELLED"}
 
         proxy_object = settings.physics_proxy
         if proxy_object is None:
-            self.report({"ERROR"}, "请先指定当前代理网格")
+            report(self, {"ERROR"}, "请先指定当前代理网格")
             return {"CANCELLED"}
         try:
             armature = _proxy_armature(proxy_object)
@@ -3862,7 +3863,7 @@ class SPX_OT_CreateJointFromCheckedRigids(Operator):
                 raise
             normalize_mmd_indices(root, FnModel, kinds=("JOINT",))
         except (ProxyBuildError, RuntimeError, ValueError) as error:
-            self.report({"ERROR"}, str(error))
+            report(self, {"ERROR"}, str(error))
             return {"CANCELLED"}
 
         bpy.ops.object.select_all(action="DESELECT")
@@ -3871,7 +3872,7 @@ class SPX_OT_CreateJointFromCheckedRigids(Operator):
         joint.select_set(True)
         context.view_layer.objects.active = joint
         role_label = "纵 Joint" if role == "JOINT_VERTICAL" else "横 Joint"
-        self.report(
+        report(self,
             {"INFO"},
             f"已创建 {role_label}：A={rigid_a.name}，B={rigid_b.name}",
         )
@@ -3901,10 +3902,10 @@ class SPX_OT_FillMissingMMDBoneNames(Operator):
             FnModel, _FnRigidBody, _rigid_module = _mmd_api()
             armature = FnModel.find_armature_object(root)
         except ProxyBuildError as error:
-            self.report({"ERROR"}, str(error))
+            report(self, {"ERROR"}, str(error))
             return {"CANCELLED"}
         if armature is None:
-            self.report({"ERROR"}, "当前 MMD 模型没有骨架")
+            report(self, {"ERROR"}, "当前 MMD 模型没有骨架")
             return {"CANCELLED"}
 
         if self.scope == "ALL":
@@ -3912,7 +3913,7 @@ class SPX_OT_FillMissingMMDBoneNames(Operator):
         elif self.scope == "ACTIVE":
             active = _active_browser_item(settings)
             if active is None or active.kind != "BONE":
-                self.report({"ERROR"}, "没有活动骨骼")
+                report(self, {"ERROR"}, "没有活动骨骼")
                 return {"CANCELLED"}
             names = {active.target_name}
         else:
@@ -3920,7 +3921,7 @@ class SPX_OT_FillMissingMMDBoneNames(Operator):
                 item.target_name for item in _checked_items(settings, "BONE")
             }
             if not names:
-                self.report({"ERROR"}, "没有勾选骨骼")
+                report(self, {"ERROR"}, "没有勾选骨骼")
                 return {"CANCELLED"}
 
         changed_bones = 0
@@ -3936,7 +3937,7 @@ class SPX_OT_FillMissingMMDBoneNames(Operator):
                 pose_bone.mmd_bone.name_j = name_j
                 pose_bone.mmd_bone.name_e = name_e
                 changed_bones += 1
-        self.report(
+        report(self,
             {"INFO"},
             f"已标准化 {changed_bones} 根骨骼的 MMD 名称",
         )
@@ -3972,17 +3973,17 @@ class SPX_OT_SyncBoneNamesToRigids(Operator):
         settings = context.scene.surface_proxy_creator
         names = _checked_bone_names(settings)
         if not names:
-            self.report({"ERROR"}, "没有勾选骨骼")
+            report(self, {"ERROR"}, "没有勾选骨骼")
             return {"CANCELLED"}
         try:
             root = _resolve_root(context, settings.mmd_root)
             FnModel, _FnRigidBody, _rigid_module = _mmd_api()
             armature = FnModel.find_armature_object(root)
         except ProxyBuildError as error:
-            self.report({"ERROR"}, str(error))
+            report(self, {"ERROR"}, str(error))
             return {"CANCELLED"}
         if armature is None:
-            self.report({"ERROR"}, "当前 MMD 模型没有骨架")
+            report(self, {"ERROR"}, "当前 MMD 模型没有骨架")
             return {"CANCELLED"}
 
         changed = 0
@@ -3999,7 +4000,7 @@ class SPX_OT_SyncBoneNamesToRigids(Operator):
             rigid.mmd_rigid.name_e = name_e
             changed += 1
         bpy.ops.surface_proxy.refresh_mmd_browser()
-        self.report({"INFO"}, f"已将骨骼名称同步到 {changed} 个刚体")
+        report(self, {"INFO"}, f"已将骨骼名称同步到 {changed} 个刚体")
         return {"FINISHED"}
 
 
@@ -4013,7 +4014,7 @@ class SPX_OT_SyncBoneNamesToJoints(Operator):
         settings = context.scene.surface_proxy_creator
         names = _checked_bone_names(settings)
         if not names:
-            self.report({"ERROR"}, "没有勾选骨骼")
+            report(self, {"ERROR"}, "没有勾选骨骼")
             return {"CANCELLED"}
         try:
             root = _resolve_root(context, settings.mmd_root)
@@ -4022,10 +4023,10 @@ class SPX_OT_SyncBoneNamesToJoints(Operator):
             if settings.physics_proxy is not None:
                 associate_existing_proxy_physics(settings.physics_proxy)
         except ProxyBuildError as error:
-            self.report({"ERROR"}, str(error))
+            report(self, {"ERROR"}, str(error))
             return {"CANCELLED"}
         if armature is None:
-            self.report({"ERROR"}, "当前 MMD 模型没有骨架")
+            report(self, {"ERROR"}, "当前 MMD 模型没有骨架")
             return {"CANCELLED"}
 
         changed = 0
@@ -4053,7 +4054,7 @@ class SPX_OT_SyncBoneNamesToJoints(Operator):
         message = f"已将骨骼名称同步到 {changed} 个 Joint"
         if skipped:
             message += f"；跳过 {skipped} 个缺少有效刚体 B 或骨骼的 Joint"
-        self.report({"INFO"}, message)
+        report(self, {"INFO"}, message)
         return {"FINISHED"}
 
 
@@ -4078,7 +4079,7 @@ class SPX_OT_SyncJointNamesFromRigidB(Operator):
             root = _resolve_root(context, settings.mmd_root)
             FnModel, _FnRigidBody, _rigid_module = _mmd_api()
         except ProxyBuildError as error:
-            self.report({"ERROR"}, str(error))
+            report(self, {"ERROR"}, str(error))
             return {"CANCELLED"}
         if self.scope == "ALL":
             joints = list(FnModel.iterate_joint_objects(root))
@@ -4090,7 +4091,7 @@ class SPX_OT_SyncJointNamesFromRigidB(Operator):
                 and obj.mmd_type == "JOINT"
             ]
             if not joints:
-                self.report({"ERROR"}, "没有勾选 Joint")
+                report(self, {"ERROR"}, "没有勾选 Joint")
                 return {"CANCELLED"}
         changed = 0
         skipped = 0
@@ -4105,7 +4106,7 @@ class SPX_OT_SyncJointNamesFromRigidB(Operator):
         renamed_names = {joint.name for joint in renamed}
         for item in settings.browser_items:
             item.selected = item.target_name in renamed_names
-        self.report(
+        report(self,
             {"INFO"},
             f"已同步 {changed} 个 Joint 名称；跳过 {skipped} 个缺少刚体 B 的 Joint",
         )
@@ -4141,10 +4142,10 @@ class SPX_OT_DeleteCheckedMMDItems(Operator):
         root = _resolve_root(context, settings.mmd_root)
         items = _checked_items(settings, settings.browser_kind)
         if not items:
-            self.report({"ERROR"}, "没有勾选项目")
+            report(self, {"ERROR"}, "没有勾选项目")
             return {"CANCELLED"}
         if settings.browser_kind == "BONE":
-            self.report({"ERROR"}, "骨骼请使用“清理勾选骨骼”并指定权重归并骨骼")
+            report(self, {"ERROR"}, "骨骼请使用“清理勾选骨骼”并指定权重归并骨骼")
             return {"CANCELLED"}
         if context.object is not None and context.object.mode != "OBJECT":
             bpy.ops.object.mode_set(mode="OBJECT")
@@ -4165,7 +4166,7 @@ class SPX_OT_DeleteCheckedMMDItems(Operator):
                 bpy.data.objects.remove(joint, do_unlink=True)
             rigid_count, joint_count = 0, len(joints)
         bpy.ops.surface_proxy.refresh_mmd_browser()
-        self.report({"INFO"}, f"已删除 {rigid_count} 个刚体、{joint_count} 个 Joint")
+        report(self, {"INFO"}, f"已删除 {rigid_count} 个刚体、{joint_count} 个 Joint")
         return {"FINISHED"}
 
 
@@ -4226,19 +4227,19 @@ class SPX_OT_CleanupCheckedBones(Operator):
         }
         target_name = settings.cleanup_root_bone.strip()
         if not selected_names:
-            self.report({"ERROR"}, "没有勾选骨骼")
+            report(self, {"ERROR"}, "没有勾选骨骼")
             return {"CANCELLED"}
         if armature is None or target_name not in armature.data.bones:
-            self.report({"ERROR"}, "请选择有效的权重归并骨骼")
+            report(self, {"ERROR"}, "请选择有效的权重归并骨骼")
             return {"CANCELLED"}
         selected_names.intersection_update(armature.data.bones.keys())
         if target_name in selected_names:
-            self.report({"ERROR"}, "权重归并骨骼不能同时被清理")
+            report(self, {"ERROR"}, "权重归并骨骼不能同时被清理")
             return {"CANCELLED"}
         ancestor = armature.data.bones[target_name].parent
         while ancestor is not None:
             if ancestor.name in selected_names:
-                self.report({"ERROR"}, "权重归并骨骼不能位于待清理骨骼的子级")
+                report(self, {"ERROR"}, "权重归并骨骼不能位于待清理骨骼的子级")
                 return {"CANCELLED"}
             ancestor = ancestor.parent
 
@@ -4276,7 +4277,7 @@ class SPX_OT_CleanupCheckedBones(Operator):
                 armature.data.edit_bones.remove(edit_bone)
         bpy.ops.object.mode_set(mode="OBJECT")
         bpy.ops.surface_proxy.refresh_mmd_browser()
-        self.report(
+        report(self,
             {"INFO"},
             f"已清理 {len(selected_names)} 根骨骼；{mesh_count} 个 Mesh 的 {vertex_count} 个顶点权重归并到 {target_name}；删除 {rigid_count} 个刚体、{joint_count} 个 Joint",
         )
@@ -4689,7 +4690,7 @@ def _draw_numbered_collision_mask(layout, data, property_name):
                 data,
                 property_name,
                 index=index,
-                text=str(index),
+                text=iface(str(index)),
                 toggle=True,
             )
 
@@ -4747,7 +4748,7 @@ def _centered_cell(grid):
 
 
 def _centered_label(grid, text):
-    _centered_cell(grid).label(text=text)
+    _centered_cell(grid).label(text=iface(text))
 
 
 def _centered_checkbox(grid, settings, name, index=None):
@@ -4766,7 +4767,7 @@ def _draw_interpolation_header(layout):
 
 def _draw_scalar_interpolation(layout, settings, name, label):
     grid = _interpolation_grid(layout, 4)
-    grid.label(text=label)
+    grid.label(text=iface(label))
     grid.prop(settings, _adaptive_scalar_property_name(name), text="")
     _centered_checkbox(grid, settings, f"{name}_interpolate")
     end = grid.row(align=True)
@@ -4786,7 +4787,7 @@ def _draw_size_interpolation(
         grid.label(text="")
     else:
         _centered_checkbox(grid, settings, multiply_name)
-    grid.label(text=label)
+    grid.label(text=iface(label))
     grid.prop(settings, _adaptive_scalar_property_name(name), text="")
     _centered_checkbox(grid, settings, f"{name}_interpolate")
     end = grid.row(align=True)
@@ -4796,7 +4797,7 @@ def _draw_size_interpolation(
 
 def _draw_limit_interpolation(layout, settings, prefix, name, label):
     group = layout.box()
-    group.label(text=label)
+    group.label(text=iface(label))
     lower_name = f"{prefix}{name}_lower"
     upper_name = f"{prefix}{name}_upper"
     interpolation_name = f"{prefix}{name}_interpolate"
@@ -4805,7 +4806,7 @@ def _draw_limit_interpolation(layout, settings, prefix, name, label):
     for text in ("轴", "起始下限", "起始上限", "补间", "末端下限", "末端上限"):
         _centered_label(grid, text)
     for index, axis in enumerate("XYZ"):
-        grid.label(text=axis)
+        grid.label(text=iface(axis))
         grid.prop(
             settings, _adaptive_vector_property_name(lower_name, index), text=""
         )
@@ -4831,13 +4832,13 @@ def _draw_limit_interpolation(layout, settings, prefix, name, label):
 
 def _draw_spring_interpolation(layout, settings, name, label):
     group = layout.box()
-    group.label(text=label)
+    group.label(text=iface(label))
     enabled = getattr(settings, f"{name}_interpolate")
     grid = _interpolation_grid(group, 4)
     for text in ("轴", "起始值", "补间", "末端值"):
         _centered_label(grid, text)
     for index, axis in enumerate("XYZ"):
-        grid.label(text=axis)
+        grid.label(text=iface(axis))
         grid.prop(settings, _adaptive_vector_property_name(name, index), text="")
         _centered_checkbox(grid, settings, f"{name}_interpolate", index=index)
         end = grid.row(align=True)
@@ -4910,7 +4911,7 @@ def _draw_proxy_creator_settings(layout, settings, context):
     if proxy_object is not None:
         sync_error = str(proxy_object.get("surface_proxy_sync_error", ""))
         if sync_error:
-            editor.label(text=f"自动同步失败：{sync_error}", icon="ERROR")
+            editor.label(text=iface(f"自动同步失败：{sync_error}"), icon="ERROR")
 
 
 def draw_physics_settings(layout, settings, context=None):
@@ -4930,7 +4931,7 @@ def draw_physics_settings(layout, settings, context=None):
     preset_row = presets.row(align=True)
     preset_row.menu(
         SPX_MT_PhysicsPresets.bl_idname,
-        text=SPX_MT_PhysicsPresets.bl_label,
+        text=iface(SPX_MT_PhysicsPresets.bl_label),
     )
     preset_row.operator(SPX_OT_AddPhysicsPreset.bl_idname, text="", icon="ADD")
     remove = preset_row.row(align=True)
@@ -5060,7 +5061,7 @@ def draw_browser(layout, settings):
         warning_count = len(settings.browser_diagnostics) - error_count
         if settings.browser_diagnostics:
             layout.label(
-                text=f"发现 {error_count} 个错误、{warning_count} 个警告",
+                text=iface(f"发现 {error_count} 个错误、{warning_count} 个警告"),
                 icon="ERROR" if error_count else "INFO",
             )
             layout.label(
@@ -5073,8 +5074,8 @@ def draw_browser(layout, settings):
             )
             active_issue = settings.browser_diagnostics[index]
             help_box = layout.box()
-            help_box.label(text=f"当前问题：{active_issue.message}", icon="QUESTION")
-            help_box.label(text=f"处理方法：{active_issue.solution}", icon="TOOL_SETTINGS")
+            help_box.label(text=iface(f"当前问题：{active_issue.message}"), icon="QUESTION")
+            help_box.label(text=iface(f"处理方法：{active_issue.solution}"), icon="TOOL_SETTINGS")
         else:
             layout.label(text="未发现异常", icon="CHECKMARK")
         return
@@ -5105,7 +5106,7 @@ def draw_browser(layout, settings):
             (mmd_english_name, "MMD 英文名"),
         ):
             column.alignment = "CENTER"
-            column.label(text=text)
+            column.label(text=iface(text))
         navigation.label(text="")
     list_column.template_list(
         "SPX_UL_MMDItems",
@@ -5122,7 +5123,7 @@ def draw_browser(layout, settings):
     draw_mmd_ordering(order_buttons, settings)
     selected_count = len(_checked_items(settings, settings.browser_kind))
     layout.label(
-        text=f"当前列表：{len(settings.browser_items)} 项；已勾选：{selected_count} 项"
+        text=iface(f"当前列表：{len(settings.browser_items)} 项；已勾选：{selected_count} 项")
     )
     row = layout.row(align=True)
     operator = row.operator(
@@ -5174,7 +5175,7 @@ def draw_browser(layout, settings):
         object_label = "刚体" if settings.browser_kind == "RIGID" else "Joint"
         layout.operator(
             SPX_OT_SyncSelectedMMDObjectsToBrowser.bl_idname,
-            text=f"从 3D 视图同步选中{object_label}",
+            text=iface(f"从 3D 视图同步选中{object_label}"),
             icon="UV_SYNC_SELECT",
         )
         if settings.browser_kind == "RIGID":
@@ -5326,7 +5327,7 @@ def _draw_browser_material_texture(layout, settings, material):
         ("MAIN", "纹理", fn_material.get_texture()),
         ("SPHERE", "球体纹理", fn_material.get_sphere_texture()),
     ):
-        box.label(text=f"{label}：")
+        box.label(text=iface(f"{label}："))
         row = box.row(align=True)
         if texture is not None and texture.type == "IMAGE" and texture.image:
             row.prop(texture.image, "filepath", text="")
@@ -5477,7 +5478,7 @@ def _draw_active_mmd_inspector(layout, settings):
         if pose_bone is None:
             box.label(text="骨骼已不存在", icon="ERROR")
             return
-        box.label(text=f"骨骼：{pose_bone.name}")
+        box.label(text=iface(f"骨骼：{pose_bone.name}"))
         if hasattr(pose_bone, "mmd_bone"):
             mmd_bone = pose_bone.mmd_bone
             row = box.row(align=True)
@@ -5610,12 +5611,12 @@ def _draw_active_mmd_inspector(layout, settings):
     row.prop(constraint, "object2", text="刚体 B")
     for axis in "xyz":
         row = box.row(align=True)
-        row.label(text=f"移动 {axis.upper()}")
+        row.label(text=iface(f"移动 {axis.upper()}"))
         row.prop(constraint, f"limit_lin_{axis}_lower", text="下限")
         row.prop(constraint, f"limit_lin_{axis}_upper", text="上限")
     for axis in "xyz":
         row = box.row(align=True)
-        row.label(text=f"旋转 {axis.upper()}")
+        row.label(text=iface(f"旋转 {axis.upper()}"))
         row.prop(constraint, f"limit_ang_{axis}_lower", text="下限")
         row.prop(constraint, f"limit_ang_{axis}_upper", text="上限")
     box.prop(joint, "spring_linear")

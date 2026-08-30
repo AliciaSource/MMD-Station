@@ -1,3 +1,4 @@
+from .i18n import report
 import bpy
 import re
 from bpy.types import Operator
@@ -24,7 +25,7 @@ class SPX_OT_CreateGroupFromLockedWeights(Operator):
             group.index for group in obj.vertex_groups if group.lock_weight
         }
         if not locked_group_indices:
-            self.report({"WARNING"}, "当前物体没有锁定的顶点组")
+            report(self, {"WARNING"}, "当前物体没有锁定的顶点组")
             return {"CANCELLED"}
 
         original_mode = obj.mode
@@ -50,7 +51,7 @@ class SPX_OT_CreateGroupFromLockedWeights(Operator):
             if original_mode != "OBJECT":
                 bpy.ops.object.mode_set(mode=original_mode)
 
-        self.report(
+        report(self,
             {"INFO"},
             f"已将 {len(locked_group_indices)} 个锁定组的权重合并到 {new_group.name}（{len(combined_weights)} 个顶点）",
         )
@@ -77,7 +78,7 @@ class SPX_OT_ConvertActiveGroupToMirrored(Operator):
         source_group = obj.vertex_groups.active
         source_name = source_group.name
         if re.search(r"(?:\.[LR]|_[LR])$", source_name):
-            self.report({"WARNING"}, "所选顶点组已经带有左右后缀")
+            report(self, {"WARNING"}, "所选顶点组已经带有左右后缀")
             return {"CANCELLED"}
 
         left_name = f"{source_name}.L"
@@ -86,7 +87,7 @@ class SPX_OT_ConvertActiveGroupToMirrored(Operator):
             name for name in (left_name, right_name) if obj.vertex_groups.get(name)
         ]
         if collisions:
-            self.report(
+            report(self,
                 {"WARNING"},
                 f"目标顶点组已存在：{', '.join(collisions)}",
             )
@@ -133,7 +134,7 @@ class SPX_OT_ConvertActiveGroupToMirrored(Operator):
             if original_mode != "OBJECT":
                 bpy.ops.object.mode_set(mode=original_mode)
 
-        self.report(
+        report(self,
             {"INFO"},
             f"已将 {source_name} 原地转换为 {left_name} / {right_name}",
         )

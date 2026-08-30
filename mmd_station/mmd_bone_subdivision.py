@@ -1,3 +1,4 @@
+from .i18n import report
 import re
 
 import bpy
@@ -561,9 +562,9 @@ class SPX_OT_SubdivideCheckedMMDBones(Operator):
                 settings.bone_subdivide_segments,
             )
         except OrderingError as error:
-            self.report({"ERROR"}, str(error))
+            report(self, {"ERROR"}, str(error))
             return {"CANCELLED"}
-        self.report(
+        report(self,
             {"INFO"},
             f"已将 {result['source_count']} 根骨骼细分为 {settings.bone_subdivide_segments} 段，新增 {result['created_count']} 根；{result['mesh_count']} 个 Mesh 的 {result['vertex_count']} 个顶点权重已等分",
         )

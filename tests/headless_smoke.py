@@ -11,6 +11,8 @@ import bmesh
 import bpy
 from mathutils import Euler, Matrix, Quaternion, Vector
 
+bpy.context.preferences.view.language = "zh_HANS"
+
 
 PROJECT_ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT))
@@ -635,8 +637,8 @@ bpy.context.view_layer.update()
 unrelated_matrix = unrelated_rigid.matrix_world.copy()
 preview_library = SolverLibrary(target="MMD")
 pmx_preview_library = SolverLibrary(target="PMX")
-assert library_path("MMD").name == "mmd_physics_solver_mmd.dll"
-assert library_path("PMX").name == "mmd_physics_solver.dll"
+assert library_path("MMD").name == "mmd_physics_solver_mmd_abi5.dll"
+assert library_path("PMX").name == "mmd_physics_solver_abi5.dll"
 assert preview_library.dll.mmd_solver_abi_version() == ABI_VERSION
 assert pmx_preview_library.dll.mmd_solver_abi_version() == ABI_VERSION
 settings.preview_frequency = 60

@@ -9,6 +9,7 @@ Kept separate from the vendored ``addon_updater_ops`` so the upstream fork stays
 clean and easy to re-sync. Reuses the engine bits from there (the ``updater``
 singleton, ``ui_refresh``, ``get_user_preferences``, ``AddonUpdaterUpdateNow``).
 """
+from ..i18n import iface
 
 import bpy
 
@@ -84,7 +85,7 @@ def draw_update_banner(panel, context):
     col = box.column(align=True)
     title = col.row()
     title.alert = True
-    title.label(text="发现新版本 {}".format(version), icon="ERROR")
+    title.label(text=iface("发现新版本 {}".format(version)), icon="ERROR")
     row = col.row(align=True)
     row.scale_y = 1.3
     row.operator(addon_updater_ops.AddonUpdaterUpdateNow.bl_idname,

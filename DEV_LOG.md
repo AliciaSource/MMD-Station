@@ -1,5 +1,13 @@
 # Development Log
 
+## 2026-08-30 - V0.1.8-dev 架构级中英双语 UI
+
+- 新增中央 `mmd_station/i18n/` 本地化层：保留现有中文 msgid 与全部兼容标识，通过 Blender 原生 translations 生命周期统一提供英文 catalog。`zh_HANS` / `zh_HANT`（并兼容 `zh_CN` / `zh_TW` 别名）保持当前中文 UI，其它所有 Blender locale 复用同一套英文 UI，不按语言复制功能代码或维护多套非中文界面。
+- 静态 RNA 标签、按钮、enum 与 hover description 由 Blender 原生翻译；所有运行期拼接的面板文字统一经过 `iface()`，全部 operator 状态、警告与错误统一经过 `report()`。本轮只改 UI 表达边界，不改 operator id、Scene 属性、custom property、数据模型、导入导出、Morph、物理、IK 或更新器功能语义。
+- 新增 `tests/test_i18n_catalog.py` 覆盖门禁：扫描整个 package 的中文字符串，任何未来 UI 新文案若缺少英文 catalog 条目会直接失败；同时禁止动态 UI 绕开 `iface()` 或 operator 直接调用 `self.report()`。新增 Blender 4.4 四 locale 烟测，实测 `zh_HANS` / `zh_HANT` 为中文、`en_US` / `ja_JP` 为英文，并覆盖静态标签、operator context、悬停描述与动态状态消息。
+- 新增同步的 `AGENTS.md` / `CLAUDE.md` 项目规则与 README 英文本地化说明，确保以后新增功能默认同时完成双语，不依赖用户再次提醒；`RELEASE_NOTES_NEXT.md` 同步写入英文更新简报。版本保持 `v0.1.8-dev`，不制作正式版、不 tag、不 push。
+- 验证：`python -m pytest -q tests/test_i18n_catalog.py tests/test_host_updater.py` 为 `11 passed`；Blender 4.4.3 `tests/i18n_blender_smoke.py` 输出 `MMD_STATION_I18N_BLENDER_SMOKE_OK`；综合 `tests/headless_smoke.py` 输出 `MMD_STATION_SMOKE_OK`；显示枠、物理烘焙、姿态对齐、MMD I/O、材质顺序及用户排序六项 focused regression 均输出各自 `*_OK`。`mmd_morph_editor_regression.py` 在本轮基线 commit `35a1a28` 与当前树均于同一既有 Alpha 断言失败，已用独立 worktree 对照确认不是本地化改造引入；本轮未扩大到修改既有 Morph 行为。
+
 ## 2026-08-30 - V0.1.8-dev GitHub 发布准备与宿主级自动更新器
 
 - 新增与 Velo Tools 同路线的宿主级 `updater/`：只读取 `AliciaSource/MMD-Station` 已发布的 GitHub Releases，普通 `main` commit 不会成为更新；稳定版默认接收，pre-release 需用户显式开启。更新过程保留单份 rollback backup，支持进度反馈，并把 `*.dll` 纳入覆盖规则，避免 native solver 停留在旧版。
