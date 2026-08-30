@@ -4,6 +4,7 @@ from bpy.types import Operator
 
 class _MMDToolsIOProxy(Operator):
     target_operator = ""
+    reuse_last_filepath = False
 
     @classmethod
     def poll(cls, _context):
@@ -13,20 +14,30 @@ class _MMDToolsIOProxy(Operator):
         except (AttributeError, RuntimeError, ValueError):
             return False
 
-    def _invoke_target(self):
+    @classmethod
+    def _target_invoke_kwargs(cls, context):
+        if not cls.reuse_last_filepath:
+            return {}
+        last_properties = context.window_manager.operator_properties_last(
+            cls.target_operator
+        )
+        filepath = getattr(last_properties, "filepath", "")
+        return {"filepath": filepath} if filepath else {}
+
+    def _invoke_target(self, context):
         try:
             module_name, operator_name = self.target_operator.split(".", 1)
             operator = getattr(getattr(bpy.ops, module_name), operator_name)
-            return operator("INVOKE_DEFAULT")
+            return operator("INVOKE_DEFAULT", **self._target_invoke_kwargs(context))
         except (AttributeError, RuntimeError, ValueError) as error:
             self.report({"ERROR"}, f"无法启动 mmd_tools I/O：{error}")
             return {"CANCELLED"}
 
-    def invoke(self, _context, _event):
-        return self._invoke_target()
+    def invoke(self, context, _event):
+        return self._invoke_target(context)
 
-    def execute(self, _context):
-        return self._invoke_target()
+    def execute(self, context):
+        return self._invoke_target(context)
 
 
 class MMD_STATION_OT_ImportModel(_MMDToolsIOProxy):
@@ -41,6 +52,7 @@ class MMD_STATION_OT_ExportPMX(_MMDToolsIOProxy):
     bl_label = "导出 PMX 模型"
     bl_description = "首次完整导出建立运行时 Shadow；同一 Blender 会话中的安全小改动可快速覆盖或另存为"
     target_operator = "mmd_tools.export_pmx"
+    reuse_last_filepath = True
 
 
 class MMD_STATION_OT_ImportVMD(_MMDToolsIOProxy):
@@ -55,6 +67,7 @@ class MMD_STATION_OT_ExportVMD(_MMDToolsIOProxy):
     bl_label = "导出 VMD 运动"
     bl_description = "使用 MMD Station 导出入口导出 VMD 运动"
     target_operator = "mmd_tools.export_vmd"
+    reuse_last_filepath = True
 
 
 class MMD_STATION_OT_ImportVPD(_MMDToolsIOProxy):
@@ -69,6 +82,7 @@ class MMD_STATION_OT_ExportVPD(_MMDToolsIOProxy):
     bl_label = "导出 VPD 姿态"
     bl_description = "使用 MMD Station 导出入口导出 VPD 姿态"
     target_operator = "mmd_tools.export_vpd"
+    reuse_last_filepath = True
 
 
 def draw_mmd_io(layout):

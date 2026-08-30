@@ -30,6 +30,26 @@ class _LayoutRecorder:
         return object()
 
 
+class _LastProperties:
+    def __init__(self, filepath):
+        self.filepath = filepath
+
+
+class _WindowManager:
+    def __init__(self, filepath):
+        self.filepath = filepath
+        self.requested_operator = None
+
+    def operator_properties_last(self, operator_id):
+        self.requested_operator = operator_id
+        return _LastProperties(self.filepath)
+
+
+class _Context:
+    def __init__(self, filepath):
+        self.window_manager = _WindowManager(filepath)
+
+
 def _reload_addon():
     existing = sys.modules.get("mmd_station")
     if existing is not None:
@@ -61,6 +81,26 @@ def main():
         assert {
             cls.bl_idname: cls.target_operator for cls in mmd_io.CLASSES
         } == expected_targets
+        assert {
+            cls.bl_idname
+            for cls in mmd_io.CLASSES
+            if cls.reuse_last_filepath
+        } == {
+            "mmd_station.export_pmx",
+            "mmd_station.export_vmd",
+            "mmd_station.export_vpd",
+        }
+
+        context = _Context("D:/MMD/exports/remembered.pmx")
+        export_proxy = mmd_io.MMD_STATION_OT_ExportPMX
+        assert export_proxy._target_invoke_kwargs(context) == {
+            "filepath": "D:/MMD/exports/remembered.pmx"
+        }
+        assert context.window_manager.requested_operator == "mmd_tools.export_pmx"
+        assert mmd_io.MMD_STATION_OT_ImportModel._target_invoke_kwargs(context) == {}
+
+        empty_context = _Context("")
+        assert export_proxy._target_invoke_kwargs(empty_context) == {}
 
         for operator_id in expected_targets:
             module_name, operator_name = operator_id.split(".", 1)
