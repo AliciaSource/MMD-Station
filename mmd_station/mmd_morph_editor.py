@@ -7,6 +7,7 @@ import urllib.error
 import urllib.request
 import uuid
 from array import array
+from contextlib import contextmanager
 
 import bpy
 from bpy.app.handlers import persistent
@@ -58,6 +59,8 @@ _EVALUATING = False
 _PENDING_STATE_REFRESHES = set()
 _ORIGINAL_IMPORT_VMD_EXECUTE = None
 _IMPORT_VMD_CLASS = None
+_ORIGINAL_EXPORT_VMD_EXECUTE = None
+_EXPORT_VMD_CLASS = None
 _DETAIL_SELECTION_REGISTRATIONS = ()
 
 
@@ -1073,11 +1076,29 @@ def _copy_fcurve(source, destination_action, data_path):
         destination_point.co = source_point.co
         destination_point.interpolation = source_point.interpolation
         destination_point.easing = source_point.easing
+        destination_point.type = source_point.type
+        destination_point.amplitude = source_point.amplitude
+        destination_point.back = source_point.back
+        destination_point.period = source_point.period
         destination_point.handle_left_type = source_point.handle_left_type
         destination_point.handle_right_type = source_point.handle_right_type
         destination_point.handle_left = source_point.handle_left
         destination_point.handle_right = source_point.handle_right
     destination.extrapolation = source.extrapolation
+    if original_count == 0 and not destination.modifiers:
+        for source_modifier in source.modifiers:
+            destination_modifier = destination.modifiers.new(source_modifier.type)
+            for prop in source_modifier.bl_rna.properties:
+                if prop.identifier in {"rna_type", "type"} or prop.is_readonly:
+                    continue
+                try:
+                    setattr(
+                        destination_modifier,
+                        prop.identifier,
+                        getattr(source_modifier, prop.identifier),
+                    )
+                except (AttributeError, TypeError, ValueError):
+                    pass
     destination.update()
 
 
@@ -1311,27 +1332,176 @@ def _import_vmd_execute(operator, context):
             context.view_layer.objects.active = original_active
 
 
-def _install_vmd_import_hook():
+def _vmd_export_morph_curves(root):
+    animation_data = root.animation_data
+    action = animation_data.action if animation_data is not None else None
+    if action is None:
+        return []
+    states_by_path = {
+        _morph_state_data_path(state): state for state in root.spx_morph_states
+    }
+    curves = []
+    used_names = set()
+    for curve in action.fcurves:
+        state = states_by_path.get(curve.data_path)
+        if state is None or not state.morph_name or state.morph_name in used_names:
+            continue
+        used_names.add(state.morph_name)
+        curves.append((curve, state))
+    return curves
+
+
+@contextmanager
+def _vmd_export_morph_bridge(context):
+    active_object = context.active_object
+    if active_object is None or active_object.type == "ARMATURE":
+        yield
+        return
+    FnModel, Model = _mmd_api()
+    root = FnModel.find_root_object(active_object)
+    if root is None or not hasattr(root, "spx_morph_states"):
+        yield
+        return
+    ensure_morph_states(root)
+    curves = _vmd_export_morph_curves(root)
+    if not curves:
+        yield
+        return
+
+    created_placeholder = False
+    added_shape_keys = []
+    previous_action = None
+    previous_basis_mute = None
+    had_animation_data = False
+    target_had_shape_keys = True
+    temporary_action = None
+    target = None
+    try:
+        if active_object == root:
+            existing_placeholder = next(
+                (
+                    child
+                    for child in root.children
+                    if child.mmd_type == "PLACEHOLDER" and child.type == "MESH"
+                ),
+                None,
+            )
+            existing_shape_keys = (
+                existing_placeholder.data.shape_keys
+                if existing_placeholder is not None
+                else None
+            )
+            target_had_shape_keys = existing_shape_keys is not None
+            existing_key_names = (
+                set(existing_shape_keys.key_blocks.keys())
+                if existing_shape_keys is not None
+                else set()
+            )
+            target = Model(root).morph_slider.create()
+            created_placeholder = existing_placeholder is None
+            if not created_placeholder and target_had_shape_keys:
+                added_shape_keys.extend(
+                    key_block
+                    for key_block in target.data.shape_keys.key_blocks
+                    if key_block.name not in existing_key_names
+                )
+        elif active_object.type == "MESH":
+            target = active_object
+            target_had_shape_keys = target.data.shape_keys is not None
+        if target is None:
+            yield
+            return
+
+        shape_keys = target.data.shape_keys
+        if shape_keys is None:
+            target.shape_key_add(name="Basis", from_mix=False)
+            shape_keys = target.data.shape_keys
+        for _curve, state in curves:
+            if state.morph_name not in shape_keys.key_blocks:
+                added_shape_keys.append(
+                    target.shape_key_add(name=state.morph_name, from_mix=False)
+                )
+
+        basis = shape_keys.key_blocks[0]
+        previous_basis_mute = basis.mute
+        basis.mute = False
+        had_animation_data = shape_keys.animation_data is not None
+        animation_data = shape_keys.animation_data_create()
+        previous_action = animation_data.action
+        temporary_action = bpy.data.actions.new(".MMD Station VMD Export Morph")
+        for curve, state in curves:
+            key_block = shape_keys.key_blocks.get(state.morph_name)
+            if key_block is not None:
+                _copy_fcurve(
+                    curve,
+                    temporary_action,
+                    key_block.path_from_id("value"),
+                )
+        animation_data.action = temporary_action
+        yield
+    finally:
+        if target is not None and target.data.shape_keys is not None:
+            shape_keys = target.data.shape_keys
+            animation_data = shape_keys.animation_data
+            if animation_data is not None and animation_data.action == temporary_action:
+                animation_data.action = previous_action
+            if previous_basis_mute is not None and shape_keys.key_blocks:
+                shape_keys.key_blocks[0].mute = previous_basis_mute
+            if (
+                not had_animation_data
+                and shape_keys.animation_data is not None
+                and shape_keys.animation_data.action is None
+                and not shape_keys.animation_data.drivers
+                and not shape_keys.animation_data.nla_tracks
+            ):
+                shape_keys.animation_data_clear()
+            if not created_placeholder and not target_had_shape_keys:
+                target.shape_key_clear()
+            elif not created_placeholder:
+                for key_block in reversed(added_shape_keys):
+                    if key_block.name in shape_keys.key_blocks:
+                        target.shape_key_remove(shape_keys.key_blocks[key_block.name])
+        if temporary_action is not None:
+            bpy.data.actions.remove(temporary_action)
+        if created_placeholder and target is not None and target.name in bpy.data.objects:
+            mesh = target.data
+            bpy.data.objects.remove(target, do_unlink=True)
+            if mesh.users == 0:
+                bpy.data.meshes.remove(mesh)
+
+
+def _export_vmd_execute(operator, context):
+    with _vmd_export_morph_bridge(context):
+        return _ORIGINAL_EXPORT_VMD_EXECUTE(operator, context)
+
+
+def _install_vmd_io_hooks():
     global _ORIGINAL_IMPORT_VMD_EXECUTE, _IMPORT_VMD_CLASS
-    if _ORIGINAL_IMPORT_VMD_EXECUTE is not None:
-        return None
+    global _ORIGINAL_EXPORT_VMD_EXECUTE, _EXPORT_VMD_CLASS
     try:
         fileio = importlib.import_module(
             "bl_ext.blender_org.mmd_tools.operators.fileio"
         )
     except ImportError:
         return 0.5
-    import_class = fileio.ImportVmd
-    if import_class.execute is _import_vmd_execute:
-        return None
-    _IMPORT_VMD_CLASS = import_class
-    _ORIGINAL_IMPORT_VMD_EXECUTE = import_class.execute
-    import_class.execute = _import_vmd_execute
+    if _ORIGINAL_IMPORT_VMD_EXECUTE is None:
+        import_class = fileio.ImportVmd
+        if import_class.execute is not _import_vmd_execute:
+            _IMPORT_VMD_CLASS = import_class
+            _ORIGINAL_IMPORT_VMD_EXECUTE = import_class.execute
+            import_class.execute = _import_vmd_execute
+    if _ORIGINAL_EXPORT_VMD_EXECUTE is None:
+        export_class = fileio.ExportVmd
+        if export_class.execute is not _export_vmd_execute:
+            _EXPORT_VMD_CLASS = export_class
+            _ORIGINAL_EXPORT_VMD_EXECUTE = export_class.execute
+            export_class.execute = _export_vmd_execute
     return None
 
 
-def _remove_vmd_import_hook():
+def _remove_vmd_io_hooks():
     global _ORIGINAL_IMPORT_VMD_EXECUTE, _IMPORT_VMD_CLASS
+    global _ORIGINAL_EXPORT_VMD_EXECUTE, _EXPORT_VMD_CLASS
     if (
         _IMPORT_VMD_CLASS is not None
         and _ORIGINAL_IMPORT_VMD_EXECUTE is not None
@@ -1340,6 +1510,14 @@ def _remove_vmd_import_hook():
         _IMPORT_VMD_CLASS.execute = _ORIGINAL_IMPORT_VMD_EXECUTE
     _ORIGINAL_IMPORT_VMD_EXECUTE = None
     _IMPORT_VMD_CLASS = None
+    if (
+        _EXPORT_VMD_CLASS is not None
+        and _ORIGINAL_EXPORT_VMD_EXECUTE is not None
+        and _EXPORT_VMD_CLASS.execute is _export_vmd_execute
+    ):
+        _EXPORT_VMD_CLASS.execute = _ORIGINAL_EXPORT_VMD_EXECUTE
+    _ORIGINAL_EXPORT_VMD_EXECUTE = None
+    _EXPORT_VMD_CLASS = None
 
 
 def _sync_official_active_morph(root):
@@ -3825,15 +4003,22 @@ def register_services():
     )
     if _morph_frame_change not in bpy.app.handlers.frame_change_post:
         bpy.app.handlers.frame_change_post.append(_morph_frame_change)
-    if not bpy.app.timers.is_registered(_install_vmd_import_hook):
-        bpy.app.timers.register(_install_vmd_import_hook, first_interval=0.0)
+    retry_interval = _install_vmd_io_hooks()
+    if (
+        retry_interval is not None
+        and not bpy.app.timers.is_registered(_install_vmd_io_hooks)
+    ):
+        bpy.app.timers.register(
+            _install_vmd_io_hooks,
+            first_interval=retry_interval,
+        )
 
 
 def unregister_services():
     _unregister_group_morph_factor_proxy()
-    if bpy.app.timers.is_registered(_install_vmd_import_hook):
-        bpy.app.timers.unregister(_install_vmd_import_hook)
-    _remove_vmd_import_hook()
+    if bpy.app.timers.is_registered(_install_vmd_io_hooks):
+        bpy.app.timers.unregister(_install_vmd_io_hooks)
+    _remove_vmd_io_hooks()
     if _morph_frame_change in bpy.app.handlers.frame_change_post:
         bpy.app.handlers.frame_change_post.remove(_morph_frame_change)
     if hasattr(bpy.types.Object, "spx_morph_active_index"):
