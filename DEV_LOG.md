@@ -1,5 +1,13 @@
 # Development Log
 
+## 2026-08-30 - V0.1.8 Rest Pose 到当前 Pose 的刚体与 Joint 对齐
+
+- 物理预览面板新增“更新刚体 / Joint 到当前姿态”按钮。整个模型模式按现有勾选模型批量执行，当前代理模式作用于其 MMD Root；物理预览或物理烘焙运行时禁用，避免在 solver 使用对象矩阵期间改写输入。
+- 对齐不是把刚体中心强制吸到骨骼中心：插件先在 Armature `REST` 状态取得并持久保存每个刚体、Joint 的参考世界矩阵，再用 `Pose Bone World × Rest Bone World⁻¹` 得到骨骼姿态增量；带骨骼刚体应用该增量，因此完整保留原有平移、旋转与尺度偏移。Joint 沿用 MMD/mmd_tools 的确定性语义，优先跟随 `object1` 的姿态增量、不可用时跟随 `object2`，同样保留原始 Joint 框架偏移；无有效骨骼的刚体和两端均无有效增量的 Joint 保持不变。
+- 首次执行会把 Rest 参考矩阵写入对象自定义属性，后续切换动作或修改 Keyframe 后再次点击仍从同一 Rest Pose 计算，不会在上一次 Pose 结果上累积漂移；若 Armature 当前明确处于 `REST`，再次执行会刷新参考矩阵。已有 Blender RigidBodyWorld 时会在矩阵写入期间暂时停用并原样恢复 world，以清除旧求值缓存，防止动态刚体在 depsgraph 更新后弹回旧位置，不改变 MMD 刚体类型。
+- 新增 `tests/physics_pose_alignment_regression.py`，覆盖偏心/偏转刚体、Joint、无骨骼刚体、二次换姿态无累积以及真实 Operator 注册。Blender 4.4.3 输出 `MMD_PHYSICS_POSE_ALIGNMENT_OK`、`MMD_PHYSICS_BAKE_REGRESSION_OK` 与 `MMD_TIME_DRIVER_UNIT_OK`。
+- 对真实 `D:\MMD\模型\Alicia\鳴潮-達妮婭\達妮婭\36.blend` + `TOMBOY.vmd` 帧 `1` 做不保存验证：更新 `508` 个刚体与 `701` 个 Joint，全部对象实际发生 Pose 位移；刚体世界矩阵最大误差 `4.35114e-06`、骨骼相对偏移最大误差 `4.52623e-06`、Joint 最大误差 `2.65241e-06`，Armature Pose 与 Action 未被修改。版本保持 V0.1.8，真实 Blender 4.4 源码 Junction 直接生效，不保存测试工程、不打包 ZIP、不 push。
+
 ## 2026-08-30 - V0.1.8 续接物理烘焙初态与预热重放修复
 
 - 修复“续接上一段”从首个新帧开始爆炸的问题。根因有两处：快速烘焙副本此前继承了当前输出 Action 已求解的动态骨骼姿态；同时续接虽然从最早 `simulation_start` 重放，却遗漏首段独立烘焙的预热步数，导致续接求解器状态与首段末尾状态并不一致。快速烘焙现在会先把副本中全部动态刚体绑定骨骼恢复为确定性初态，再应用源 Action；续接会继承并完整重放首段 `simulation_preroll`，不再把带速度状态的物理链仅按末帧姿态硬接。
