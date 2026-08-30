@@ -1,5 +1,6 @@
 import pathlib
 import sys
+import tempfile
 from types import SimpleNamespace
 
 import bpy
@@ -15,6 +16,7 @@ import mmd_station
 from mmd_station import mmd_morph_editor as morph_editor_module
 from mmd_station import mmd_physics as mmd_physics_module
 from bl_ext.blender_org.mmd_tools.core.model import FnModel, Model
+from bl_ext.blender_org.mmd_tools.core import vmd
 from mmd_station.mmd_material_order import ordered_materials, set_material_order
 from mmd_station.mmd_morph_clipboard import (
     apply_pmx_editor_morphs,
@@ -1396,6 +1398,96 @@ assert abs(states["UVShift"].value - 1.0) < 1.0e-6
 assert abs(states["GroupHide"].value - 1.0) < 1.0e-6
 assert bool(root.get("spx_morph_lightweight_bound", False))
 assert "spx_morph_runtime_error" not in root, root.get("spx_morph_runtime_error")
+
+# Root-side Morph curves are bridged back to ShapeKey curves transactionally
+# so the stock mmd_tools VMD exporter can serialize the same frames and values.
+morph_editor_module._install_vmd_io_hooks()
+previous_placeholder_action = placeholder_keys.animation_data.action
+previous_basis_mute = placeholder_keys.key_blocks[0].mute
+for scene_object in tuple(bpy.context.selected_objects):
+    scene_object.select_set(False)
+root.select_set(True)
+bpy.context.view_layer.objects.active = root
+with tempfile.TemporaryDirectory(prefix="mmd-station-vmd-") as directory:
+    output_path = pathlib.Path(directory) / "morph-roundtrip.vmd"
+    assert bpy.ops.mmd_tools.export_vmd(
+        filepath=str(output_path),
+        use_frame_range=False,
+    ) == {"FINISHED"}
+    exported_vmd = vmd.File()
+    exported_vmd.load(filepath=str(output_path))
+    first_export = {}
+    for name in ("Smile", "Hide", "BoneMove", "UVShift", "GroupHide"):
+        frame_weights = {
+            int(key.frame_number): float(key.weight)
+            for key in exported_vmd.shapeKeyAnimation[name]
+        }
+        assert abs(frame_weights[9] - 0.0) < 1.0e-6
+        assert abs(frame_weights[19] - 1.0) < 1.0e-6
+        first_export[name] = frame_weights
+    assert placeholder_keys.animation_data.action == previous_placeholder_action
+    assert placeholder_keys.key_blocks[0].mute == previous_basis_mute
+    assert bpy.data.actions.get(".MMD Station VMD Export Morph") is None
+
+    # A real stock mmd_tools import is intercepted in the opposite direction:
+    # imported ShapeKey curves become the same keyframeable central sliders.
+    root.animation_data_clear()
+    bpy.context.scene.frame_set(1)
+    assert bpy.ops.mmd_tools.import_vmd(
+        filepath=str(output_path),
+        scale=1.0,
+        margin=0,
+        create_new_action=True,
+    ) == {"FINISHED"}
+    imported_paths = {curve.data_path for curve in root.animation_data.action.fcurves}
+    assert {
+        _morph_state_data_path(states[name])
+        for name in ("Smile", "Hide", "BoneMove", "UVShift", "GroupHide")
+    }.issubset(imported_paths)
+    imported_placeholder_action = placeholder_keys.animation_data.action
+
+    roundtrip_path = pathlib.Path(directory) / "morph-roundtrip-second.vmd"
+    assert bpy.ops.mmd_tools.export_vmd(
+        filepath=str(roundtrip_path),
+        use_frame_range=False,
+    ) == {"FINISHED"}
+    roundtrip_vmd = vmd.File()
+    roundtrip_vmd.load(filepath=str(roundtrip_path))
+    for name, expected in first_export.items():
+        actual = {
+            int(key.frame_number): float(key.weight)
+            for key in roundtrip_vmd.shapeKeyAnimation[name]
+        }
+        assert actual == expected, (name, expected, actual)
+
+    # Morph-only export from an active model mesh receives missing non-Vertex
+    # names transactionally and restores the mesh ShapeKey layout afterwards.
+    mesh_key_names = tuple(mesh_a.data.shape_keys.key_blocks.keys())
+    mesh_action_before_export = mesh_a.data.shape_keys.animation_data.action
+    root.select_set(False)
+    mesh_a.select_set(True)
+    bpy.context.view_layer.objects.active = mesh_a
+    mesh_only_path = pathlib.Path(directory) / "morph-only.vmd"
+    assert bpy.ops.mmd_tools.export_vmd(
+        filepath=str(mesh_only_path),
+        use_frame_range=False,
+    ) == {"FINISHED"}
+    mesh_only_vmd = vmd.File()
+    mesh_only_vmd.load(filepath=str(mesh_only_path))
+    for name, expected in first_export.items():
+        actual = {
+            int(key.frame_number): float(key.weight)
+            for key in mesh_only_vmd.shapeKeyAnimation[name]
+        }
+        assert actual == expected, (name, expected, actual)
+    assert tuple(mesh_a.data.shape_keys.key_blocks.keys()) == mesh_key_names
+    assert mesh_a.data.shape_keys.animation_data.action == mesh_action_before_export
+    mesh_a.select_set(False)
+    root.select_set(True)
+    bpy.context.view_layer.objects.active = root
+assert placeholder_keys.animation_data.action == imported_placeholder_action
+assert placeholder_keys.key_blocks[0].mute == previous_basis_mute
+assert bpy.data.actions.get(".MMD Station VMD Export Morph") is None
 
 # Renaming a bound vertex-group UV Morph rebuilds the runtime scale path instead
 # of leaving the dummy-armature driver pointed at the old collection key.
