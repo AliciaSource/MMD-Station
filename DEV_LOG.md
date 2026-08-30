@@ -1,5 +1,11 @@
 # Development Log
 
+## 2026-08-30 - V0.1.8 未收录空 Morph 导出相对位置修复
+
+- 修复 `mmd_tools` PMX 导出按“表情”显示枠重排后，把所有未收录 Morph 统一追加到 Morph 列表底部的问题。MMD Station 现在仍以显示枠顺序作为已收录 Morph 的主顺序，但会按各 Morph 类型的原始 collection 顺序把未收录项重新锚定：位于两个已收录项之间的空分隔 Morph 跟随其后方 Morph，位于末尾的未收录项跟随该类型最后一个已收录项；因此 `--衣服消失--` 这类空分隔项无需加入显示枠，也能继续位于对应 `袖子-*` 一类条目的上方。
+- 新增独立导出代理 `mmd_export_morph_order.py`，只挂载 `mmd_tools` 的 Morph 索引映射，不修改上游源码、不改变 Blender 内 Morph collection 或显示枠成员；同一规则同时覆盖常规完整 PMX 导出、Group Morph 引用、显示枠引用及 MMD Station PMX Shadow 快速导出。完全没有同类型显示枠锚点的 Morph 继续按原顺序保守放在已锚定项之后。
+- `tests/mmd_shadow_regression.py` 新增反向显示枠顺序与中间空分隔项回归，PMX 回读确认完整导出和 Shadow 快速导出均保持 `Skirt1-* < --Section-- < Sleeve-*`；Blender 4.4.3 输出 `MMD_SHADOW_REGRESSION_OK`、`MMD_DISPLAY_FRAME_REGRESSION_OK`、`MMD_EXPORT_PROFILE_REGRESSION_OK`，全包 `py_compile` 与 `git diff --check` 通过。另对截图对应的 `D:\MMD\模型\Alicia\鳴潮-達妮婭\達妮婭\36.blend` 做不保存的真实完整导出，PMX 回读确认 `--衣服消失--` 为索引 `25`、`袖子-*` 为索引 `26`，相邻顺序为 `見開く < --衣服消失-- < 袖子-* < 裙子1-*`。版本保持 V0.1.8，真实 Blender 4.4 源码 Junction 直接生效，不打包 ZIP、不 push。
+
 ## 2026-08-30 - V0.1.8 分 Action 分段物理烘焙与非阻塞双模式
 
 - 物理预览页新增 `快速烘焙` 与 `播放烘焙`：前者关闭刚体/Joint 调试回写和 View3D redraw，并以最多约 `40 ms` 的主线程时间片连续求解后主动归还 UI；后者按场景 FPS 逐帧推进、显示最终物理姿态并同步采样，机器不足目标帧率时只降低播放速度、不跳过待烘焙帧。两者均使用持续进度框显示阶段、当前帧、已完成帧、平均速度与 ETA，支持 `Esc` / 右键取消；取消或失败会恢复原 Action、原时间帧和启动姿态，不提交半成品。

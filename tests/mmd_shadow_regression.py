@@ -61,6 +61,31 @@ def main():
         root.select_set(True)
         bpy.context.view_layer.objects.active = root
 
+        separator = root.mmd_root.material_morphs.add()
+        separator.name = "--Section--"
+        sleeve = root.mmd_root.material_morphs.add()
+        sleeve.name = "Sleeve-*"
+        skirt = root.mmd_root.material_morphs.add()
+        skirt.name = "Skirt1-*"
+        facial = next(
+            (
+                frame
+                for frame in root.mmd_root.display_item_frames
+                if frame.name == "表情"
+            ),
+            None,
+        )
+        if facial is None:
+            facial = root.mmd_root.display_item_frames.add()
+            facial.name = "表情"
+            facial.name_e = "Facial"
+            facial.is_special = True
+        for morph_name in (skirt.name, sleeve.name):
+            item = facial.data.add()
+            item.type = "MORPH"
+            item.morph_type = "material_morphs"
+            item.name = morph_name
+
         with tempfile.TemporaryDirectory() as directory:
             baseline = Path(directory) / "baseline.pmx"
             save_as = Path(directory) / "save-as.pmx"
@@ -71,6 +96,10 @@ def main():
             assert baseline.is_file()
             assert runtime_shadow_count() == 1
             assert not last_export_profile().get("fast", False)
+            baseline_export = pmx.load(str(baseline))
+            baseline_names = [item.name for item in baseline_export.morphs]
+            assert baseline_names.index(skirt.name) < baseline_names.index(separator.name)
+            assert baseline_names.index(separator.name) < baseline_names.index(sleeve.name)
 
             probe_names = {
                 "group_morphs": "ShadowAddedGroup",
@@ -95,6 +124,9 @@ def main():
                 item.name
                 for item in exported.morphs
             }
+            exported_names = [item.name for item in exported.morphs]
+            assert exported_names.index(skirt.name) < exported_names.index(separator.name)
+            assert exported_names.index(separator.name) < exported_names.index(sleeve.name)
 
             renamed = "ShadowRenamedGroup"
             added["group_morphs"].name = renamed
