@@ -689,7 +689,7 @@ def _joint_desc(obj, body_indices, import_scale=1.0, library=None):
 
 
 class PreviewSession:
-    def __init__(self, scene, settings, root):
+    def __init__(self, scene, settings, root, armature=None):
         self.scene = scene
         self.settings = settings
         self.root = root
@@ -699,7 +699,7 @@ class PreviewSession:
         self.library = default_library(self.solver_target)
         self.import_scale = _model_import_scale(root)
         self.world_scale = 1.0 / self.import_scale
-        self.armature = _model_armature(root)
+        self.armature = armature or _model_armature(root)
         if self.armature is None:
             raise RuntimeError("所选 MMD 模型没有 Armature")
         self.armature_name = self.armature.name

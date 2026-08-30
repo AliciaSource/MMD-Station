@@ -85,11 +85,17 @@ original_basis = armature.pose.bones[bone.name].matrix_basis.copy()
 cancelled = BakeJob(bpy.context, "FAST")
 assert cancelled.steps[:2] == [(1, False), (1, False)]
 assert min(frame for frame, _store in cancelled.steps) == 1
+assert not root.hide_get() and not armature.hide_get()
 cancelled._evaluate_source_action(2)
-assert abs(armature.pose.bones[bone.name].location.x - 0.2) < 1.0e-6
+assert abs(cancelled.work_armature.pose.bones[bone.name].location.x - 0.2) < 1.0e-6
+assert armature.pose.bones[bone.name].matrix_basis == original_basis
+work_collection_name = cancelled.work_collection.name
 cancelled.step()
+assert armature.pose.bones[bone.name].matrix_basis == original_basis
 armature.pose.bones[bone.name].location.x += 42.0
 cancelled.close()
+assert bpy.data.collections.get(work_collection_name) is None
+assert not cancelled.work_objects
 assert bpy.context.scene.frame_current == original_frame
 assert armature.animation_data.action is original_action
 assert not root.hide_get() and not armature.hide_get()
