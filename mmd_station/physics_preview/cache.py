@@ -259,6 +259,16 @@ def _load_cache_sidecars(_dummy):
             _CACHE_PATHS[cache_id(action)] = path
 
 
+def _initialize_cache_sidecars():
+    try:
+        _load_cache_sidecars(None)
+    except AttributeError as error:
+        if "_RestrictData" not in str(error):
+            raise
+        return 0.1
+    return None
+
+
 def register_services():
     if _save_cache_sidecars not in bpy.app.handlers.save_pre:
         bpy.app.handlers.save_pre.append(_save_cache_sidecars)
@@ -266,10 +276,13 @@ def register_services():
         bpy.app.handlers.save_post.append(_save_cache_sidecars)
     if _load_cache_sidecars not in bpy.app.handlers.load_post:
         bpy.app.handlers.load_post.append(_load_cache_sidecars)
-    _load_cache_sidecars(None)
+    if not bpy.app.timers.is_registered(_initialize_cache_sidecars):
+        bpy.app.timers.register(_initialize_cache_sidecars, first_interval=0.1)
 
 
 def unregister_services():
+    if bpy.app.timers.is_registered(_initialize_cache_sidecars):
+        bpy.app.timers.unregister(_initialize_cache_sidecars)
     for handlers, callback in (
         (bpy.app.handlers.save_pre, _save_cache_sidecars),
         (bpy.app.handlers.save_post, _save_cache_sidecars),
