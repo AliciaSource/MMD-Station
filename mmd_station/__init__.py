@@ -79,6 +79,8 @@ from .mmd_display_frame import register_settings as register_display_frame_setti
 from .mmd_display_frame import unregister_services as unregister_display_frame_services
 from .mmd_io import CLASSES as MMD_IO_CLASSES
 from .mmd_io import draw_mmd_io
+from .mmd_export_morph_order import register_export_hook as register_morph_order_export_hook
+from .mmd_export_morph_order import unregister_export_hook as unregister_morph_order_export_hook
 from .mmd_export_profile import register_export_profile_hook
 from .mmd_export_profile import unregister_export_profile_hook
 from .mmd_shadow import register_services as register_shadow_services
@@ -1168,6 +1170,7 @@ def register():
         bpy.utils.register_class(cls)
     bpy.types.Scene.surface_proxy_creator = PointerProperty(type=SPX_Settings)
     register_material_export_hook()
+    register_morph_order_export_hook()
     register_export_profile_hook()
     register_shadow_services()
     register_sync_services()
@@ -1182,6 +1185,7 @@ def register():
 def unregister():
     unregister_shadow_services()
     unregister_export_profile_hook()
+    unregister_morph_order_export_hook()
     unregister_material_export_hook()
     unregister_display_frame_services()
     unregister_morph_editor_services()
