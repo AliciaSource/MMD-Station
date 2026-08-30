@@ -1,5 +1,12 @@
 # Development Log
 
+## 2026-08-30 - V0.1.8 VMD Morph 滑块原生动画颜色修复
+
+- 修复 VMD Morph 已联动但中央滑块始终保持蓝色的问题。根因是导入桥此前把 F-Curve 写到可求值的稳定 UID 路径 `spx_morph_states["uid"].value`，而 Blender 4.4 的 UI animation decoration 实际只按该 `CollectionProperty` 项目的原生索引路径 `spx_morph_states[index].value` 判断绿色、黄色与橘色状态；所以动画数值会变化，UI 却不认为当前滑块拥有 F-Curve，只有用户手动按 `I` 生成索引路径后才变色。
+- 中央 Morph 动画现统一使用 `state.path_from_id("value")` 返回的 Blender 原生索引路径；Morph 新增、删除、排序或刷新导致状态索引变化时，会按稳定 UID 把 Root 当前 Action 与 NLA Action 中的 F-Curve 重映射到新索引。升级前已存在的 UID 路径和用户后来手动 `I` 生成的索引路径会自动合并为一条 UI 原生曲线，同帧以用户手动键值为准，避免重复 F-Curve 或关键帧错绑到其它 Morph。
+- 插件注册、Reload Scripts 与 `.blend` `load_post` 现在都会扫描并接管当前工程中已存在的 VMD Morph 动画；无需重新导入即可把旧 UID 曲线转换成会变色的滑块曲线，仍留在 mmd_tools ShapeKey Action 的旧动画也会迁移后清除重复源曲线。回归覆盖 Keyframe 当前帧黄色、非 Keyframe 动画帧绿色、手动偏离曲线值橘色，以及旧 UID 曲线 + 手动索引曲线合并。
+- Blender 4.4.3 对真实 `D:\MMD\模型\Alicia\鳴潮-達妮婭\達妮婭\36.blend` 和 `TOMBOY.vmd` 做不保存验证：生产 hook 为 `_import_vmd_execute`，导入得到 `32` 条中央 Morph F-Curve；`まばたき` 的 UI 原生路径为 `spx_morph_states[228].value`，成功取得 `502` 个 Keyframe，并逐项确认帧 `1` 为黄色条件、帧 `2` 为绿色条件、手动偏移后为橘色条件。`MMD_MORPH_EDITOR_REGRESSION_OK`、全包 `compileall` 与 `git diff --check` 通过。版本保持 V0.1.8，真实 Blender 4.4 源码 Junction 直接生效，不保存测试工程、不打包 ZIP、不 push。
+
 ## 2026-08-30 - V0.1.8 VMD Morph 滑块双向关键帧桥接
 
 - MMD Station 注册时会立即安装 VMD I/O hook（仅在 `mmd_tools` 尚不可导入时才定时重试），并在 VMD 导入后把 `mmd_tools` 生成的 ShapeKey F-Curve 自动迁移到 MMD Root 的稳定 UID 路径 `spx_morph_states["..."].value`，因此中央 Morph 滑块会直接显示并编辑导入的 Keyframe；在数值滑块上按 `I` 新增的关键帧也使用同一条曲线，Vertex、Material、Bone、UV 与 Group Morph 共用一致入口。
