@@ -218,6 +218,60 @@ pub struct ContactPoint {
     pub normal_world_on_b: [f32; 3],
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct RigidBodyState {
+    pub position: [f32; 3],
+    pub rotation_xyzw: [f32; 4],
+    pub interpolation_position: [f32; 3],
+    pub interpolation_rotation_xyzw: [f32; 4],
+    pub linear_velocity: [f32; 3],
+    pub angular_velocity: [f32; 3],
+    pub interpolation_linear_velocity: [f32; 3],
+    pub interpolation_angular_velocity: [f32; 3],
+    pub total_force: [f32; 3],
+    pub total_torque: [f32; 3],
+    pub activation_state: i32,
+    pub deactivation_time: f32,
+}
+
+impl From<ffi::RigidBodyState> for RigidBodyState {
+    fn from(value: ffi::RigidBodyState) -> Self {
+        Self {
+            position: value.position,
+            rotation_xyzw: value.rotation_xyzw,
+            interpolation_position: value.interpolation_position,
+            interpolation_rotation_xyzw: value.interpolation_rotation_xyzw,
+            linear_velocity: value.linear_velocity,
+            angular_velocity: value.angular_velocity,
+            interpolation_linear_velocity: value.interpolation_linear_velocity,
+            interpolation_angular_velocity: value.interpolation_angular_velocity,
+            total_force: value.total_force,
+            total_torque: value.total_torque,
+            activation_state: value.activation_state,
+            deactivation_time: value.deactivation_time,
+        }
+    }
+}
+
+impl From<RigidBodyState> for ffi::RigidBodyState {
+    fn from(value: RigidBodyState) -> Self {
+        Self {
+            position: value.position,
+            rotation_xyzw: value.rotation_xyzw,
+            interpolation_position: value.interpolation_position,
+            interpolation_rotation_xyzw: value.interpolation_rotation_xyzw,
+            linear_velocity: value.linear_velocity,
+            angular_velocity: value.angular_velocity,
+            interpolation_linear_velocity: value.interpolation_linear_velocity,
+            interpolation_angular_velocity: value.interpolation_angular_velocity,
+            total_force: value.total_force,
+            total_torque: value.total_torque,
+            activation_state: value.activation_state,
+            deactivation_time: value.deactivation_time,
+        }
+    }
+}
+
 pub struct BulletWorld {
     raw: NonNull<ffi::World>,
 }
@@ -319,6 +373,37 @@ impl BulletWorld {
         Ok(Transform {
             position,
             rotation_xyzw,
+        })
+    }
+
+    pub fn rigidbody_states(&self) -> Result<Vec<RigidBodyState>, BulletError> {
+        let count = self.rigidbody_count()?;
+        let mut states = vec![ffi::RigidBodyState::default(); count];
+        let written = unsafe {
+            ffi::mmd_anim_bullet_world_get_rigidbody_states(
+                self.raw.as_ptr(),
+                states.as_mut_ptr(),
+                count as i32,
+            )
+        };
+        if written != count as i32 {
+            return Err(BulletError::last());
+        }
+        Ok(states.into_iter().map(RigidBodyState::from).collect())
+    }
+
+    pub fn set_rigidbody_states(&mut self, states: &[RigidBodyState]) -> Result<(), BulletError> {
+        let states = states
+            .iter()
+            .copied()
+            .map(ffi::RigidBodyState::from)
+            .collect::<Vec<_>>();
+        check(unsafe {
+            ffi::mmd_anim_bullet_world_set_rigidbody_states(
+                self.raw.as_ptr(),
+                states.as_ptr(),
+                states.len() as i32,
+            )
         })
     }
 
@@ -487,6 +572,23 @@ mod ffi {
         pub normal_world_on_b: [f32; 3],
     }
 
+    #[repr(C)]
+    #[derive(Clone, Copy, Default)]
+    pub struct RigidBodyState {
+        pub position: [f32; 3],
+        pub rotation_xyzw: [f32; 4],
+        pub interpolation_position: [f32; 3],
+        pub interpolation_rotation_xyzw: [f32; 4],
+        pub linear_velocity: [f32; 3],
+        pub angular_velocity: [f32; 3],
+        pub interpolation_linear_velocity: [f32; 3],
+        pub interpolation_angular_velocity: [f32; 3],
+        pub total_force: [f32; 3],
+        pub total_torque: [f32; 3],
+        pub activation_state: i32,
+        pub deactivation_time: f32,
+    }
+
     unsafe extern "C" {
         pub fn mmd_anim_bullet_get_last_error() -> *const c_char;
         pub fn mmd_anim_bullet_quaternion_rotation_yaw_pitch_roll(
@@ -538,6 +640,16 @@ mod ffi {
             count: i32,
             position: *const f32,
             rotation_xyzw: *const f32,
+        ) -> i32;
+        pub fn mmd_anim_bullet_world_get_rigidbody_states(
+            world: *const World,
+            out_states: *mut RigidBodyState,
+            capacity: i32,
+        ) -> i32;
+        pub fn mmd_anim_bullet_world_set_rigidbody_states(
+            world: *mut World,
+            states: *const RigidBodyState,
+            count: i32,
         ) -> i32;
         pub fn mmd_anim_bullet_world_add_6dof_spring_joint(
             world: *mut World,

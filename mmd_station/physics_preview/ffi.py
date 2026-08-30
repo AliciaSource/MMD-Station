@@ -3,11 +3,11 @@ import pathlib
 import platform
 
 
-ABI_VERSION = 4
+ABI_VERSION = 5
 DEFAULT_SOLVER_TARGET = "MMD"
 SOLVER_FILENAMES = {
-    "MMD": "mmd_physics_solver_mmd.dll",
-    "PMX": "mmd_physics_solver.dll",
+    "MMD": "mmd_physics_solver_mmd_abi5.dll",
+    "PMX": "mmd_physics_solver_abi5.dll",
 }
 
 
@@ -160,6 +160,27 @@ class SolverLibrary:
             Transform,
         )
         dll.mmd_solver_apply_world_delta.restype = ctypes.c_int32
+        dll.mmd_solver_snapshot_size.argtypes = (ctypes.c_void_p,)
+        dll.mmd_solver_snapshot_size.restype = ctypes.c_uint32
+        dll.mmd_solver_write_snapshot.argtypes = (
+            ctypes.c_void_p,
+            ctypes.POINTER(ctypes.c_uint8),
+            ctypes.c_uint32,
+        )
+        dll.mmd_solver_write_snapshot.restype = ctypes.c_uint32
+        dll.mmd_solver_restore_snapshot.argtypes = (
+            ctypes.c_void_p,
+            ctypes.POINTER(ctypes.c_uint8),
+            ctypes.c_uint32,
+        )
+        dll.mmd_solver_restore_snapshot.restype = ctypes.c_int32
+        dll.mmd_solver_guide_body.argtypes = (
+            ctypes.c_void_p,
+            ctypes.c_uint32,
+            Transform,
+            ctypes.c_float,
+        )
+        dll.mmd_solver_guide_body.restype = ctypes.c_int32
         if hasattr(dll, "mmd_solver_set_body_target_basis"):
             dll.mmd_solver_set_body_target_basis.argtypes = (
                 ctypes.c_void_p,
@@ -356,6 +377,44 @@ class Solver:
             transform,
         ):
             raise RuntimeError("应用物理世界位移失败")
+
+    def snapshot(self):
+        size = int(self.library.dll.mmd_solver_snapshot_size(self.handle))
+        if size <= 0:
+            raise RuntimeError("读取物理快照大小失败")
+        output = (ctypes.c_uint8 * size)()
+        written = int(
+            self.library.dll.mmd_solver_write_snapshot(
+                self.handle,
+                output,
+                size,
+            )
+        )
+        if written != size:
+            raise RuntimeError("写出物理快照失败")
+        return bytes(output)
+
+    def restore_snapshot(self, snapshot):
+        snapshot = bytes(snapshot)
+        if not snapshot:
+            raise ValueError("物理快照为空")
+        buffer = (ctypes.c_uint8 * len(snapshot)).from_buffer_copy(snapshot)
+        if not self.library.dll.mmd_solver_restore_snapshot(
+            self.handle,
+            buffer,
+            len(snapshot),
+        ):
+            raise RuntimeError("恢复物理快照失败")
+
+    def guide_body(self, index, matrix, strength):
+        transform = matrix if isinstance(matrix, Transform) else matrix_to_transform(matrix)
+        if not self.library.dll.mmd_solver_guide_body(
+            self.handle,
+            int(index),
+            transform,
+            float(strength),
+        ):
+            raise RuntimeError(f"引导刚体 {index} 失败")
 
     def step(self, dt, substeps):
         if not self.library.dll.mmd_solver_step(self.handle, float(dt), int(substeps)):

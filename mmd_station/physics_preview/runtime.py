@@ -447,7 +447,7 @@ def _pmx_native_matrix_transform(matrix, import_scale, library=None):
 
 def _pmx_native_object_transform(obj, import_scale, library=None):
     transform = _pmx_native_matrix_transform(obj.matrix_world, import_scale, library=library)
-    if library is None or library.path.name != "mmd_physics_solver_mmd.dll":
+    if library is None or library.path.name != "mmd_physics_solver_mmd_abi5.dll":
         return transform
     pmx_euler = _pmx_source_euler(obj)
     return Transform(
@@ -766,7 +766,7 @@ def _body_desc(obj, armature, import_scale=1.0, library=None):
     if (
         pose_bone is not None
         and library is not None
-        and library.path.name == "mmd_physics_solver_mmd.dll"
+        and library.path.name == "mmd_physics_solver_mmd_abi5.dll"
     ):
         rest_bone_world = armature.matrix_world @ pose_bone.bone.head_local
         rest_bone_position = Vec3.from_value(

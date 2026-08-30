@@ -1,5 +1,7 @@
 import pathlib
+import shutil
 import sys
+import tempfile
 from types import SimpleNamespace
 
 import bpy
@@ -14,11 +16,13 @@ import mmd_station
 from mmd_station.mmd_physics import _mmd_api
 from mmd_station.physics_preview.bake import (
     BakeJob,
+    _repair_layers,
     _segments,
     _source_action,
     _store_segments,
     draw_bake,
 )
+from mmd_station.physics_preview import cache as physics_cache
 from bl_ext.blender_org.mmd_tools.core.model import Model
 
 
@@ -132,6 +136,9 @@ assert output.get("mmd_station_physics_generated", False)
 assert _source_action(armature) is source
 assert _segments(output) == [first]
 assert first["simulation_preroll"] == 2
+cache_header, checkpoints = physics_cache.read_cache(output)
+assert cache_header is not None
+assert sorted(checkpoints) == [0, 1, 3]
 bone_prefix = f'pose.bones["{bpy.utils.escape_identifier(physics_bone.name)}"]'
 assert output.fcurves.find(f"{bone_prefix}.location", index=0) is not None
 assert output.fcurves.find(f"{bone_prefix}.rotation_quaternion", index=0) is not None
@@ -149,6 +156,7 @@ assert not armature.pose.bones[physics_bone.name].matrix_basis.is_identity
 job = BakeJob(bpy.context, "FAST")
 assert job.simulation_start == 1
 assert job.simulation_preroll == 2
+assert job.restored_checkpoint is None
 assert job.steps[:2] == [(1, False), (1, False)]
 assert job.session.saved_basis[physics_bone.name].is_identity
 while job.step():
@@ -182,6 +190,44 @@ for bone_name, samples in staged_samples.items():
         assert max(abs(a - b) for a, b in zip(staged[2], one_shot[2])) < 1.0e-6
 oracle.close()
 
+repair_output = armature.animation_data.action
+settings.physics_repair_start = 2
+settings.physics_repair_end = 5
+bpy.context.scene.frame_set(3)
+bpy.ops.object.mode_set(mode="OBJECT")
+bpy.ops.object.select_all(action="DESELECT")
+armature.select_set(True)
+bpy.context.view_layer.objects.active = armature
+bpy.ops.object.mode_set(mode="POSE")
+for pose_bone in armature.pose.bones:
+    pose_bone.bone.select = False
+armature.pose.bones[physics_bone.name].bone.select = True
+armature.pose.bones[physics_bone.name].location.x += 0.05
+assert bpy.ops.surface_proxy.record_mmd_physics_repair_pose() == {"FINISHED"}
+bpy.ops.object.mode_set(mode="OBJECT")
+repair_layer = _repair_layers(repair_output)[0]
+assert sorted(repair_layer["anchors"]) == ["3"]
+original_end = [
+    repair_output.fcurves.find(f"{bone_prefix}.location", index=index).evaluate(5)
+    for index in range(3)
+]
+repair_job = BakeJob(bpy.context, "REPAIR", repair_layer=repair_layer)
+assert repair_job.restored_checkpoint == 1
+assert repair_job.steps == [(2, True), (3, True), (4, True), (5, True)]
+while repair_job.step():
+    pass
+repair_segment = repair_job.finish()
+assert repair_segment["repair_id"] == repair_layer["id"]
+assert _repair_layers(armature.animation_data.action)[0]["status"] == "COMPLETED"
+assert [(item["start"], item["end"]) for item in _segments(armature.animation_data.action)] == [(1, 3), (4, 5)]
+repaired_end = [
+    armature.animation_data.action.fcurves.find(
+        f"{bone_prefix}.location",
+        index=index,
+    ).evaluate(5)
+    for index in range(3)
+]
+assert max(abs(a - b) for a, b in zip(original_end, repaired_end, strict=True)) < 1.0e-6
 
 class LayoutProbe:
     def __init__(self):
@@ -210,6 +256,7 @@ layout = LayoutProbe()
 draw_bake(layout, settings)
 assert "surface_proxy.bake_mmd_physics" in layout.operators
 assert "surface_proxy.delete_mmd_physics_bake_segment" in layout.operators
+assert "surface_proxy.record_mmd_physics_repair_pose" in layout.operators
 assert any("已完成烘焙区间" in label for label in layout.labels)
 
 assert bpy.ops.surface_proxy.delete_mmd_physics_bake_segment(
@@ -236,7 +283,22 @@ while job.step():
 mmd_segment = job.finish()
 assert mmd_segment["start"] == 1 and mmd_segment["end"] == 2
 assert len(_segments(armature.animation_data.action)) == 1
-assert bpy.ops.surface_proxy.clear_mmd_physics_bake() == {"FINISHED"}
+saved_output = armature.animation_data.action
+saved_cache_id = physics_cache.cache_id(saved_output)
+save_directory = pathlib.Path(tempfile.mkdtemp(prefix="mmd-station-cache-test-"))
+save_path = save_directory / "physics-cache.blend"
+assert bpy.ops.wm.save_as_mainfile(filepath=str(save_path)) == {"FINISHED"}
+saved_cache_path = physics_cache.cache_path(saved_output)
+assert saved_cache_path is not None and saved_cache_path.is_file()
+assert bpy.ops.wm.open_mainfile(filepath=str(save_path)) == {"FINISHED"}
+reopened_output = next(
+    action
+    for action in bpy.data.actions
+    if physics_cache.cache_id(action) == saved_cache_id
+)
+reopened_header, reopened_checkpoints = physics_cache.read_cache(reopened_output)
+assert reopened_header is not None and reopened_checkpoints
 
 print("MMD_PHYSICS_BAKE_REGRESSION_OK")
 mmd_station.unregister()
+shutil.rmtree(save_directory)

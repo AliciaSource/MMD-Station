@@ -162,6 +162,18 @@ static void copy_vec3(const btVector3 &source, float target[3]) {
     target[2] = source.z();
 }
 
+static void copy_transform(
+    const btTransform &source,
+    float position[3],
+    float rotation_xyzw[4]) {
+    copy_vec3(source.getOrigin(), position);
+    const btQuaternion rotation = source.getRotation();
+    rotation_xyzw[0] = rotation.x();
+    rotation_xyzw[1] = rotation.y();
+    rotation_xyzw[2] = rotation.z();
+    rotation_xyzw[3] = rotation.w();
+}
+
 static float mmd_transform_component(
     const float position[3],
     const float matrix[16],
@@ -692,6 +704,96 @@ mmd_anim_bullet_status mmd_anim_bullet_world_add_6dof_spring_joint(
         }
         *out_index = static_cast<int32_t>(world->constraint_count - 1);
         g_last_error[0] = '\0';
+    return MMD_ANIM_BULLET_OK;
+}
+
+int32_t mmd_anim_bullet_world_get_rigidbody_states(
+    const mmd_anim_bullet_world *world,
+    mmd_anim_bullet_rigidbody_state *out_states,
+    int32_t capacity) {
+    if (!world || (capacity > 0 && !out_states)) {
+        set_last_error("world or output buffer is null");
+        return -1;
+    }
+    const int32_t count = static_cast<int32_t>(world->rigidbody_count);
+    if (capacity < count) {
+        set_last_error("rigidbody state buffer is too small");
+        return -1;
+    }
+    for (int32_t index = 0; index < count; ++index) {
+        btRigidBody *body = world->rigidbodies[static_cast<size_t>(index)].body;
+        mmd_anim_bullet_rigidbody_state &state = out_states[index];
+        copy_transform(body->getWorldTransform(), state.position, state.rotation_xyzw);
+        copy_transform(
+            body->getInterpolationWorldTransform(),
+            state.interpolation_position,
+            state.interpolation_rotation_xyzw);
+        copy_vec3(body->getLinearVelocity(), state.linear_velocity);
+        copy_vec3(body->getAngularVelocity(), state.angular_velocity);
+        copy_vec3(body->getInterpolationLinearVelocity(), state.interpolation_linear_velocity);
+        copy_vec3(body->getInterpolationAngularVelocity(), state.interpolation_angular_velocity);
+        copy_vec3(body->getTotalForce(), state.total_force);
+        copy_vec3(body->getTotalTorque(), state.total_torque);
+        state.activation_state = body->getActivationState();
+        state.deactivation_time = body->getDeactivationTime();
+    }
+    g_last_error[0] = '\0';
+    return count;
+}
+
+mmd_anim_bullet_status mmd_anim_bullet_world_set_rigidbody_states(
+    mmd_anim_bullet_world *world,
+    const mmd_anim_bullet_rigidbody_state *states,
+    int32_t count) {
+    if (!world || (count > 0 && !states)) {
+        return fail(MMD_ANIM_BULLET_NULL_POINTER, "world or state buffer is null");
+    }
+    if (count < 0 || static_cast<size_t>(count) != world->rigidbody_count) {
+        return fail(MMD_ANIM_BULLET_INVALID_ARGUMENT, "rigidbody state count does not match world");
+    }
+    btOverlappingPairCache *pair_cache = world->dynamics_world->getPairCache();
+    btDispatcher *dispatcher = world->dynamics_world->getDispatcher();
+    for (int32_t index = 0; index < count; ++index) {
+        RigidBodyEntry &entry = world->rigidbodies[static_cast<size_t>(index)];
+        btRigidBody *body = entry.body;
+        const mmd_anim_bullet_rigidbody_state &state = states[index];
+        const btTransform transform = make_transform(state.position, state.rotation_xyzw);
+        const btTransform interpolation_transform = make_transform(
+            state.interpolation_position,
+            state.interpolation_rotation_xyzw);
+        body->setWorldTransform(transform);
+        body->setInterpolationWorldTransform(interpolation_transform);
+        body->setLinearVelocity(btVector3(
+            state.linear_velocity[0], state.linear_velocity[1], state.linear_velocity[2]));
+        body->setAngularVelocity(btVector3(
+            state.angular_velocity[0], state.angular_velocity[1], state.angular_velocity[2]));
+        body->setInterpolationLinearVelocity(btVector3(
+            state.interpolation_linear_velocity[0],
+            state.interpolation_linear_velocity[1],
+            state.interpolation_linear_velocity[2]));
+        body->setInterpolationAngularVelocity(btVector3(
+            state.interpolation_angular_velocity[0],
+            state.interpolation_angular_velocity[1],
+            state.interpolation_angular_velocity[2]));
+        body->clearForces();
+        body->applyCentralForce(btVector3(
+            state.total_force[0], state.total_force[1], state.total_force[2]));
+        body->applyTorque(btVector3(
+            state.total_torque[0], state.total_torque[1], state.total_torque[2]));
+        body->forceActivationState(state.activation_state);
+        body->setDeactivationTime(state.deactivation_time);
+        if (entry.motion_state) {
+            entry.motion_state->setWorldTransform(transform);
+        }
+        if (pair_cache && dispatcher && body->getBroadphaseHandle()) {
+            pair_cache->cleanProxyFromPairs(body->getBroadphaseHandle(), dispatcher);
+        }
+        world->dynamics_world->updateSingleAabb(body);
+    }
+    if (world->broadphase && dispatcher) {
+        world->broadphase->calculateOverlappingPairs(dispatcher);
+    }
+    g_last_error[0] = '\0';
     return MMD_ANIM_BULLET_OK;
 }
 

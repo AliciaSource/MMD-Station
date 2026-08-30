@@ -1,6 +1,8 @@
 import bpy
 
 from .ffi import preload_libraries
+from .cache import register_services as register_cache_services
+from .cache import unregister_services as unregister_cache_services
 from .runtime import stop_preview, unregister_model_id_service
 from .bake import (
     CLASSES as BAKE_CLASSES,
@@ -17,6 +19,7 @@ def unregister_runtime():
     cancel_active_bake()
     stop_preview(restore=True)
     unregister_model_id_service()
+    unregister_cache_services()
     if hasattr(bpy.types.Object, "spx_physics_preview_selected"):
         del bpy.types.Object.spx_physics_preview_selected
     if hasattr(bpy.types.Object, "spx_mmd_import_scale_override"):
@@ -32,5 +35,6 @@ __all__ = (
     "preload_libraries",
     "register_settings",
     "register_bake_settings",
+    "register_cache_services",
     "unregister_runtime",
 )
