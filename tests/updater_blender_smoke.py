@@ -17,7 +17,7 @@ was_registered = hasattr(bpy.types, "SPX_PT_surface_proxy_creator")
 if not was_registered:
     mmd_station.register()
 assert hasattr(bpy.types, "SPX_PT_surface_proxy_creator")
-assert mmd_station._version_text() == "v0.1.8-dev"
+assert mmd_station._version_text() == "v1.0.0"
 assert mmd_station.bl_info["doc_url"] == (
     "https://github.com/AliciaSource/MMD-Station")
 assert addon_updater_ops.updater.user == "AliciaSource"

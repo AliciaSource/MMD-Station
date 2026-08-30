@@ -30,19 +30,24 @@ exporting MikuMikuDance models in one workspace.
 
 ## Installation
 
-There is no stable release package yet. For development use:
-
 1. Install and enable [MMD Tools](https://extensions.blender.org/add-ons/mmd-tools/).
-2. Clone this repository.
-3. Copy or link the `mmd_station` directory into Blender's add-on directory:
-   `%APPDATA%\Blender Foundation\Blender\4.4\scripts\addons\mmd_station`
-4. In Blender, open **Edit > Preferences > Add-ons** and enable **MMD Station**.
+2. Download `mmd_station-X.Y.Z.zip` from the matching
+   [GitHub Release](https://github.com/AliciaSource/MMD-Station/releases).
+3. In Blender, open **Edit > Preferences > Add-ons > Install from Disk** and
+   select the downloaded ZIP.
+4. Enable **MMD Station**.
 5. Open the 3D Viewport sidebar and select the **MMD Station** tab.
 
-When stable releases begin, install the `mmd_station-X.Y.Z.zip` asset attached
-to the matching GitHub Release. The built-in updater intentionally follows
-published Releases only; development commits on `main` are never offered as
-updates.
+The built-in updater follows published Releases only; development commits on
+`main` are never offered as updates.
+
+## User Manuals
+
+- [English User Manual](docs/user-manual.en.md)
+- [简体中文使用手册](docs/user-manual.zh-CN.md)
+
+Both manuals include a quick navigation directory, beginner workflows,
+feature-by-feature instructions, and troubleshooting.
 
 ## Main Workspaces
 
@@ -51,6 +56,7 @@ updates.
 - **MMD Viewer** — inspect and edit bones, rigid bodies, Joints, Morphs, and
   display frames.
 - **Morph Editor** — edit, order, preview, keyframe, copy, and paste MMD Morphs.
+- **Display Frames** — organize PMX display frames and their bone/Morph items.
 - **Physics Preview** — preview, align, cache, and bake MMD physics.
 - **MMD IK** — author and preview MMD-compatible IK behavior.
 
@@ -82,7 +88,7 @@ default instead of relying on a release-time translation pass.
 push, tag, or publish a Release.
 
 ```powershell
-.\pack.ps1 -Ref v0.1.8
+.\pack.ps1 -Ref v1.0.0
 ```
 
 The resulting ZIP is written to `dist\` and must be attached to the matching

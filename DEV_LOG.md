@@ -1,5 +1,13 @@
 # Development Log
 
+## 2026-08-30 - V1.0.0 首个正式版定版与双语使用手册
+
+- 将 `bl_info["version"]` 正式定为 `(1, 0, 0)`，`PRERELEASE=None`，面板显示 `v1.0.0`。README 改为正式 Release ZIP 安装流程，不再保留“尚无稳定版”或开发安装主路径，并加入中英使用手册入口。
+- 新增 `docs/user-manual.en.md` 与 `docs/user-manual.zh-CN.md`：两份手册均提供快速目录、安装与 MMD Tools 强依赖说明、活动项/批量勾选规则、PMX/VMD/VPD I/O、代理创建与恢复、代理物理、MMD 查看器五类页面、Morph 五类编辑、显示枠、原生物理预览、分段烘焙与修复、MMD IK、自动更新、常用完整流程及故障排除。所有相对链接和目录锚点均通过脚本校验。
+- `RELEASE_NOTES_NEXT.md` 定稿为英文 `v1.0.0` 首发简报，补充双语手册和 MMD Tools 必需依赖；更新器 Blender 烟测同步断言正式版本显示。
+- 验证：`compileall`、`git diff --check` 通过；本地化/更新器 `pytest` 为 `11 passed`；Blender 4.4.3 输出 `MMD_STATION_I18N_BLENDER_SMOKE_OK`、`MMD_STATION_UPDATER_SMOKE_OK`、`MMD_STATION_SMOKE_OK`；working-tree ZIP 为 60 项，包含 i18n catalog 与 ABI5 native DLL 且不含 `__pycache__` / `.pyc` / runtime updater state；隔离解包安装输出 `MMD_STATION_V1_ISOLATED_INSTALL_OK`。
+- 发布边界：正式资产必须从 `v1.0.0` tag 重新运行 `pack.ps1` 生成并附加到 AliciaSource GitHub Release，确保自动更新器取得的是 tag 对应 ZIP；不得使用 GitHub 自动 source archive 代替安装包。
+
 ## 2026-08-30 - V0.1.8-dev README 依赖说明修正
 
 - 移除 README 顶部 GitHub 灰底引用样式的开发状态提示，不再把内部开发阶段作为项目首页重点展示。
