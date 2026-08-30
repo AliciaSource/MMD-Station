@@ -39,6 +39,7 @@ _RUNTIME_SUSPENDED = False
 _MIN_TIMER_DELAY = 0.001
 _VIEW_LAYER_UPDATE_DEPTH = 0
 _TIMER_DEADLINE = PreviewDeadlineScheduler(minimum_delay=_MIN_TIMER_DELAY)
+_REST_MATRIX_KEY = "mmd_station_physics_rest_matrix"
 
 
 @dataclass
@@ -145,6 +146,101 @@ def _joint_objects(root):
         for obj in _model_api().iterate_joint_objects(root)
         if obj.rigid_body_constraint is not None
     ]
+
+
+def _matrix_values(matrix):
+    return [matrix[row][column] for row in range(4) for column in range(4)]
+
+
+def _stored_matrix(obj):
+    values = obj.get(_REST_MATRIX_KEY)
+    if values is None or len(values) != 16:
+        return None
+    return Matrix(tuple(tuple(values[index:index + 4]) for index in range(0, 16, 4)))
+
+
+def _rest_matrix(obj, captured_matrix, refresh):
+    stored = None if refresh else _stored_matrix(obj)
+    if stored is not None:
+        return stored
+    matrix = captured_matrix.copy()
+    obj[_REST_MATRIX_KEY] = _matrix_values(matrix)
+    return matrix
+
+
+def align_model_physics_to_pose(root):
+    if root is None:
+        raise RuntimeError("请先选择 MMD 模型")
+    if is_running(root):
+        raise RuntimeError("请先停止该模型的物理预览")
+    armature = _model_armature(root)
+    if armature is None:
+        raise RuntimeError("所选 MMD 模型没有 Armature")
+    rigids = _rigid_objects(root)
+    joints = _joint_objects(root)
+    if not rigids:
+        raise RuntimeError("所选 MMD 模型没有刚体")
+
+    original_pose_position = armature.data.pose_position
+    try:
+        armature.data.pose_position = "REST"
+        _update_view_layer()
+        captured_rigids = {obj: obj.matrix_world.copy() for obj in rigids}
+        captured_joints = {obj: obj.matrix_world.copy() for obj in joints}
+    finally:
+        armature.data.pose_position = original_pose_position
+        _update_view_layer()
+
+    refresh_references = original_pose_position == "REST"
+    rigid_rest_matrices = {
+        obj: _rest_matrix(obj, captured_rigids[obj], refresh_references)
+        for obj in rigids
+    }
+    joint_rest_matrices = {
+        obj: _rest_matrix(obj, captured_joints[obj], refresh_references)
+        for obj in joints
+    }
+    armature_world = armature.matrix_world.copy()
+    rigid_deltas = {}
+    aligned_rigids = 0
+    rigid_body_world = bpy.context.scene.rigidbody_world
+    rigid_body_world_enabled = bool(
+        rigid_body_world is not None and rigid_body_world.enabled
+    )
+    if rigid_body_world_enabled:
+        rigid_body_world.enabled = False
+        _update_view_layer()
+    try:
+        for rigid in rigids:
+            bone_name = rigid.mmd_rigid.bone
+            pose_bone = armature.pose.bones.get(bone_name) if bone_name else None
+            if pose_bone is None:
+                continue
+            rest_bone_world = armature_world @ pose_bone.bone.matrix_local
+            pose_bone_world = armature_world @ pose_bone.matrix
+            delta = pose_bone_world @ rest_bone_world.inverted_safe()
+            rigid.matrix_world = delta @ rigid_rest_matrices[rigid]
+            rigid_deltas[rigid] = delta
+            aligned_rigids += 1
+
+        aligned_joints = 0
+        for joint in joints:
+            constraint = joint.rigid_body_constraint
+            anchor = constraint.object1 if constraint is not None else None
+            if anchor not in rigid_deltas and constraint is not None:
+                anchor = constraint.object2
+            delta = rigid_deltas.get(anchor)
+            if delta is None:
+                continue
+            joint.matrix_world = delta @ joint_rest_matrices[joint]
+            aligned_joints += 1
+        _update_view_layer()
+    finally:
+        if rigid_body_world_enabled:
+            rigid_body_world.enabled = True
+            _update_view_layer()
+    _tag_view3d_redraw()
+    return aligned_rigids, aligned_joints
 
 
 def _proxy_physics_objects(proxy, objects):

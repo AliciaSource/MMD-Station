@@ -11,6 +11,7 @@ from bpy.types import Operator
 from .ffi import library_path
 from .runtime import (
     active_session_info,
+    align_model_physics_to_pose,
     is_running,
     model_scale_info,
     preview_model_id,
@@ -164,6 +165,42 @@ class SPX_OT_ResetAllMMDPhysicsPreviews(Operator):
         return {"FINISHED"}
 
 
+class SPX_OT_AlignMMDPhysicsToPose(Operator):
+    bl_idname = "surface_proxy.align_mmd_physics_to_pose"
+    bl_label = "更新刚体与 Joint 到当前姿态"
+    bl_description = "根据 Rest Pose 到当前 Pose 的骨骼变换更新刚体和 Joint，并保留它们原有的位置与旋转偏移"
+    bl_options = {"REGISTER", "UNDO"}
+
+    def execute(self, context):
+        settings = context.scene.surface_proxy_creator
+        if settings.preview_scope == "MODEL":
+            roots = tuple(
+                root
+                for root in preview_roots(context.scene)
+                if root.spx_physics_preview_selected
+            )
+        else:
+            roots = (settings.mmd_root,) if settings.mmd_root is not None else ()
+        if not roots:
+            self.report({"WARNING"}, "请先选择至少一个 MMD 模型")
+            return {"CANCELLED"}
+        if any(is_running(root) for root in roots):
+            self.report({"WARNING"}, "请先停止所选模型的物理预览")
+            return {"CANCELLED"}
+        try:
+            counts = [align_model_physics_to_pose(root) for root in roots]
+        except (RuntimeError, ValueError) as error:
+            self.report({"ERROR"}, str(error))
+            return {"CANCELLED"}
+        rigid_count = sum(item[0] for item in counts)
+        joint_count = sum(item[1] for item in counts)
+        self.report(
+            {"INFO"},
+            f"已按当前姿态更新 {rigid_count} 个刚体和 {joint_count} 个 Joint",
+        )
+        return {"FINISHED"}
+
+
 def register_settings(cls):
     bpy.types.Object.spx_physics_preview_selected = BoolProperty(
         name="参与物理预览",
@@ -300,6 +337,16 @@ def draw_preview(layout, settings):
     row.prop(settings, "preview_substeps")
     box.prop(settings, "preview_gravity")
     box.prop(settings, "preview_update_rigids")
+    from .bake import active_progress
+
+    align_row = box.row()
+    align_row.enabled = not is_running() and active_progress() is None
+    align_row.operator(
+        SPX_OT_AlignMMDPhysicsToPose.bl_idname,
+        text="更新刚体 / Joint 到当前姿态",
+        icon="CONSTRAINT",
+    )
+    box.label(text="按 Rest Pose 变换并保留刚体、Joint 的原始偏移", icon="INFO")
     box.label(text="默认各模型按自己的编号独立并行；同求解尺度、同编号共享碰撞 world", icon="INFO")
     box.label(text="强制修改求解尺度会改变 MMD 空间尺寸，并失去原尺寸 bit 级对齐", icon="INFO")
     running = (
@@ -398,4 +445,5 @@ CLASSES = (
     SPX_OT_RenumberMMDPhysicsPreviewModels,
     SPX_OT_ResetMMDPhysicsPreview,
     SPX_OT_ResetAllMMDPhysicsPreviews,
+    SPX_OT_AlignMMDPhysicsToPose,
 )
