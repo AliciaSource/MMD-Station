@@ -585,6 +585,40 @@ def _range_is_baked(segments, start, end):
     return False
 
 
+def _repair_origin(segments, start, end):
+    overlapping = [
+        segment
+        for segment in segments
+        if int(segment.get("end", -1)) >= start
+        and int(segment.get("start", 0)) <= end
+        and segment.get("status") != "STALE"
+    ]
+    origins = {
+        int(segment.get("simulation_start", segment["start"]))
+        for segment in overlapping
+    }
+    if len(origins) != 1:
+        raise RuntimeError("物理修复范围不能跨越两个独立烘焙状态")
+    simulation_start = origins.pop()
+    origin_segment = next(
+        (
+            segment
+            for segment in segments
+            if int(segment.get("start", 0)) == simulation_start
+            and int(segment.get("simulation_start", segment["start"]))
+            == simulation_start
+        ),
+        overlapping[0],
+    )
+    simulation_preroll = int(
+        origin_segment.get(
+            "simulation_preroll",
+            origin_segment.get("preroll", 0),
+        )
+    )
+    return simulation_start, max(simulation_preroll, 0)
+
+
 class BakeJob:
     def __init__(self, context, mode, repair_layer=None):
         self.context = context
@@ -614,6 +648,11 @@ class BakeJob:
             self.end = int(repair_layer["end"])
             if not _range_is_baked(self.existing_segments, self.start, self.end):
                 raise RuntimeError("物理修复范围必须完整位于未过期的已烘焙区间内")
+            repair_origin = _repair_origin(
+                self.existing_segments,
+                self.start,
+                self.end,
+            )
         if self.end < self.start:
             raise RuntimeError("烘焙结束帧不能早于起始帧")
         self.mode = mode
@@ -643,9 +682,14 @@ class BakeJob:
                 *((frame, True) for frame in range(self.start, self.end + 1)),
             ]
         else:
-            self.simulation_start = self.start
-            self.simulation_preroll = 0
-            self.steps = []
+            self.simulation_start, self.simulation_preroll = repair_origin
+            self.steps = [
+                *((self.simulation_start, False) for _index in range(self.simulation_preroll)),
+                *(
+                    (frame, frame >= self.start)
+                    for frame in range(self.simulation_start, self.end + 1)
+                ),
+            ]
         self.frame_index = 0
         self.current_frame = self.simulation_start
         self.output_frames_completed = 0
@@ -751,31 +795,6 @@ class BakeJob:
             self.output_action,
             expected_hash=self.cache_context_hash,
         )
-        if self.repair_layer is not None:
-            checkpoint_frame = physics_cache.nearest_checkpoint(
-                self.cached_checkpoints,
-                self.start,
-                strictly_before=True,
-            )
-            if checkpoint_frame is None:
-                raise RuntimeError("修复起点之前没有可用物理恢复点，请先重新烘焙该动作")
-            self.world.solver.restore_snapshot(
-                self.cached_checkpoints[checkpoint_frame]
-            )
-            self._evaluate_action_bindings(
-                self._build_action_bindings(self.output_action),
-                checkpoint_frame,
-            )
-            self.session.pose_input.invalidate()
-            self.session.last_output_basis = self.session._capture_driver_basis()
-            self.session.mmd_step_count = 4
-            self.steps = [
-                (frame, frame >= self.start)
-                for frame in range(checkpoint_frame + 1, self.end + 1)
-            ]
-            self.frame_index = 0
-            self.current_frame = checkpoint_frame + 1
-            self.restored_checkpoint = checkpoint_frame
         if (
             self.continuation == "INDEPENDENT"
             and self.simulation_preroll == 0
@@ -946,8 +965,6 @@ class BakeJob:
         else:
             self.scene.frame_set(frame)
         self.session.prepare_step()
-        if self.repair_layer is not None and frame >= self.start:
-            self._apply_repair_guides(frame)
         fps = self.scene.render.fps / max(self.scene.render.fps_base, 1.0e-6)
         self.world.pending_step_seconds = 1.0 / max(fps, 1.0e-6)
         if self.world.step():
@@ -957,6 +974,8 @@ class BakeJob:
                 update_debug=False,
             )
         pose = _capture_pose(self.session, self.previous_rotations)
+        if self.repair_layer is not None and frame >= self.start:
+            pose = self._apply_repair_pose_deltas(pose, frame)
         if store_output:
             for bone_name, sample in pose.items():
                 self.samples_by_bone.setdefault(bone_name, []).append(sample)
@@ -980,61 +999,23 @@ class BakeJob:
         self.frame_index += 1
         return self.frame_index < len(self.steps)
 
-    def _apply_repair_guides(self, frame):
-        anchored_bones = {
-            bone_name
-            for bones in self.repair_layer.get("anchors", {}).values()
-            for bone_name in bones
-        }
-        if not anchored_bones:
-            return
-        source_basis = {
-            pose_bone.name: pose_bone.matrix_basis.copy()
-            for pose_bone in self.session.ordered_pose_bones
-        }
-        try:
-            for pose_bone in self.session.ordered_pose_bones:
-                base = _action_basis(self.output_action, pose_bone, frame)
-                delta, _strength = _repair_delta(
-                    self.repair_layer,
-                    pose_bone.name,
-                    frame,
-                )
-                pose_bone.matrix_basis = delta @ base
-            self.work_armature.update_tag(refresh={"OBJECT"})
-            self.context.view_layer.update()
-            for bone_name in anchored_bones:
-                index = self.session.bone_drivers.get(bone_name)
-                pose_bone = self.work_armature.pose.bones.get(bone_name)
-                if index is None or pose_bone is None:
-                    continue
-                _delta, strength = _repair_delta(
-                    self.repair_layer,
-                    bone_name,
-                    frame,
-                )
-                if strength <= 0.0:
-                    continue
-                rigid_world = (
-                    self.work_armature.matrix_world
-                    @ pose_bone.matrix
-                    @ self.session.bone_offsets[index]
-                )
-                target = runtime._pmx_native_matrix_transform(
-                    rigid_world,
-                    self.session.import_scale,
-                    library=self.session.library,
-                )
-                self.world.solver.guide_body(
-                    self.session.body_offset + index,
-                    target,
-                    strength,
-                )
-        finally:
-            for bone_name, matrix_basis in source_basis.items():
-                pose_bone = self.work_armature.pose.bones.get(bone_name)
-                if pose_bone is not None:
-                    pose_bone.matrix_basis = matrix_basis
+    def _apply_repair_pose_deltas(self, pose, frame):
+        corrected = dict(pose)
+        for bone_name, sample in pose.items():
+            delta, strength = _repair_delta(self.repair_layer, bone_name, frame)
+            if strength <= 0.0:
+                continue
+            pose_bone = self.work_armature.pose.bones.get(bone_name)
+            if pose_bone is None:
+                continue
+            matrix = delta @ _sample_matrix(sample, pose_bone.rotation_mode)
+            corrected[bone_name] = _matrix_sample(
+                matrix,
+                sample[1],
+                pose_bone.rotation_mode,
+                sample[2],
+            )
+        return corrected
 
     def finish(self):
         self.phase = "写入 Action"
@@ -1323,6 +1304,49 @@ class SPX_OT_DeleteMMDPhysicsBakeSegment(Operator):
         return {"FINISHED"}
 
 
+class SPX_OT_PrepareMMDPhysicsRepairPose(Operator):
+    bl_idname = "surface_proxy.prepare_mmd_physics_repair_pose"
+    bl_label = "恢复所选到安全姿态"
+    bl_description = "用修复起点的最后干净姿态恢复所选骨骼，避免直接编辑已经乱飞的物理骨骼"
+    bl_options = {"REGISTER", "UNDO"}
+
+    def execute(self, context):
+        settings = context.scene.surface_proxy_creator
+        _source, output, segments = current_bake_set(settings)
+        if output is None or not segments:
+            report(self, {"ERROR"}, "当前动作还没有物理烘焙结果")
+            return {"CANCELLED"}
+        armature = runtime._model_armature(settings.mmd_root)
+        if armature is None or armature.animation_data is None:
+            report(self, {"ERROR"}, "所选 MMD 模型没有可编辑 Armature")
+            return {"CANCELLED"}
+        if armature.animation_data.action is not output:
+            report(self, {"ERROR"}, "请先切换到输出动作，再准备物理修复姿态")
+            return {"CANCELLED"}
+        frame = int(context.scene.frame_current)
+        start = int(settings.physics_repair_start)
+        end = int(settings.physics_repair_end)
+        if not start < frame < end:
+            report(self, {"ERROR"}, "当前帧必须位于修复起始帧与结束帧之间")
+            return {"CANCELLED"}
+        selected = tuple(context.selected_pose_bones or ())
+        dynamic_bones = {
+            rigid.mmd_rigid.bone
+            for rigid in runtime._rigid_objects(settings.mmd_root)
+            if int(rigid.mmd_rigid.type) != 0 and rigid.mmd_rigid.bone
+        }
+        selected = tuple(bone for bone in selected if bone.name in dynamic_bones)
+        if not selected:
+            report(self, {"ERROR"}, "请在 Pose Mode 选择至少一根动态物理骨骼")
+            return {"CANCELLED"}
+        for pose_bone in selected:
+            pose_bone.matrix_basis = _action_basis(output, pose_bone, start)
+        armature.update_tag(refresh={"OBJECT"})
+        context.view_layer.update()
+        report(self, {"INFO"}, f"已恢复 {len(selected)} 根物理骨骼到安全参考姿态")
+        return {"FINISHED"}
+
+
 class SPX_OT_RecordMMDPhysicsRepairPose(Operator):
     bl_idname = "surface_proxy.record_mmd_physics_repair_pose"
     bl_label = "记录当前帧修正"
@@ -1554,13 +1578,18 @@ def draw_bake(layout, settings):
         controls = repair.row(align=True)
         controls.enabled = _ACTIVE_JOB is None
         controls.operator(
+            SPX_OT_PrepareMMDPhysicsRepairPose.bl_idname,
+            text="恢复所选到安全姿态",
+            icon="RECOVER_LAST",
+        )
+        controls.operator(
             SPX_OT_RecordMMDPhysicsRepairPose.bl_idname,
             text="记录当前帧修正",
             icon="KEY_HLT",
         )
         solve = controls.operator(
             SPX_OT_BakeMMDPhysics.bl_idname,
-            text="重新解算并衔接",
+            text="应用修复并衔接",
             icon="PLAY",
         )
         solve.mode = "REPAIR"
@@ -1583,6 +1612,7 @@ CLASSES = (
     SPX_OT_BakeMMDPhysics,
     SPX_OT_ClearMMDPhysicsBake,
     SPX_OT_DeleteMMDPhysicsBakeSegment,
+    SPX_OT_PrepareMMDPhysicsRepairPose,
     SPX_OT_RecordMMDPhysicsRepairPose,
     SPX_OT_ClearMMDPhysicsRepairLayer,
 )

@@ -210,6 +210,10 @@ oracle.close()
 repair_output = armature.animation_data.action
 settings.physics_repair_start = 2
 settings.physics_repair_end = 5
+original_anchor_x = repair_output.fcurves.find(
+    f"{bone_prefix}.location",
+    index=0,
+).evaluate(3)
 bpy.context.scene.frame_set(3)
 bpy.ops.object.mode_set(mode="OBJECT")
 bpy.ops.object.select_all(action="DESELECT")
@@ -219,6 +223,18 @@ bpy.ops.object.mode_set(mode="POSE")
 for pose_bone in armature.pose.bones:
     pose_bone.bone.select = False
 armature.pose.bones[physics_bone.name].bone.select = True
+expected_safe = _action_basis(
+    repair_output,
+    armature.pose.bones[physics_bone.name],
+    2,
+)
+armature.pose.bones[physics_bone.name].location.x += 100.0
+assert bpy.ops.surface_proxy.prepare_mmd_physics_repair_pose() == {"FINISHED"}
+assert max(
+    abs(armature.pose.bones[physics_bone.name].matrix_basis[row][column] - expected_safe[row][column])
+    for row in range(4)
+    for column in range(4)
+) < 1.0e-6
 armature.pose.bones[physics_bone.name].location.x += 0.05
 assert bpy.ops.surface_proxy.record_mmd_physics_repair_pose() == {"FINISHED"}
 bpy.ops.object.mode_set(mode="OBJECT")
@@ -229,21 +245,28 @@ original_end = [
     for index in range(3)
 ]
 repair_job = BakeJob(bpy.context, "REPAIR", repair_layer=repair_layer)
-assert repair_job.restored_checkpoint == 1
-assert repair_job.steps == [(2, True), (3, True), (4, True), (5, True)]
-checkpoint_bone = repair_job.work_armature.pose.bones[physics_bone.name]
-checkpoint_basis = _action_basis(repair_output, checkpoint_bone, 1)
-assert max(
-    abs(checkpoint_bone.matrix_basis[row][column] - checkpoint_basis[row][column])
-    for row in range(4)
-    for column in range(4)
-) < 1.0e-6
+assert repair_job.restored_checkpoint is None
+assert repair_job.steps == [
+    (1, False),
+    (1, False),
+    (1, False),
+    (2, True),
+    (3, True),
+    (4, True),
+    (5, True),
+]
 while repair_job.step():
     pass
 repair_segment = repair_job.finish()
 assert repair_segment["repair_id"] == repair_layer["id"]
 assert _repair_layers(armature.animation_data.action)[0]["status"] == "COMPLETED"
 assert [(item["start"], item["end"]) for item in _segments(armature.animation_data.action)] == [(1, 3), (4, 5)]
+repaired_anchor_x = armature.animation_data.action.fcurves.find(
+    f"{bone_prefix}.location",
+    index=0,
+).evaluate(3)
+assert abs(repaired_anchor_x - original_anchor_x) > 1.0e-4
+assert abs(repaired_anchor_x) < 10.0
 repaired_end = [
     armature.animation_data.action.fcurves.find(
         f"{bone_prefix}.location",

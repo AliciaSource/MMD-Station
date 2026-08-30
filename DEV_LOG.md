@@ -6,6 +6,13 @@
 - 新增 `tools/security_scan.py`、仓库自带 pre-push hook 与 `tools/install_git_hooks.ps1`。每次 push 会扫描全部可达 Git blob；`pack.ps1` 会在打包前扫描 Git ref 或工作树，并在打包后再次扫描 ZIP。命中凭据或真实 AI 翻译端点时硬阻断且不保留被拒 ZIP。
 - `AGENTS.md` / `CLAUDE.md` 同步加入长期规则；`.gitignore` 增加本地 secret 文件边界。行为边界仅涉及安全审计、发布/推送门禁和 AI URL 空默认值，不改变 Morph AI 请求协议、Morph 编辑、物理、IK、MMD I/O 或更新器行为。
 
+## 2026-08-30 - V1.0.1-dev 物理修复爆炸与乱飞骨骼安全姿态修复
+
+- 修复从物理快照直接开始修复烘焙仍会整条刚体链爆炸的问题。真实 `36.blend + TOMBOY.vmd` 证明 `.mspc` 虽保存刚体变换、速度与激活状态，但不包含 Bullet contact manifold、constraint warm-start impulse 等内部求解缓存；复杂衣物链无法仅靠该快照确定性热恢复。修复烘焙现在从所属独立段的原始 `simulation_start + simulation_preroll` 完整静默重放，且禁止一个修复范围跨越两个独立烘焙状态。
+- 取消把单根修正骨骼直接回灌 Bullet 刚体的高风险路径。真实模型上仅 `0.02 m` 的单骨修正就可把相邻袖摆骨放大到约 `11.4 m` 偏差；无论硬改 Transform 还是速度牵引都不足以保证高密度 Joint 链稳定。修复层现作为平滑 Action-space 姿态增量应用到确定性重放结果，首尾保持零修正，并将按钮改名为“应用修复并衔接”，不再暗示手工修正已经参与碰撞反馈。
+- 物理修复层新增“恢复所选到安全姿态”：在修复范围内选择乱飞的动态物理骨骼后，插件直接取修复起点的最后干净已烘焙姿态作为安全参考；即使后续整段都已卡住或乱飞，也不会把坏掉的结束姿态再次插值回来。用户只需在附近微调再记录，无需从远处手工拖回。该操作只改当前 Pose，不覆盖原 Action，也不改刚体/Joint 对象。
+- 验证：`python -m pytest -q tests/test_i18n_catalog.py` 为 `5 passed`；Blender 4.4.3 合成回归输出 `MMD_PHYSICS_BAKE_REGRESSION_OK`，覆盖安全姿态恢复、完整重放、修正记录和首尾衔接；真实 `36.blend + TOMBOY.vmd` 不保存回归中，`1–300` 烘焙后修复 `180–220`、第 `200` 帧添加 `0.02 m` 修正，全部物理骨最大位置差由爆炸时约 `11.4 m` 降到 `0.01999998 m`。开发期 Junction 直接生效；未制作 ZIP、未 tag、未 push，真实工程未保存。
+
 ## 2026-08-30 - V1.0.1-dev 正式版后自动开启开发模式与 Junction 桥接
 
 - 建立并写入 `AGENTS.md` / `CLAUDE.md` 同步规则：每次稳定版发布后的首次本地修改，必须自动将版本切到下一 patch 的 `-dev`，重置英文 `RELEASE_NOTES_NEXT.md`，并执行 `tools/dev_link.ps1` 开启真实 Blender 4.4 开发桥接；不得等待用户再次提醒。

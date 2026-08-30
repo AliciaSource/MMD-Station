@@ -1,6 +1,13 @@
 """Generated English catalog for the existing Chinese MMD Station msgids."""
 
 ENGLISH = {
+    '恢复所选到安全姿态': 'Restore Selected to Safe Pose',
+    '应用修复并衔接': 'Apply Repair and Blend',
+    '物理修复范围不能跨越两个独立烘焙状态': 'A physics repair range cannot cross two independent bake states',
+    '用修复起点的最后干净姿态恢复所选骨骼，避免直接编辑已经乱飞的物理骨骼': 'Restore selected bones from the last clean pose at the start of the repair range instead of editing scattered physics bones directly',
+    '请先切换到输出动作，再准备物理修复姿态': 'Switch to the output Action before preparing a physics repair pose',
+    '已恢复 ': 'Restored ',
+    ' 根物理骨骼到安全参考姿态': ' physics bones to a safe reference pose',
     '  ·  已过期': '  · Expired',
     '  导入 ': '  import ',
     ' / 交互编号 #': ' / Interaction number #',
