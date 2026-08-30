@@ -1,5 +1,11 @@
 # Development Log
 
+## 2026-08-30 - V0.1.8 材质 Morph 的本体 Alpha 同步约束描边透明度
+
+- 修复自动补入 `Morph Output` 的 `mmd_edge.*` 描边材质不响应常见隐藏 Morph 的问题。旧实现把 `diffuse_color[3]` 与 `edge_color[3]` 当成完全独立的可见度通道，因此仅写 `diffuse Alpha = -1`、保持 `edge Alpha = 0` 的 Material Morph 会隐藏本体却留下描边；现在描边仍先按自己的 Edge Alpha 计算，但最终透明度不会高于同一基础材质的当前本体透明度。
+- 同一约束同时覆盖直接拖动、Group Morph、关键帧逐帧求值和 Morph 归零后的基础 Alpha 恢复；Edge Alpha 仍可让描边比本体更透明，不会反向提高描边可见度或改写 PMX Morph 数据。
+- `tests/mmd_morph_editor_regression.py` 新增并调整晚创建描边材质、`diffuse Alpha = -1`、Group Morph 与关键帧路径断言。Blender 4.4.3 focused regression 输出 `MMD_MORPH_EDITOR_REGRESSION_OK`，`py_compile` 通过。版本保持 V0.1.8，真实 Blender 4.4 源码 Junction 直接生效，不打包 ZIP、不 push；未进行人工 GUI 点击验收。
+
 ## 2026-08-30 - V0.1.8 重复姿态对齐的物理烘焙回灌与刚体世界覆盖修复
 
 - 修复“第 1 帧更新刚体 / Joint 正常，切到其它帧再次更新后位置爆炸”。问题不是第二次矩阵在第一次结果上累乘，而是当前活动 Action 已经是 `· Physics Bake` 时，旧实现又把烘焙得到的动态骨骼姿态当成物理输入：一份骨骼 Action 并不保存每个刚体的完整求解状态，尤其是多个刚体、交叉 Joint 与同骨骼绑定关系无法从烘焙骨骼反推出唯一且满足全部约束的刚体图；直接逐骨骼回灌会形成二次物理变换和互相冲突的 Joint 框架。切回源 Action 时，Blender 还会保留源 Action 未写曲线的动态骨骼通道，导致烘焙姿态残留；同时场景已有的 Blender `RigidBodyWorld` 会在 depsgraph 更新后重新覆盖刚写入的对象矩阵。

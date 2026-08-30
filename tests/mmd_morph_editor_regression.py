@@ -1170,16 +1170,17 @@ states["FadeMultiply"].value = 0.0
 edge_material = make_material("mmd_edge." + material.name, "ShaderNodeEmission")
 assert bridge_nodes(edge_material) == []
 states["Hide"].value = 0.5
-assert bridge_nodes(edge_material) == []
-
-# Body and outline alpha follow their independent PMX Material Morph channels.
-states["Hide"].value = 1.0
-assert abs(body_bridges[0].inputs["Opacity"].default_value - 0.0) < 1.0e-6
-assert bridge_nodes(edge_material) == []
-states["Hide"].value = 0.0
-states["FadeMultiply"].value = 0.5
 edge_bridges = bridge_nodes(edge_material)
 assert len(edge_bridges) == 1
+assert abs(edge_bridges[0].inputs["Opacity"].default_value - 0.5) < 1.0e-6
+
+# Diffuse alpha gates the outline while its own alpha channel can reduce it further.
+states["Hide"].value = 1.0
+assert abs(body_bridges[0].inputs["Opacity"].default_value - 0.0) < 1.0e-6
+assert abs(edge_bridges[0].inputs["Opacity"].default_value - 0.0) < 1.0e-6
+states["Hide"].value = 0.0
+states["FadeMultiply"].value = 0.5
+assert bridge_nodes(edge_material) == edge_bridges
 assert abs(body_bridges[0].inputs["Opacity"].default_value - 0.75) < 1.0e-6
 assert abs(edge_bridges[0].inputs["Opacity"].default_value - 0.75) < 1.0e-6
 
@@ -1200,6 +1201,7 @@ bpy.context.scene.frame_set(1)
 assert abs(body_bridges[0].inputs["Opacity"].default_value - 1.0) < 1.0e-6
 bpy.context.scene.frame_set(2)
 assert abs(body_bridges[0].inputs["Opacity"].default_value - 0.0) < 1.0e-6
+assert abs(edge_bridges[0].inputs["Opacity"].default_value - 0.0) < 1.0e-6
 root.animation_data_clear()
 states["Hide"].value = 0.0
 
@@ -1307,7 +1309,7 @@ states["GroupHide"].value = 1.0
 assert "spx_morph_runtime_error" not in root, root.get("spx_morph_runtime_error")
 assert bool(root.get("spx_morph_lightweight_bound", False))
 assert abs(body_bridges[0].inputs["Opacity"].default_value - 0.5) < 1.0e-6
-assert abs(edge_bridges[0].inputs["Opacity"].default_value - 1.0) < 1.0e-6
+assert abs(edge_bridges[0].inputs["Opacity"].default_value - 0.5) < 1.0e-6
 group_slider = model.morph_slider.get("GroupHide")
 assert group_slider is None or abs(group_slider.value) < 1.0e-6
 assert abs(model.morph_slider.get("Smile").value) < 1.0e-6
