@@ -6,6 +6,14 @@
 - 新增 `tools/security_scan.py`、仓库自带 pre-push hook 与 `tools/install_git_hooks.ps1`。每次 push 会扫描全部可达 Git blob；`pack.ps1` 会在打包前扫描 Git ref 或工作树，并在打包后再次扫描 ZIP。命中凭据或真实 AI 翻译端点时硬阻断且不保留被拒 ZIP。
 - `AGENTS.md` / `CLAUDE.md` 同步加入长期规则；`.gitignore` 增加本地 secret 文件边界。行为边界仅涉及安全审计、发布/推送门禁和 AI URL 空默认值，不改变 Morph AI 请求协议、Morph 编辑、物理、IK、MMD I/O 或更新器行为。
 
+## 2026-08-30 - V1.0.1-dev 正式版后自动开启开发模式与 Junction 桥接
+
+- 建立并写入 `AGENTS.md` / `CLAUDE.md` 同步规则：每次稳定版发布后的首次本地修改，必须自动将版本切到下一 patch 的 `-dev`，重置英文 `RELEASE_NOTES_NEXT.md`，并执行 `tools/dev_link.ps1` 开启真实 Blender 4.4 开发桥接；不得等待用户再次提醒。
+- 本轮以 `v1.0.0` 为稳定基线，将 `bl_info["version"]` 改为 `(1, 0, 1)`、`PRERELEASE = "dev"`，面板显示统一为 `v1.0.1-dev`。新增安全的 Junction 管理脚本：创建时保留既有真实安装为时间戳备份，移除时拒绝删除非 Junction 目录。
+- `RELEASE_NOTES_NEXT.md` 已恢复为英文 `## Unreleased`，并记录本轮既有 physics-bake 初始化状态修复；开发期不产出 ZIP，不创建 tag，不进行 GitHub Release。
+- 行为边界：仅改变开发版本状态、开发安装方式和维护规则；除上一笔独立提交中的 physics-bake 修复外，不改变 MMD I/O、代理、Morph、物理、IK 或更新器功能语义。
+- 验证：真实 Blender 4.4 插件路径已确认为指向仓库源码的 Junction，源路径与安装路径 `_version.py` SHA-256 一致；`compileall`、`git diff --check` 通过，本地化/更新器测试为 `11 passed`，Blender 4.4.3 输出 `MMD_STATION_UPDATER_SMOKE_OK` 与 `MMD_PHYSICS_BAKE_REGRESSION_OK`，`AGENTS.md` / `CLAUDE.md` 哈希一致。
+
 ## 2026-08-30 - V1.0.0 ??????????????????
 
 - ?????????????????????????????????????????????????????? solver ???? Scene ??????????? `simulation_start`????????????????????????????????????????????? solver?

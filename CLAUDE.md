@@ -43,3 +43,25 @@
   fixtures. If a real credential is ever detected in a cloud-accessible
   object, remove the object/history and revoke or rotate the credential before
   continuing release work.
+
+## Post-release development workflow
+
+- The first local modification after every stable release must automatically
+  reopen development mode before feature or bug-fix work continues. Do not wait
+  for the user to ask for a dev build separately.
+- Run `tools/dev_link.ps1` so the real Blender 4.4 add-on path
+  `%APPDATA%\Blender Foundation\Blender\4.4\scripts\addons\mmd_station` is a
+  directory Junction to this repository's `mmd_station/` directory. Source
+  edits then take effect after Reload Scripts or a Blender restart.
+- Change `bl_info["version"]` from the last stable `X.Y.Z` to the next patch
+  `X.Y.(Z+1)` and set `_version.py` to `PRERELEASE = "dev"`. The panel and the
+  newest `DEV_LOG.md` heading must use the same `vX.Y.(Z+1)-dev` version. Do not
+  choose a minor or major increase unless the user explicitly requests it.
+- Reset `RELEASE_NOTES_NEXT.md` to an English `## Unreleased` section at the
+  start of the new development cycle. Merge later work on the same feature or
+  bug into one concise user-facing entry instead of appending duplicates.
+- Development uses the Junction and does not produce iterative ZIP packages.
+  Only a stable release sets `PRERELEASE = None`, packages from its exact tag,
+  and attaches that ZIP to the matching GitHub Release.
+- Local commits remain automatic after risk-appropriate validation. Push, tag,
+  and GitHub Release still require explicit user approval.
