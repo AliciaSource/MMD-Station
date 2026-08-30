@@ -878,6 +878,7 @@ def _apply_material_values(root, weights, morph_lookup):
                 + values["edge_opacity_add"],
             ),
         )
+        edge_opacity = min(body_opacity, edge_opacity)
         edge_effect = tuple(
             values["edge_effect_mult"][index]
             + values["edge_effect_add"][index]
@@ -917,7 +918,7 @@ def _apply_material_values(root, weights, morph_lookup):
             if edge_bridges:
                 _update_material_bridge(
                     edge_material,
-                    base_edge_opacity,
+                    min(base_opacity, base_edge_opacity),
                     (1.0, 1.0, 1.0),
                 )
 
