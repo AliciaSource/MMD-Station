@@ -1,5 +1,12 @@
 # Development Log
 
+## 2026-08-30 - V0.1.8 重复姿态对齐的物理烘焙回灌与刚体世界覆盖修复
+
+- 修复“第 1 帧更新刚体 / Joint 正常，切到其它帧再次更新后位置爆炸”。问题不是第二次矩阵在第一次结果上累乘，而是当前活动 Action 已经是 `· Physics Bake` 时，旧实现又把烘焙得到的动态骨骼姿态当成物理输入：一份骨骼 Action 并不保存每个刚体的完整求解状态，尤其是多个刚体、交叉 Joint 与同骨骼绑定关系无法从烘焙骨骼反推出唯一且满足全部约束的刚体图；直接逐骨骼回灌会形成二次物理变换和互相冲突的 Joint 框架。切回源 Action 时，Blender 还会保留源 Action 未写曲线的动态骨骼通道，导致烘焙姿态残留；同时场景已有的 Blender `RigidBodyWorld` 会在 depsgraph 更新后重新覆盖刚写入的对象矩阵。
+- `align_model_physics_to_pose()` 现在检测 MMD Station 生成的物理烘焙 Action，并通过 `mmd_station_physics_source_uid` 自动切回对应源 Action；切换前清空动态刚体绑定骨骼的 `matrix_basis`，随后在同一帧重新求值源 Action，因此源 Action 中确实存在的手工关键帧会重新应用，而烘焙 Action 独有的物理通道不会残留。若源 Action 已被删除则直接终止，不再拿不完整的烘焙结果冒险重建物理图。
+- Rest 参考矩阵不再读取可能已被 Bullet/约束求值污染的 `Object.matrix_world`，而是沿对象父级用 `matrix_basis + matrix_parent_inverse` 重建作者态世界矩阵；这保留模型原始刚体与 Joint 的偏心、偏转和尺寸关系，也不会把当前帧 Blender 刚体缓存误存成新的 Rest。若场景已有启用的 Blender `RigidBodyWorld`，操作会将其停用并保持停用，避免下一次刷新再次抢回刚体控制权；MMD Station 的 Rust 预览/烘焙不依赖该 world。Operator 完成提示会明确说明“已切回源 Action”和“已停用 Blender Rigid Body World”。
+- `tests/physics_pose_alignment_regression.py` 新增生成物理烘焙 Action、故意污染动态骨骼曲线、在两个帧重复点击、自动回源、源关键帧重新求值及 Blender world 停用回归。Blender 4.4.3 输出 `MMD_PHYSICS_POSE_ALIGNMENT_OK`。真实 `36.blend + TOMBOY.vmd` 另做不保存验证：快速烘焙 `1–250` 后分别在帧 `1` 与 `250` 从烘焙 Action 重复执行更新，均自动回到 `TOMBOY_bone`；修复前帧 `250` 两端推算的 Joint 框架最大位置/旋转冲突达到 `6.4655 m / 5.6894 rad`，修复后帧 `1` 为 `1.1203e-6 m / 0 rad`、帧 `250` 为 `6.7501e-7 m / 0 rad`，场景 Blender world 保持停用。版本保持 V0.1.8，真实工程未保存，不打包 ZIP、不 push。
+
 ## 2026-08-30 - V0.1.8 Rest Pose 到当前 Pose 的刚体与 Joint 对齐
 
 - 物理预览面板新增“更新刚体 / Joint 到当前姿态”按钮。整个模型模式按现有勾选模型批量执行，当前代理模式作用于其 MMD Root；物理预览或物理烘焙运行时禁用，避免在 solver 使用对象矩阵期间改写输入。

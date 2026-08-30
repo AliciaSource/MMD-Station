@@ -168,6 +168,43 @@ def _rest_matrix(obj, captured_matrix, refresh):
     return matrix
 
 
+def _authored_object_world_matrix(obj, cache=None):
+    cache = {} if cache is None else cache
+    stored = cache.get(obj)
+    if stored is not None:
+        return stored.copy()
+    if obj.parent is None:
+        matrix = obj.matrix_basis.copy()
+    else:
+        matrix = (
+            _authored_object_world_matrix(obj.parent, cache)
+            @ obj.matrix_parent_inverse
+            @ obj.matrix_basis
+        )
+    cache[obj] = matrix.copy()
+    return matrix
+
+
+def _physics_alignment_source_action(armature):
+    animation_data = armature.animation_data
+    action = animation_data.action if animation_data is not None else None
+    if action is None or not action.get("mmd_station_physics_generated", False):
+        return action
+    source_uid = str(action.get("mmd_station_physics_source_uid", ""))
+    source = next(
+        (
+            candidate
+            for candidate in bpy.data.actions
+            if not candidate.get("mmd_station_physics_generated", False)
+            and str(candidate.get("mmd_station_action_uid", "")) == source_uid
+        ),
+        None,
+    )
+    if source is None:
+        raise RuntimeError("当前物理烘焙结果对应的源 Action 已不存在，无法安全更新刚体")
+    return source
+
+
 def align_model_physics_to_pose(root):
     if root is None:
         raise RuntimeError("请先选择 MMD 模型")
@@ -182,14 +219,21 @@ def align_model_physics_to_pose(root):
         raise RuntimeError("所选 MMD 模型没有刚体")
 
     original_pose_position = armature.data.pose_position
-    try:
-        armature.data.pose_position = "REST"
-        _update_view_layer()
-        captured_rigids = {obj: obj.matrix_world.copy() for obj in rigids}
-        captured_joints = {obj: obj.matrix_world.copy() for obj in joints}
-    finally:
-        armature.data.pose_position = original_pose_position
-        _update_view_layer()
+    original_action = (
+        armature.animation_data.action
+        if armature.animation_data is not None
+        else None
+    )
+    alignment_action = _physics_alignment_source_action(armature)
+    authored_matrix_cache = {}
+    captured_rigids = {
+        obj: _authored_object_world_matrix(obj, authored_matrix_cache)
+        for obj in rigids
+    }
+    captured_joints = {
+        obj: _authored_object_world_matrix(obj, authored_matrix_cache)
+        for obj in joints
+    }
 
     refresh_references = original_pose_position == "REST"
     rigid_rest_matrices = {
@@ -210,7 +254,24 @@ def align_model_physics_to_pose(root):
     if rigid_body_world_enabled:
         rigid_body_world.enabled = False
         _update_view_layer()
+    alignment_completed = False
     try:
+        if alignment_action is not original_action:
+            armature.animation_data.action = alignment_action
+            dynamic_bones = {
+                rigid.mmd_rigid.bone
+                for rigid in rigids
+                if int(rigid.mmd_rigid.type) != 0 and rigid.mmd_rigid.bone
+            }
+            for bone_name in dynamic_bones:
+                pose_bone = armature.pose.bones.get(bone_name)
+                if pose_bone is not None:
+                    pose_bone.matrix_basis.identity()
+            armature.update_tag(refresh={"OBJECT"})
+            current_frame = bpy.context.scene.frame_current
+            current_subframe = bpy.context.scene.frame_subframe
+            bpy.context.scene.frame_set(current_frame, subframe=current_subframe)
+            _update_view_layer()
         for rigid in rigids:
             bone_name = rigid.mmd_rigid.bone
             pose_bone = armature.pose.bones.get(bone_name) if bone_name else None
@@ -235,8 +296,19 @@ def align_model_physics_to_pose(root):
             joint.matrix_world = delta @ joint_rest_matrices[joint]
             aligned_joints += 1
         _update_view_layer()
+        alignment_completed = True
+    except Exception:
+        if alignment_action is not original_action:
+            armature.animation_data.action = original_action
+            armature.update_tag(refresh={"OBJECT"})
+            bpy.context.scene.frame_set(
+                bpy.context.scene.frame_current,
+                subframe=bpy.context.scene.frame_subframe,
+            )
+            _update_view_layer()
+        raise
     finally:
-        if rigid_body_world_enabled:
+        if rigid_body_world_enabled and not alignment_completed:
             rigid_body_world.enabled = True
             _update_view_layer()
     _tag_view3d_redraw()
