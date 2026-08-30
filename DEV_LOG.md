@@ -1,4 +1,10 @@
-﻿# Development Log
+# Development Log
+
+## 2026-08-30 - V0.1.8 Blender 文件启动阶段 N 面板注册恢复
+
+- 修复启用 MMD Station 后 N 面板整体消失的问题。新增的物理缓存服务在 Blender 从用户偏好自动注册插件、但当前 `.blend` 尚未完成载入时立即遍历 `bpy.data.actions`；此时 `bpy.data` 是受限的 `_RestrictData`，异常会中断 `mmd_station.register()`，导致包括 Morph 编辑器在内的全部面板与属性均未注册。
+- `physics_preview/cache.py` 现在仍将 sidecar 扫描挂到 `load_post`，同时把“已打开工程中启用插件”的首次扫描改为可重试 Timer；遇到 `_RestrictData` 时延后 `0.1 s`，其它 `AttributeError` 仍正常抛出。卸载插件时同步注销未执行的 Timer，避免残留回调。
+- `py_compile` 通过；以正常用户启动路径无保存加载 `D:\MMD\模型\Alicia\鳴潮-達妮婭\Show\00.blend`，输出 `MMD_STATION_PANEL_REGISTERED=True`，且不再出现 MMD Station 注册异常。源码 Junction 直接生效，不打包 ZIP、不 push。
 
 ## 2026-08-30 - V0.1.8 ???????????????
 
