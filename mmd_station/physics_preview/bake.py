@@ -316,7 +316,26 @@ def _continuation_origin(segments, start):
         raise RuntimeError("续接烘焙要求已有区间恰好结束于起始帧的前一帧")
     if previous.get("status") == "STALE":
         raise RuntimeError("上一烘焙区间已过期，请先重新烘焙该区间")
-    return int(previous.get("simulation_start", previous["start"]))
+    simulation_start = int(previous.get("simulation_start", previous["start"]))
+    origin_segment = next(
+        (
+            item
+            for item in segments
+            if int(item.get("start", 0)) == simulation_start
+            and int(item.get("simulation_start", item["start"])) == simulation_start
+        ),
+        previous,
+    )
+    simulation_preroll = int(
+        previous.get(
+            "simulation_preroll",
+            origin_segment.get(
+                "simulation_preroll",
+                origin_segment.get("preroll", 0),
+            ),
+        )
+    )
+    return simulation_start, max(simulation_preroll, 0)
 
 
 class BakeJob:
@@ -344,16 +363,20 @@ class BakeJob:
         self.continuation = self.settings.physics_bake_continuity
         self.preroll = int(self.settings.physics_bake_preroll)
         if self.continuation == "CONTINUE":
-            self.simulation_start = _continuation_origin(
+            self.simulation_start, self.simulation_preroll = _continuation_origin(
                 self.existing_segments,
                 self.start,
             )
             self.steps = [
-                (frame, frame >= self.start)
-                for frame in range(self.simulation_start, self.end + 1)
+                *((self.simulation_start, False) for _index in range(self.simulation_preroll)),
+                *(
+                    (frame, frame >= self.start)
+                    for frame in range(self.simulation_start, self.end + 1)
+                ),
             ]
         else:
             self.simulation_start = self.start
+            self.simulation_preroll = self.preroll
             self.steps = [
                 *((self.start, False) for _index in range(self.preroll)),
                 *((frame, True) for frame in range(self.start, self.end + 1)),
@@ -419,6 +442,7 @@ class BakeJob:
         self.work_armature.animation_data_create()
         self.work_armature.animation_data.action = self.source_action
         if self.mode == "FAST":
+            self._reset_working_physics_pose()
             self._evaluate_source_action(self.simulation_start)
         else:
             self.scene.frame_set(self.simulation_start)
@@ -439,7 +463,7 @@ class BakeJob:
         )
         self.world.add(self.session)
         self.world.reset(prepared_session=self.session)
-        self.phase = "预热" if self.preroll and self.continuation == "INDEPENDENT" else "烘焙"
+        self.phase = "预热" if self.simulation_preroll else "烘焙"
 
     def _create_working_copy(self):
         collection = bpy.data.collections.new(
@@ -460,7 +484,6 @@ class BakeJob:
         for source, duplicate in copies.items():
             duplicate.parent = copies.get(source.parent)
             duplicate.matrix_parent_inverse = source.matrix_parent_inverse.copy()
-            duplicate.matrix_world = source.matrix_world.copy()
             self._remap_constraint_targets(duplicate.constraints, copies)
             if duplicate.rigid_body_constraint is not None:
                 source_constraint = source.rigid_body_constraint
@@ -479,6 +502,19 @@ class BakeJob:
             duplicate.hide_render = True
         self.work_root = copies[self.root]
         self.work_armature = copies[self.armature]
+
+    def _reset_working_physics_pose(self):
+        pose_bones = self.work_armature.pose.bones
+        dynamic_bones = {
+            rigid.mmd_rigid.bone
+            for rigid in runtime._rigid_objects(self.work_root)
+            if int(rigid.mmd_rigid.type) != 0 and rigid.mmd_rigid.bone
+        }
+        for bone_name in dynamic_bones:
+            pose_bone = pose_bones.get(bone_name)
+            if pose_bone is not None:
+                pose_bone.matrix_basis.identity()
+        self.work_armature.update_tag(refresh={"OBJECT"})
 
     @staticmethod
     def _remap_constraint_targets(constraints, copies):
@@ -631,6 +667,7 @@ class BakeJob:
             "continuity": self.continuation,
             "mode": self.mode,
             "preroll": self.preroll if self.continuation == "INDEPENDENT" else 0,
+            "simulation_preroll": self.simulation_preroll,
             "seconds": round(elapsed, 6),
             "frames_per_second": round(self.output_frame_count / max(elapsed, 1.0e-6), 3),
             "bones": sorted(self.samples_by_bone),
