@@ -10,6 +10,7 @@ from bpy.types import Operator
 
 from .ffi import library_path
 from .runtime import (
+    _model_armature,
     active_session_info,
     align_model_physics_to_pose,
     is_running,
@@ -168,7 +169,7 @@ class SPX_OT_ResetAllMMDPhysicsPreviews(Operator):
 class SPX_OT_AlignMMDPhysicsToPose(Operator):
     bl_idname = "surface_proxy.align_mmd_physics_to_pose"
     bl_label = "更新刚体与 Joint 到当前姿态"
-    bl_description = "根据 Rest Pose 到当前 Pose 的骨骼变换更新刚体和 Joint，并保留它们原有的位置与旋转偏移"
+    bl_description = "根据 Rest Pose 到当前 Pose 的骨骼变换更新刚体和 Joint；物理烘焙结果会切回源 Action，并停用会覆盖矩阵的 Blender Rigid Body World"
     bl_options = {"REGISTER", "UNDO"}
 
     def execute(self, context):
@@ -187,6 +188,23 @@ class SPX_OT_AlignMMDPhysicsToPose(Operator):
         if any(is_running(root) for root in roots):
             self.report({"WARNING"}, "请先停止所选模型的物理预览")
             return {"CANCELLED"}
+        generated_action_count = 0
+        for root in roots:
+            armature = _model_armature(root)
+            action = (
+                armature.animation_data.action
+                if armature is not None and armature.animation_data is not None
+                else None
+            )
+            if action is not None and action.get(
+                "mmd_station_physics_generated",
+                False,
+            ):
+                generated_action_count += 1
+        rigid_body_world_was_enabled = bool(
+            context.scene.rigidbody_world is not None
+            and context.scene.rigidbody_world.enabled
+        )
         try:
             counts = [align_model_physics_to_pose(root) for root in roots]
         except (RuntimeError, ValueError) as error:
@@ -194,9 +212,19 @@ class SPX_OT_AlignMMDPhysicsToPose(Operator):
             return {"CANCELLED"}
         rigid_count = sum(item[0] for item in counts)
         joint_count = sum(item[1] for item in counts)
+        source_note = (
+            "，并已切回对应源 Action"
+            if generated_action_count
+            else ""
+        )
+        world_note = (
+            "；已停用 Blender Rigid Body World，避免其覆盖更新结果"
+            if rigid_body_world_was_enabled
+            else ""
+        )
         self.report(
             {"INFO"},
-            f"已按当前姿态更新 {rigid_count} 个刚体和 {joint_count} 个 Joint",
+            f"已按当前姿态更新 {rigid_count} 个刚体和 {joint_count} 个 Joint{source_note}{world_note}",
         )
         return {"FINISHED"}
 

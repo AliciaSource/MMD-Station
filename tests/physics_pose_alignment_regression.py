@@ -105,6 +105,8 @@ assert matrix_delta(bound.matrix_world, pose_delta @ rest_rigid_world) < 1.0e-6
 assert matrix_delta(joint.matrix_world, pose_delta @ rest_joint_world) < 1.0e-6
 assert matrix_delta(unbound.matrix_world, rest_unbound_world) < 1.0e-6
 assert matrix_delta(bound.matrix_world, pose_bone_world) > 1.0e-3
+if bpy.context.scene.rigidbody_world is not None:
+    assert not bpy.context.scene.rigidbody_world.enabled
 
 pose_bone.location = (-0.2, 0.45, 0.3)
 pose_bone.rotation_euler = (-0.35, 0.1, -0.2)
@@ -118,6 +120,41 @@ assert bpy.ops.surface_proxy.align_mmd_physics_to_pose() == {"FINISHED"}
 assert matrix_delta(bound.matrix_world, second_delta @ rest_rigid_world) < 1.0e-6
 assert matrix_delta(joint.matrix_world, second_delta @ rest_joint_world) < 1.0e-6
 assert matrix_delta(unbound.matrix_world, rest_unbound_world) < 1.0e-6
+
+armature.animation_data_create()
+source_action = bpy.data.actions.new("PoseSource")
+source_action["mmd_station_action_uid"] = "pose-source-uid"
+armature.animation_data.action = source_action
+pose_bone.location = (0.1, 0.0, 0.0)
+pose_bone.rotation_euler = (0.0, 0.0, 0.0)
+pose_bone.keyframe_insert("location", frame=3, group=bone.name)
+pose_bone.location = (0.4, -0.2, 0.15)
+pose_bone.keyframe_insert("location", frame=4, group=bone.name)
+output_action = source_action.copy()
+output_action.name = "PoseSource · Physics Bake"
+output_action["mmd_station_physics_generated"] = True
+output_action["mmd_station_physics_source_uid"] = "pose-source-uid"
+output_action.pop("mmd_station_action_uid", None)
+output_curve = output_action.fcurves.find(
+    f'pose.bones["{bone.name}"].location',
+    index=0,
+)
+for point in output_curve.keyframe_points:
+    point.co.y += 20.0
+
+for frame, expected_source_x in ((3, 0.1), (4, 0.4)):
+    armature.animation_data.action = output_action
+    bpy.context.scene.frame_set(frame)
+    bpy.context.view_layer.update()
+    assert pose_bone.location.x > 10.0
+    assert align_model_physics_to_pose(root) == (1, 1)
+    assert armature.animation_data.action is source_action
+    bpy.context.view_layer.update()
+    assert abs(pose_bone.location.x - expected_source_x) < 1.0e-6
+    source_bone_world = armature.matrix_world @ pose_bone.matrix
+    source_delta = source_bone_world @ rest_bone_world.inverted_safe()
+    assert matrix_delta(bound.matrix_world, source_delta @ rest_rigid_world) < 1.0e-6
+    assert matrix_delta(joint.matrix_world, source_delta @ rest_joint_world) < 1.0e-6
 
 print("MMD_PHYSICS_POSE_ALIGNMENT_OK")
 mmd_station.unregister()
