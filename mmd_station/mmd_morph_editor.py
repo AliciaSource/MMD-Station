@@ -781,9 +781,14 @@ def _model_materials(root):
     for mesh_object in FnModel.iterate_mesh_objects(root):
         for slot in mesh_object.material_slots:
             material = slot.material
-            if material is not None and material not in seen:
-                seen.add(material)
-                result.append(material)
+            if material is None or material in seen:
+                continue
+            if material.name.startswith("mmd_edge.") or str(
+                material.get(EDGE_PARENT_UID_PROPERTY, "")
+            ):
+                continue
+            seen.add(material)
+            result.append(material)
     return result
 
 
@@ -878,7 +883,6 @@ def _apply_material_values(root, weights, morph_lookup):
                 + values["edge_opacity_add"],
             ),
         )
-        edge_opacity = min(body_opacity, edge_opacity)
         edge_effect = tuple(
             values["edge_effect_mult"][index]
             + values["edge_effect_add"][index]
@@ -918,7 +922,7 @@ def _apply_material_values(root, weights, morph_lookup):
             if edge_bridges:
                 _update_material_bridge(
                     edge_material,
-                    min(base_opacity, base_edge_opacity),
+                    base_edge_opacity,
                     (1.0, 1.0, 1.0),
                 )
 

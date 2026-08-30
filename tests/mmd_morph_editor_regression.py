@@ -227,7 +227,7 @@ hide_data = hide_morph.data.add()
 hide_data.material = material.name
 hide_data.offset_type = "ADD"
 hide_data.diffuse_color = (0.25, 0.0, 0.0, -1.0)
-hide_data.edge_color = (0.0, 0.0, 0.0, 0.0)
+hide_data.edge_color = (0.0, 0.0, 0.0, -1.0)
 custom_hide_data = hide_morph.data.add()
 custom_hide_data.material = custom_material.name
 custom_hide_data.offset_type = "ADD"
@@ -1168,13 +1168,14 @@ assert abs(body_bridges[0].inputs["Opacity"].default_value - 0.55) < 1.0e-6
 # An outline material created later is discovered and receives its own bridge.
 states["FadeMultiply"].value = 0.0
 edge_material = make_material("mmd_edge." + material.name, "ShaderNodeEmission")
+mesh_a.data.materials.append(edge_material)
 assert bridge_nodes(edge_material) == []
 states["Hide"].value = 0.5
 edge_bridges = bridge_nodes(edge_material)
 assert len(edge_bridges) == 1
 assert abs(edge_bridges[0].inputs["Opacity"].default_value - 0.5) < 1.0e-6
 
-# Diffuse alpha gates the outline while its own alpha channel can reduce it further.
+# Body and outline each follow the -1 value supplied by their own alpha channel.
 states["Hide"].value = 1.0
 assert abs(body_bridges[0].inputs["Opacity"].default_value - 0.0) < 1.0e-6
 assert abs(edge_bridges[0].inputs["Opacity"].default_value - 0.0) < 1.0e-6
@@ -1191,6 +1192,14 @@ assert abs(body_bridges[0].inputs["Opacity"].default_value - 1.0) < 1.0e-6
 assert abs(edge_bridges[0].inputs["Opacity"].default_value - 1.0) < 1.0e-6
 assert len(bridge_nodes(material)) == 1
 assert len(bridge_nodes(edge_material)) == 1
+
+# Body and outline alpha remain independent even when both materials are model slots.
+hide_data.edge_color = (0.0, 0.0, 0.0, 0.0)
+states["Hide"].value = 0.5
+assert abs(body_bridges[0].inputs["Opacity"].default_value - 0.5) < 1.0e-6
+assert abs(edge_bridges[0].inputs["Opacity"].default_value - 1.0) < 1.0e-6
+states["Hide"].value = 0.0
+hide_data.edge_color = (0.0, 0.0, 0.0, -1.0)
 
 # Keyframed central values are evaluated during frame changes.
 states["Hide"].value = 0.0
