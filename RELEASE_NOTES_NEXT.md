@@ -1,6 +1,8 @@
 # MMD Station Release Notes
 
-## Unreleased
+## v1.0.0
+
+MMD Station 1.0.0 is the first stable release.
 
 ### Added
 
@@ -15,6 +17,9 @@
   messages, warnings, and errors.
 - Added a localization coverage gate so future UI additions must include their
   English catalog entry and use the shared runtime translation boundary.
+- Added complete English and Simplified Chinese user manuals with quick
+  navigation, beginner workflows, feature-by-feature instructions, and
+  troubleshooting.
 
 ### Changed
 
@@ -23,6 +28,8 @@
   property identifiers for compatibility.
 - Kept development commits invisible to the updater; only GitHub Releases with
   an attached installable ZIP can be offered to users.
+- Documented MMD Tools as a required dependency and linked both its official
+  Blender Extensions page and GitHub repository.
 
 ### Fixed
 

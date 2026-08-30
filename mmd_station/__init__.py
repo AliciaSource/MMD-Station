@@ -1,7 +1,7 @@
 bl_info = {
     "name": "MMD Station",
     "author": "MMD Station contributors",
-    "version": (0, 1, 8),
+    "version": (1, 0, 0),
     "blender": (4, 4, 0),
     "location": "View3D > Sidebar > MMD Station",
     "description": "Create and edit MMD models, Morphs, physics, and IK workflows",
