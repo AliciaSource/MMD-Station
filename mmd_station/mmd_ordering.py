@@ -1,3 +1,4 @@
+from .i18n import iface, report
 import importlib
 
 import bpy
@@ -197,14 +198,14 @@ class SPX_OT_ReorderCheckedMMDItems(Operator):
 
     @classmethod
     def description(cls, _context, properties):
-        return {
+        return iface({
             "TOP": "将勾选项置顶；未勾选时移动蓝色活动项",
             "UP": "将勾选项上移一位；未勾选时移动蓝色活动项",
             "DOWN": "将勾选项下移一位；未勾选时移动蓝色活动项",
             "BOTTOM": "将勾选项置底；未勾选时移动蓝色活动项",
             "BEFORE": "将勾选项作为一个块插入蓝色活动行之前",
             "AFTER": "将勾选项作为一个块插入蓝色活动行之后",
-        }.get(properties.action, cls.bl_description)
+        }.get(properties.action, cls.bl_description))
 
     def execute(self, context):
         settings = context.scene.surface_proxy_creator
@@ -235,7 +236,7 @@ class SPX_OT_ReorderCheckedMMDItems(Operator):
                 active,
             )
         except OrderingError as error:
-            self.report({"ERROR"}, str(error))
+            report(self, {"ERROR"}, str(error))
             return {"CANCELLED"}
 
         bpy.ops.surface_proxy.refresh_mmd_browser()
@@ -250,9 +251,9 @@ class SPX_OT_ReorderCheckedMMDItems(Operator):
             if active_name is not None and item_name == active_name:
                 settings.browser_index = index
         if not changed:
-            self.report({"WARNING"}, "顺序未变化：待移动项已经位于该方向的边界")
+            report(self, {"WARNING"}, "顺序未变化：待移动项已经位于该方向的边界")
         else:
-            self.report({"INFO"}, f"已调整 {affected_count} 项的实际 PMX 顺序")
+            report(self, {"INFO"}, f"已调整 {affected_count} 项的实际 PMX 顺序")
         return {"FINISHED"}
 
 

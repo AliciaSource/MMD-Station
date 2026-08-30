@@ -1,3 +1,4 @@
+from ..i18n import report
 import bpy
 from bpy.props import EnumProperty
 from bpy.types import Operator
@@ -108,7 +109,7 @@ class SPX_OT_MMDIKInsertKeyframe(Operator):
 
     def execute(self, context):
         if not self.keying_set:
-            self.report({"ERROR"}, "请选择 Keying Set")
+            report(self, {"ERROR"}, "请选择 Keying Set")
             return {"CANCELLED"}
         def insert():
             try:

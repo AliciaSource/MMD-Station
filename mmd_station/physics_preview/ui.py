@@ -1,3 +1,4 @@
+from ..i18n import iface, report
 import bpy
 from bpy.props import (
     BoolProperty,
@@ -59,9 +60,9 @@ class SPX_OT_StartMMDPhysicsPreview(Operator):
         try:
             sessions = start_preview(context)
         except (RuntimeError, OSError, ValueError) as error:
-            self.report({"ERROR"}, str(error))
+            report(self, {"ERROR"}, str(error))
             return {"CANCELLED"}
-        self.report(
+        report(self,
             {"INFO"},
             f"Rust 物理预览已启动：{len(sessions)} 个模型，"
             f"{sum(session.dynamic_rigid_count for session in sessions)} 个动态刚体",
@@ -76,7 +77,7 @@ class SPX_OT_StartMMDPhysicsPreview(Operator):
                 component[0]
                 for component in unanchored[:3]
             )
-            self.report(
+            report(self,
                 {"WARNING"},
                 f"发现 {len(unanchored)} 组未连接静态刚体的动态链，"
                 f"将按 MMD 语义自由下落：{examples}",
@@ -128,9 +129,9 @@ class SPX_OT_RenumberMMDPhysicsPreviewModels(Operator):
         try:
             roots = renumber_preview_models(context.scene)
         except RuntimeError as error:
-            self.report({"ERROR"}, str(error))
+            report(self, {"ERROR"}, str(error))
             return {"CANCELLED"}
-        self.report({"INFO"}, f"已重新排序 {len(roots)} 个 MMD 模型编号")
+        report(self, {"INFO"}, f"已重新排序 {len(roots)} 个 MMD 模型编号")
         return {"FINISHED"}
 
 
@@ -147,7 +148,7 @@ class SPX_OT_ResetMMDPhysicsPreview(Operator):
                 root = _context.scene.surface_proxy_creator.mmd_root
             reset_preview(root)
         except (RuntimeError, OSError, ValueError) as error:
-            self.report({"ERROR"}, str(error))
+            report(self, {"ERROR"}, str(error))
             return {"CANCELLED"}
         return {"FINISHED"}
 
@@ -160,9 +161,9 @@ class SPX_OT_ResetAllMMDPhysicsPreviews(Operator):
         try:
             sessions = reset_all_previews()
         except (RuntimeError, OSError, ValueError) as error:
-            self.report({"ERROR"}, str(error))
+            report(self, {"ERROR"}, str(error))
             return {"CANCELLED"}
-        self.report({"INFO"}, f"已重置 {len(sessions)} 个模型的物理预览")
+        report(self, {"INFO"}, f"已重置 {len(sessions)} 个模型的物理预览")
         return {"FINISHED"}
 
 
@@ -183,10 +184,10 @@ class SPX_OT_AlignMMDPhysicsToPose(Operator):
         else:
             roots = (settings.mmd_root,) if settings.mmd_root is not None else ()
         if not roots:
-            self.report({"WARNING"}, "请先选择至少一个 MMD 模型")
+            report(self, {"WARNING"}, "请先选择至少一个 MMD 模型")
             return {"CANCELLED"}
         if any(is_running(root) for root in roots):
-            self.report({"WARNING"}, "请先停止所选模型的物理预览")
+            report(self, {"WARNING"}, "请先停止所选模型的物理预览")
             return {"CANCELLED"}
         generated_action_count = 0
         for root in roots:
@@ -208,7 +209,7 @@ class SPX_OT_AlignMMDPhysicsToPose(Operator):
         try:
             counts = [align_model_physics_to_pose(root) for root in roots]
         except (RuntimeError, ValueError) as error:
-            self.report({"ERROR"}, str(error))
+            report(self, {"ERROR"}, str(error))
             return {"CANCELLED"}
         rigid_count = sum(item[0] for item in counts)
         joint_count = sum(item[1] for item in counts)
@@ -222,7 +223,7 @@ class SPX_OT_AlignMMDPhysicsToPose(Operator):
             if rigid_body_world_was_enabled
             else ""
         )
-        self.report(
+        report(self,
             {"INFO"},
             f"已按当前姿态更新 {rigid_count} 个刚体和 {joint_count} 个 Joint{source_note}{world_note}",
         )
@@ -340,11 +341,11 @@ def draw_preview(layout, settings):
                 model_row = box.row(align=True)
                 model_id = preview_model_id(root)
                 label = f"#{model_id} {root.name}" if model_id is not None else root.name
-                model_row.prop(root, "spx_physics_preview_selected", text=label)
+                model_row.prop(root, "spx_physics_preview_selected", text=iface(label))
                 model_row.prop(root, "spx_mmd_import_scale_override", text="求解尺度")
                 import_scale, world_scale, overridden = model_scale_info(root)
                 scale_kind = "自定义" if overridden else "原生"
-                model_row.label(text=f"{scale_kind} {import_scale:g} / DLL ×{world_scale:g}")
+                model_row.label(text=iface(f"{scale_kind} {import_scale:g} / DLL ×{world_scale:g}"))
                 group_row = model_row.row(align=True)
                 group_row.enabled = not is_running(root)
                 group_row.prop(root, "spx_mmd_interaction_group_id", text="交互编号")
@@ -352,14 +353,14 @@ def draw_preview(layout, settings):
                 model_row.label(text="无法自动识别；请选择 0.08 或 0.1", icon="ERROR")
             except Exception:
                 error_row = box.row(align=True)
-                error_row.label(text=f"{root.name} 的预览设置无效", icon="ERROR")
+                error_row.label(text=iface(f"{root.name} 的预览设置无效"), icon="ERROR")
     target_row = box.row()
     target_row.enabled = not is_running()
     target_row.prop(settings, "preview_solver_target")
     target = settings.preview_solver_target
     path = library_path(target)
     if not path.is_file():
-        box.label(text=f"{target} DLL 缺失", icon="ERROR")
+        box.label(text=iface(f"{target} DLL 缺失"), icon="ERROR")
     row = box.row(align=True)
     row.prop(settings, "preview_frequency")
     row.prop(settings, "preview_substeps")
@@ -387,7 +388,7 @@ def draw_preview(layout, settings):
         )
     )
     sessions = active_session_info()
-    box.label(text=settings.preview_status, icon="PLAY" if sessions else "PAUSE")
+    box.label(text=iface(settings.preview_status), icon="PLAY" if sessions else "PAUSE")
     row = box.row(align=True)
     start = row.row(align=True)
     if settings.preview_scope == "MODEL":
@@ -441,8 +442,8 @@ def draw_preview(layout, settings):
             session_row = active_box.row(align=True)
             session_row.label(
                 text=(
-                    f"{root_name}  导入 {import_scale:g} / DLL ×{world_scale:g}"
-                    + f" / {solver_target} / 交互编号 #{interaction_group}"
+                    iface(f"{root_name}  导入 {import_scale:g} / DLL ×{world_scale:g}"
+                    + f" / {solver_target} / 交互编号 #{interaction_group}")
                 )
             )
             reset_operator = session_row.operator(

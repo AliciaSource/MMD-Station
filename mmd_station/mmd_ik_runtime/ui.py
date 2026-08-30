@@ -1,3 +1,4 @@
+from ..i18n import iface, report
 import hashlib
 from pathlib import Path
 
@@ -178,9 +179,9 @@ class _RuntimeOperator:
         try:
             message = self.run(context)
         except (MMDIKRuntimeError, RuntimeError, ValueError) as error:
-            self.report({"ERROR"}, str(error))
+            report(self, {"ERROR"}, str(error))
             return {"CANCELLED"}
-        self.report({"INFO"}, message)
+        report(self, {"INFO"}, message)
         return {"FINISHED"}
 
 
@@ -339,7 +340,7 @@ def draw(layout, settings, context):
         return
     active = evaluator_is_active(root)
     box.label(
-        text="状态：MMD 原生 IK 链已自动接管" if active else "状态：接管已停止",
+        text=iface("状态：MMD 原生 IK 链已自动接管" if active else "状态：接管已停止"),
         icon="CHECKMARK" if active else "ERROR",
     )
     box.label(text="原 mmd_tools 骨架保持为唯一可见、唯一绑定骨架", icon="INFO")

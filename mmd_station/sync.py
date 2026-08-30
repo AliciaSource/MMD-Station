@@ -1,3 +1,4 @@
+from .i18n import report
 import hashlib
 import re
 
@@ -707,10 +708,10 @@ class SPX_OT_IdentifyProxy(Operator):
             proxy_object = context.active_object
             _armature, prefix, rows, _mapping = identify_proxy(proxy_object)
         except ProxyBuildError as error:
-            self.report({"ERROR"}, str(error))
+            report(self, {"ERROR"}, str(error))
             return {"CANCELLED"}
         context.scene.surface_proxy_creator.physics_proxy = proxy_object
-        self.report({"INFO"}, f"已识别 {prefix}：{len(rows)} 列代理")
+        report(self, {"INFO"}, f"已识别 {prefix}：{len(rows)} 列代理")
         return {"FINISHED"}
 
 
@@ -731,12 +732,12 @@ class SPX_OT_SyncProxyBones(Operator):
 
                 rigid_count, joint_count = sync_proxy_physics_transforms(proxy_object)
         except ProxyBuildError as error:
-            self.report({"ERROR"}, str(error))
+            report(self, {"ERROR"}, str(error))
             return {"CANCELLED"}
         message = f"已同步 {count} 根骨骼"
         if rigid_count or joint_count:
             message += f"、{rigid_count} 个刚体、{joint_count} 个 Joint"
-        self.report({"INFO"}, message)
+        report(self, {"INFO"}, message)
         return {"FINISHED"}
 
 
@@ -755,9 +756,9 @@ class SPX_OT_RebindProxyWeights(Operator):
                 identify_proxy(proxy_object)
             mesh_count, vertex_count = rebind_proxy_weights(proxy_object)
         except ProxyBuildError as error:
-            self.report({"ERROR"}, str(error))
+            report(self, {"ERROR"}, str(error))
             return {"CANCELLED"}
-        self.report(
+        report(self,
             {"INFO"},
             f"已重算 {mesh_count} 个网格、{vertex_count} 个顶点权重",
         )

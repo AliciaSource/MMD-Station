@@ -1,3 +1,4 @@
+from .i18n import iface, report
 import importlib
 import json
 import math
@@ -1989,7 +1990,7 @@ class SPX_OT_RefreshMorphEditor(Operator):
         settings = context.scene.surface_proxy_creator
         root = _find_root(context, settings)
         if root is None:
-            self.report({"ERROR"}, "找不到 MMD 模型 Root")
+            report(self, {"ERROR"}, "找不到 MMD 模型 Root")
             return {"CANCELLED"}
         settings.morph_editor_root = root
         restored = _restore_missing_vertex_morphs(root)
@@ -2000,14 +2001,14 @@ class SPX_OT_RefreshMorphEditor(Operator):
             ensure_morph_states(root)
             evaluate_morph_root(root)
         if restored and rebound:
-            self.report(
+            report(self,
                 {"INFO"},
                 f"已补充 {restored} 个顶点 Morph，并重建 Bone/UV Runtime",
             )
         elif restored:
-            self.report({"INFO"}, f"已补充 {restored} 个顶点 Morph")
+            report(self, {"INFO"}, f"已补充 {restored} 个顶点 Morph")
         elif rebound:
-            self.report({"INFO"}, "已刷新 Morph 并重建 Bone/UV Runtime")
+            report(self, {"INFO"}, "已刷新 Morph 并重建 Bone/UV Runtime")
         return {"FINISHED"}
 
 
@@ -2023,7 +2024,7 @@ class SPX_OT_CopySelectedMorphsToClipboard(Operator):
         settings = context.scene.surface_proxy_creator
         root = _find_root(context, settings)
         if root is None:
-            self.report({"ERROR"}, "找不到 MMD 模型 Root")
+            report(self, {"ERROR"}, "找不到 MMD 模型 Root")
             return {"CANCELLED"}
         ensure_morph_states(root)
         selected = [state for state in root.spx_morph_states if state.selected]
@@ -2038,7 +2039,7 @@ class SPX_OT_CopySelectedMorphsToClipboard(Operator):
                 typed_morphs.append((state.morph_type, morph))
         text, copied, skipped = serialize_pmx_editor_morphs(root, typed_morphs)
         if copied == 0:
-            self.report(
+            report(self,
                 {"ERROR"},
                 "没有可安全复制的 Morph；Vertex 与顶点组型 UV 不支持跨模型复制",
             )
@@ -2047,7 +2048,7 @@ class SPX_OT_CopySelectedMorphsToClipboard(Operator):
         message = f"已复制 {copied} 个 Morph 到剪贴板"
         if skipped:
             message += f"；跳过 {len(skipped)} 个 Vertex/顶点组型 UV Morph"
-        self.report({"WARNING"} if skipped else {"INFO"}, message)
+        report(self, {"WARNING"} if skipped else {"INFO"}, message)
         return {"FINISHED"}
 
 
@@ -2064,12 +2065,12 @@ class SPX_OT_PasteMorphsFromClipboard(Operator):
         settings = context.scene.surface_proxy_creator
         root = _find_root(context, settings)
         if root is None:
-            self.report({"ERROR"}, "找不到 MMD 模型 Root")
+            report(self, {"ERROR"}, "找不到 MMD 模型 Root")
             return {"CANCELLED"}
         try:
             records = parse_pmx_editor_morph_csv(context.window_manager.clipboard)
         except ValueError as exc:
-            self.report({"ERROR"}, str(exc))
+            report(self, {"ERROR"}, str(exc))
             return {"CANCELLED"}
         result = apply_pmx_editor_morphs(root, records)
         ensure_morph_states(root)
@@ -2096,7 +2097,7 @@ class SPX_OT_PasteMorphsFromClipboard(Operator):
         if result["unresolved"]:
             message += f"；{len(result['unresolved'])} 个骨骼/材质引用未匹配"
         level = {"WARNING"} if result["skipped"] or result["unresolved"] else {"INFO"}
-        self.report(level, message)
+        report(self, level, message)
         return {"FINISHED"}
 
 
@@ -2205,7 +2206,7 @@ class SPX_OT_RemoveSelectedMorphs(Operator):
         _sync_morph_order(root)
         if runtime_needs_rebind:
             _ensure_lightweight_bind(root, force_rebind=True)
-        self.report({"INFO"}, f"已删除 {removed} 个 Morph")
+        report(self, {"INFO"}, f"已删除 {removed} 个 Morph")
         return {"FINISHED"}
 
 
@@ -2257,7 +2258,7 @@ class SPX_OT_CleanSelectedEmptyMorphs(Operator):
             if state.morph_type == settings.morph_editor_type and state.selected
         }
         if not selected:
-            self.report({"WARNING"}, "请先勾选当前 Tab 中的 Morph")
+            report(self, {"WARNING"}, "请先勾选当前 Tab 中的 Morph")
             return {"CANCELLED"}
 
         morphs = _morph_collection(root, settings.morph_editor_type)
@@ -2288,7 +2289,7 @@ class SPX_OT_CleanSelectedEmptyMorphs(Operator):
         if removed_vertex_names:
             _remove_vertex_morph_shape_keys(root, removed_vertex_names)
         if not removed and not cleaned_shape_keys:
-            self.report({"INFO"}, "勾选项中没有可清理的空 Morph")
+            report(self, {"INFO"}, "勾选项中没有可清理的空 Morph")
             return {"CANCELLED"}
 
         ensure_morph_states(root)
@@ -2300,7 +2301,7 @@ class SPX_OT_CleanSelectedEmptyMorphs(Operator):
         message = f"已清理 {removed} 个空 Morph"
         if cleaned_shape_keys:
             message += f"、{cleaned_shape_keys} 个阈值内 ShapeKey"
-        self.report({"INFO"}, message)
+        report(self, {"INFO"}, message)
         return {"FINISHED"}
 
 
@@ -2358,7 +2359,7 @@ class SPX_OT_SelectMorphInterval(Operator):
             index for index, state in enumerate(visible_states) if state.selected
         ]
         if len(selected_indices) < 2:
-            self.report({"WARNING"}, "区间选组至少需要勾选两个可见 Morph")
+            report(self, {"WARNING"}, "区间选组至少需要勾选两个可见 Morph")
             return {"CANCELLED"}
         first_index = selected_indices[0]
         last_index = selected_indices[-1]
@@ -2367,7 +2368,7 @@ class SPX_OT_SelectMorphInterval(Operator):
             if not state.selected:
                 state.selected = True
                 added += 1
-        self.report({"INFO"}, f"已补选区间内 {added} 个 Morph")
+        report(self, {"INFO"}, f"已补选区间内 {added} 个 Morph")
         return {"FINISHED"}
 
 
@@ -2388,7 +2389,7 @@ class SPX_OT_CopyMorphJapaneseNamesToEnglish(Operator):
             if state.morph_type == settings.morph_editor_type and state.selected
         ]
         if not selected_states:
-            self.report({"WARNING"}, "请先勾选 Morph")
+            report(self, {"WARNING"}, "请先勾选 Morph")
             return {"CANCELLED"}
 
         changed = 0
@@ -2400,7 +2401,7 @@ class SPX_OT_CopyMorphJapaneseNamesToEnglish(Operator):
             changed += 1
         if not changed:
             return {"CANCELLED"}
-        self.report({"INFO"}, f"已将 {changed} 个 Morph 的日文名同步到英文名")
+        report(self, {"INFO"}, f"已将 {changed} 个 Morph 的日文名同步到英文名")
         return {"FINISHED"}
 
 
@@ -2613,12 +2614,12 @@ class SPX_OT_TranslateMorphNamesWithAI(Operator):
             if morph is not None:
                 targets.append(morph)
         if not targets:
-            self.report({"WARNING"}, "请先勾选 Morph")
+            report(self, {"WARNING"}, "请先勾选 Morph")
             return {"CANCELLED"}
 
         preferences = _addon_preferences(context)
         if preferences is None:
-            self.report({"ERROR"}, "无法读取插件全局 AI 设置")
+            report(self, {"ERROR"}, "无法读取插件全局 AI 设置")
             return {"CANCELLED"}
         try:
             translations = _request_morph_name_translations(
@@ -2626,11 +2627,11 @@ class SPX_OT_TranslateMorphNamesWithAI(Operator):
                 [morph.name for morph in targets],
             )
         except (ValueError, RuntimeError) as exc:
-            self.report({"ERROR"}, str(exc))
+            report(self, {"ERROR"}, str(exc))
             return {"CANCELLED"}
         for morph, translation in zip(targets, translations, strict=True):
             morph.name_e = translation
-        self.report({"INFO"}, f"已翻译并填写 {len(targets)} 个 Morph 英文名")
+        report(self, {"INFO"}, f"已翻译并填写 {len(targets)} 个 Morph 英文名")
         return {"FINISHED"}
 
 
@@ -2645,7 +2646,7 @@ class SPX_OT_MorphAISettings(Operator):
     def invoke(self, context, _event):
         preferences = _addon_preferences(context)
         if preferences is None:
-            self.report({"ERROR"}, "无法读取插件全局 AI 设置")
+            report(self, {"ERROR"}, "无法读取插件全局 AI 设置")
             return {"CANCELLED"}
         self.api_url = _morph_ai_base_url(preferences.morph_ai_api_url)
         self.api_key = preferences.morph_ai_api_key
@@ -2665,9 +2666,9 @@ class SPX_OT_MorphAISettings(Operator):
         try:
             bpy.ops.wm.save_userpref()
         except RuntimeError:
-            self.report({"WARNING"}, "设置已写入；Blender 退出时将保存用户首选项")
+            report(self, {"WARNING"}, "设置已写入；Blender 退出时将保存用户首选项")
             return {"FINISHED"}
-        self.report({"INFO"}, "Morph AI 设置已全局保存")
+        report(self, {"INFO"}, "Morph AI 设置已全局保存")
         return {"FINISHED"}
 
 
@@ -2689,14 +2690,14 @@ class SPX_OT_ReorderMorphs(Operator):
 
     @classmethod
     def description(cls, _context, properties):
-        return {
+        return iface({
             "TOP": "将勾选 Morph 置顶；未勾选时移动蓝色活动项",
             "UP": "将勾选 Morph 上移一位；未勾选时移动蓝色活动项",
             "DOWN": "将勾选 Morph 下移一位；未勾选时移动蓝色活动项",
             "BOTTOM": "将勾选 Morph 置底；未勾选时移动蓝色活动项",
             "BEFORE": "将勾选 Morph 作为一个块插入蓝色活动行之前",
             "AFTER": "将勾选 Morph 作为一个块插入蓝色活动行之后",
-        }.get(properties.action, cls.bl_label)
+        }.get(properties.action, cls.bl_label))
 
     def execute(self, context):
         settings = context.scene.surface_proxy_creator
@@ -2719,7 +2720,7 @@ class SPX_OT_ReorderMorphs(Operator):
             if self.action in {"TOP", "UP", "DOWN", "BOTTOM"} and active_uid:
                 selected.add(active_uid)
             else:
-                self.report({"WARNING"}, "请先勾选 Morph")
+                report(self, {"WARNING"}, "请先勾选 Morph")
                 return {"CANCELLED"}
         order = [state.uid for state in type_states]
         if self.action == "TOP":
@@ -2740,10 +2741,10 @@ class SPX_OT_ReorderMorphs(Operator):
                     order[index], order[index + 1] = order[index + 1], order[index]
         elif self.action in {"BEFORE", "AFTER"}:
             if not active_uid:
-                self.report({"WARNING"}, "请选择当前分类中的活动行作为插入位置")
+                report(self, {"WARNING"}, "请选择当前分类中的活动行作为插入位置")
                 return {"CANCELLED"}
             if active_uid in selected:
-                self.report({"WARNING"}, "活动行不能同时属于勾选块")
+                report(self, {"WARNING"}, "活动行不能同时属于勾选块")
                 return {"CANCELLED"}
             block = [uid for uid in order if uid in selected]
             remaining = [uid for uid in order if uid not in selected]
@@ -2752,7 +2753,7 @@ class SPX_OT_ReorderMorphs(Operator):
                 insert_at += 1
             order = remaining[:insert_at] + block + remaining[insert_at:]
         else:
-            self.report({"ERROR"}, f"未知排序动作：{self.action}")
+            report(self, {"ERROR"}, f"未知排序动作：{self.action}")
             return {"CANCELLED"}
 
         positions = [
@@ -2904,13 +2905,13 @@ class SPX_OT_ConvertWeightedBoneMorphToVertexMorph(Operator):
             bone_morph,
         )
         if result != {"FINISHED"}:
-            self.report(
+            report(self,
                 {"WARNING"},
                 "该 Bone Morph 引用的骨骼及其子孙骨骼在模型网格中没有非零顶点权重",
             )
             return result
         ensure_morph_states(root)
-        self.report(
+        report(self,
             {"INFO"},
             f"已在 {target_count} 个具权重网格上转换；跳过 {all_mesh_count - target_count} 个无关网格",
         )
@@ -2949,7 +2950,7 @@ class SPX_OT_BatchConvertWeightedBoneMorphsToVertexMorphs(Operator):
             else:
                 skipped += 1
         ensure_morph_states(root)
-        self.report(
+        report(self,
             {"INFO"},
             f"已转换 {converted} 个 Bone Morph；跳过 {skipped} 个无权重或空 Morph",
         )
@@ -2966,8 +2967,8 @@ class SPX_OT_AddMorphOffset(Operator):
         settings = getattr(context.scene, "surface_proxy_creator", None)
         root = _find_root(context, settings) if settings is not None else None
         if root is not None and root.mmd_root.active_morph_type == "material_morphs":
-            return "将当前 MMD 模型内已选 Mesh 的材质按真实 PMX 顺序插入活动详情项下方"
-        return "新增一个空 Morph 详情项"
+            return iface("将当前 MMD 模型内已选 Mesh 的材质按真实 PMX 顺序插入活动详情项下方")
+        return iface("新增一个空 Morph 详情项")
 
     def _add_selected_materials(self, context, root, morph):
         FnModel, _Model = _mmd_api()
@@ -2977,7 +2978,7 @@ class SPX_OT_AddMorphOffset(Operator):
             if obj.type == "MESH" and FnModel.find_root_object(obj) == root
         }
         if not selected_meshes:
-            self.report({"WARNING"}, "请先选择当前 MMD 模型中的 Mesh")
+            report(self, {"WARNING"}, "请先选择当前 MMD 模型中的 Mesh")
             return {"CANCELLED"}
 
         material_owners = {}
@@ -3003,7 +3004,7 @@ class SPX_OT_AddMorphOffset(Operator):
             existing_materials.add(material.name)
             candidates.append((mesh_name, material.name))
         if not candidates:
-            self.report({"WARNING"}, "所选 Mesh 的材质已全部存在于当前 Morph")
+            report(self, {"WARNING"}, "所选 Mesh 的材质已全部存在于当前 Morph")
             return {"CANCELLED"}
 
         insert_at = (
@@ -3022,7 +3023,7 @@ class SPX_OT_AddMorphOffset(Operator):
             insert_at += 1
         morph.active_data = first_inserted
         evaluate_morph_root(root)
-        self.report({"INFO"}, f"已添加 {len(candidates)} 个材质详情项")
+        report(self, {"INFO"}, f"已添加 {len(candidates)} 个材质详情项")
         return {"FINISHED"}
 
     def execute(self, context):
@@ -3061,7 +3062,7 @@ class SPX_OT_RemoveMorphOffset(Operator):
             morph.data.remove(index)
         morph.active_data = min(next_active_index, max(0, len(morph.data) - 1))
         evaluate_morph_root(root)
-        self.report({"INFO"}, f"已删除 {len(remove_indices)} 个 Morph 详情项")
+        report(self, {"INFO"}, f"已删除 {len(remove_indices)} 个 Morph 详情项")
         return {"FINISHED"}
 
 
@@ -3084,14 +3085,14 @@ class SPX_OT_ReorderMorphOffsets(Operator):
 
     @classmethod
     def description(cls, _context, properties):
-        return {
+        return iface({
             "TOP": "将勾选详情项置顶；未勾选时移动蓝色活动项",
             "UP": "将勾选详情项上移一位；未勾选时移动蓝色活动项",
             "DOWN": "将勾选详情项下移一位；未勾选时移动蓝色活动项",
             "BOTTOM": "将勾选详情项置底；未勾选时移动蓝色活动项",
             "BEFORE": "将勾选详情项作为一个块插入蓝色活动行之前",
             "AFTER": "将勾选详情项作为一个块插入蓝色活动行之后",
-        }.get(properties.action, cls.bl_label)
+        }.get(properties.action, cls.bl_label))
 
     def execute(self, context):
         root = _find_root(context, context.scene.surface_proxy_creator)
@@ -3108,7 +3109,7 @@ class SPX_OT_ReorderMorphOffsets(Operator):
             if self.action in {"TOP", "UP", "DOWN", "BOTTOM"}:
                 selected_indices.add(active_index)
             else:
-                self.report({"WARNING"}, "请先勾选 Morph 详情项")
+                report(self, {"WARNING"}, "请先勾选 Morph 详情项")
                 return {"CANCELLED"}
 
         order = list(range(len(morph.data)))
@@ -3136,7 +3137,7 @@ class SPX_OT_ReorderMorphOffsets(Operator):
                     order[index], order[index + 1] = order[index + 1], order[index]
         elif self.action in {"BEFORE", "AFTER"}:
             if active_index in selected_indices:
-                self.report({"WARNING"}, "活动行不能同时属于勾选块")
+                report(self, {"WARNING"}, "活动行不能同时属于勾选块")
                 return {"CANCELLED"}
             block = [i for i in order if i in selected_indices]
             remaining = [i for i in order if i not in selected_indices]
@@ -3145,7 +3146,7 @@ class SPX_OT_ReorderMorphOffsets(Operator):
                 insert_at += 1
             order = remaining[:insert_at] + block + remaining[insert_at:]
         else:
-            self.report({"ERROR"}, f"未知排序动作：{self.action}")
+            report(self, {"ERROR"}, f"未知排序动作：{self.action}")
             return {"CANCELLED"}
 
         token_property = "_spx_reorder_token"
@@ -3195,8 +3196,8 @@ class SPX_OT_ApplyMaterialMorphPreset(Operator):
     @classmethod
     def description(cls, _context, properties):
         if properties.preset == "HIDE":
-            return "单个目标直接应用；多个目标将勾选详情行设为相加，漫射与边缘 Alpha 为 -1，其余参数为 0"
-        return "单个目标直接应用；多个目标将勾选详情行设为相加，漫射与边缘 Alpha 为 1，其余参数为 0"
+            return iface("单个目标直接应用；多个目标将勾选详情行设为相加，漫射与边缘 Alpha 为 -1，其余参数为 0")
+        return iface("单个目标直接应用；多个目标将勾选详情行设为相加，漫射与边缘 Alpha 为 1，其余参数为 0")
 
     def execute(self, context):
         root = _find_root(context, context.scene.surface_proxy_creator)
@@ -3211,7 +3212,7 @@ class SPX_OT_ApplyMaterialMorphPreset(Operator):
         if not selected and len(morph.data) == 1:
             selected = [morph.data[0]]
         if not selected:
-            self.report({"WARNING"}, "请先勾选 Material Morph 详情行")
+            report(self, {"WARNING"}, "请先勾选 Material Morph 详情行")
             return {"CANCELLED"}
 
         alpha = -1.0 if self.preset == "HIDE" else 1.0
@@ -3228,7 +3229,7 @@ class SPX_OT_ApplyMaterialMorphPreset(Operator):
             data.toon_texture_factor = (0.0, 0.0, 0.0, 0.0)
         evaluate_morph_root(root)
         preset_name = "隐藏" if self.preset == "HIDE" else "显示"
-        self.report({"INFO"}, f"已向 {len(selected)} 个详情行应用“{preset_name}”预设")
+        report(self, {"INFO"}, f"已向 {len(selected)} 个详情行应用“{preset_name}”预设")
         return {"FINISHED"}
 
 
@@ -3273,14 +3274,14 @@ class SPX_OT_SelectMorphDetails(Operator):
                 if getattr(target, property_name)
             ]
             if len(selected_indices) < 2:
-                self.report({"WARNING"}, "区间选组至少需要勾选两个详情行")
+                report(self, {"WARNING"}, "区间选组至少需要勾选两个详情行")
                 return {"CANCELLED"}
             added = 0
             for target in targets[selected_indices[0] : selected_indices[-1] + 1]:
                 if not getattr(target, property_name):
                     setattr(target, property_name, True)
                     added += 1
-            self.report({"INFO"}, f"已补选区间内 {added} 个详情行")
+            report(self, {"INFO"}, f"已补选区间内 {added} 个详情行")
             return {"FINISHED"}
         for target in targets:
             if self.action == "ALL":
@@ -3319,13 +3320,13 @@ class SPX_OT_CollectSelectedMorphsIntoGroup(Operator):
             if morph is not None:
                 selected.append((state.morph_type, morph.name))
         if not selected:
-            self.report({"WARNING"}, "请先在材质、UV、骨骼或顶点 Tab 勾选 Morph")
+            report(self, {"WARNING"}, "请先在材质、UV、骨骼或顶点 Tab 勾选 Morph")
             return {"CANCELLED"}
 
         existing = {(data.morph_type, data.name) for data in group_morph.data}
         candidates = [item for item in selected if item not in existing]
         if not candidates:
-            self.report({"WARNING"}, "勾选的 Morph 已全部存在于当前 Group Morph")
+            report(self, {"WARNING"}, "勾选的 Morph 已全部存在于当前 Group Morph")
             return {"CANCELLED"}
 
         insert_at = (
@@ -3349,7 +3350,7 @@ class SPX_OT_CollectSelectedMorphsIntoGroup(Operator):
         message = f"已将 {len(candidates)} 个 Morph 加入当前 Group Morph"
         if duplicate_count:
             message += f"；跳过 {duplicate_count} 个重复项"
-        self.report({"INFO"}, message)
+        report(self, {"INFO"}, message)
         return {"FINISHED"}
 
 
@@ -3461,7 +3462,7 @@ class SPX_OT_ViewUVMorph(Operator):
         if len(meshes) == 1:
             mesh_object = meshes[0]
         elif mesh_object not in meshes:
-            self.report({"ERROR"}, "请选择当前 MMD 模型中的网格")
+            report(self, {"ERROR"}, "请选择当前 MMD 模型中的网格")
             return {"CANCELLED"}
         root_name = root.name
         mesh_name = mesh_object.name
@@ -3534,7 +3535,7 @@ class _SPX_UL_MorphOffsets(UIList):
         row.prop(item, DETAIL_SELECTED_PROPERTY, text="")
         official_class = getattr(bpy.types, self.official_list, None)
         if official_class is None:
-            row.label(text=str(index))
+            row.label(text=iface(str(index)))
             return
         official_class.draw_item(
             self,
@@ -3611,25 +3612,25 @@ class SPX_OT_SelectVertexMorphObject(Operator):
         root = bpy.data.objects.get(self.root_name)
         mesh_object = bpy.data.objects.get(self.object_name)
         if root is None or mesh_object is None:
-            self.report({"ERROR"}, "Vertex Morph 目标已经失效")
+            report(self, {"ERROR"}, "Vertex Morph 目标已经失效")
             return {"CANCELLED"}
         morph = _morph_by_uid(root, "vertex_morphs", self.morph_uid)
         if morph is None:
-            self.report({"ERROR"}, "Vertex Morph 目标已经失效")
+            report(self, {"ERROR"}, "Vertex Morph 目标已经失效")
             return {"CANCELLED"}
         FnModel, _Model = _mmd_api()
         if mesh_object not in set(FnModel.iterate_mesh_objects(root)):
-            self.report({"ERROR"}, "目标网格不属于当前 MMD 模型")
+            report(self, {"ERROR"}, "目标网格不属于当前 MMD 模型")
             return {"CANCELLED"}
         if mesh_object.name not in context.view_layer.objects:
-            self.report({"ERROR"}, "目标网格不在当前 View Layer")
+            report(self, {"ERROR"}, "目标网格不在当前 View Layer")
             return {"CANCELLED"}
         active_object = context.view_layer.objects.active
         if active_object is not None and active_object.mode != "OBJECT":
             try:
                 bpy.ops.object.mode_set(mode="OBJECT")
             except RuntimeError:
-                self.report({"ERROR"}, "请先退出当前编辑模式")
+                report(self, {"ERROR"}, "请先退出当前编辑模式")
                 return {"CANCELLED"}
         mesh_object.hide_set(False)
         for obj in context.view_layer.objects:
@@ -3782,8 +3783,8 @@ def _draw_uv_vertex_groups(layout, root, morph):
         found = True
         row = layout.row(align=True)
         row.prop(mesh_object, UV_DETAIL_SELECTED_PROPERTY, text="")
-        row.label(text=mesh_object.name, icon="MESH_DATA")
-        row.label(text=" / ".join(axes))
+        row.label(text=iface(mesh_object.name), icon="MESH_DATA")
+        row.label(text=iface(" / ".join(axes)))
     if not found:
         layout.label(text="模型中没有对应的 UV Vertex Group", icon="INFO")
 
@@ -3804,7 +3805,7 @@ def _draw_uv_details(layout, root, morph):
     if morph.data_type == "VERTEX_GROUP":
         row.prop(morph, "vertex_group_scale", text="比例")
     else:
-        row.label(text=f"UV 偏移 ({len(morph.data)})")
+        row.label(text=iface(f"UV 偏移 ({len(morph.data)})"))
     row.prop(morph, "uv_index", text="UV 层")
     row.operator("mmd_tools.morph_offset_remove", text="", icon="X").all = True
     if morph.data_type == "VERTEX_GROUP":
@@ -3876,7 +3877,7 @@ def _draw_active_details(layout, context, root):
             row.prop(mesh_object, VERTEX_DETAIL_SELECTED_PROPERTY, text="")
             select = row.operator(
                 "surface_proxy.select_vertex_morph_object",
-                text=mesh_object.name,
+                text=iface(mesh_object.name),
                 icon="MESH_DATA",
             )
             select.root_name = root.name
@@ -3985,8 +3986,8 @@ def draw_morph_editor(layout, context):
     selected_count = sum(state.selected for state in tab_states)
     layout.label(
         text=(
-            f"总 Morph：{len(root.spx_morph_states)} 项；"
-            f"当前页：{len(tab_states)} 项；已勾选：{selected_count} 项"
+            iface(f"总 Morph：{len(root.spx_morph_states)} 项；"
+            f"当前页：{len(tab_states)} 项；已勾选：{selected_count} 项")
         )
     )
     selection = layout.row(align=True)
@@ -4022,7 +4023,7 @@ def draw_morph_editor(layout, context):
         icon="PREFERENCES",
     )
     if RUNTIME_ERROR_PROPERTY in root:
-        layout.label(text=str(root[RUNTIME_ERROR_PROPERTY]), icon="ERROR")
+        layout.label(text=iface(str(root[RUNTIME_ERROR_PROPERTY])), icon="ERROR")
     layout.label(
         text="首次调整或 VMD 导入时按需建立 Runtime；Material Output 接管只安装一次",
         icon="INFO",

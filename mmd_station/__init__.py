@@ -26,6 +26,8 @@ from bpy.types import Operator, Panel, PropertyGroup
 from mathutils import Vector
 from mathutils.kdtree import KDTree
 
+from .i18n import iface, report
+from . import i18n
 from .core import (
     ProxyBuildError,
     bilinear_grid_weights,
@@ -920,7 +922,7 @@ class SPX_OT_RestoreProxyFromCheckedBones(Operator):
             ) = _proxy_grid_from_checked_bones(settings)
             existing = _existing_proxy_for_bones(armature_object, bone_names)
             if existing is not None:
-                self.report(
+                report(self,
                     {"WARNING"},
                     f"这段骨链已有代理 {existing.name}；请先删除旧代理后再创建",
                 )
@@ -954,9 +956,9 @@ class SPX_OT_RestoreProxyFromCheckedBones(Operator):
             settings.armature = armature_object
             settings.prefix = prefix
         except ProxyBuildError as error:
-            self.report({"ERROR"}, str(error))
+            report(self, {"ERROR"}, str(error))
             return {"CANCELLED"}
-        self.report(
+        report(self,
             {"INFO"},
             f"已新建 {proxy_object.name}：{len(grid)} 列、{sum(len(column) - 1 for column in grid)} 根骨骼"
             + (
@@ -985,7 +987,7 @@ class SPX_OT_CreateSkirtProxy(Operator):
         raw_prefix = settings.prefix.strip()
         prefix, selected_side = _mirror_prefix(raw_prefix)
         if not prefix:
-            self.report({"ERROR"}, "名称前缀不能为空")
+            report(self, {"ERROR"}, "名称前缀不能为空")
             return {"CANCELLED"}
 
         try:
@@ -1111,12 +1113,12 @@ class SPX_OT_CreateSkirtProxy(Operator):
             context.view_layer.objects.active = proxy_object
             proxy_object.select_set(True)
         except ProxyBuildError as error:
-            self.report({"ERROR"}, str(error))
+            report(self, {"ERROR"}, str(error))
             return {"CANCELLED"}
 
         row_counts = [len(column) for column in grid]
         bone_count = sum(count - 1 for count in row_counts)
-        self.report(
+        report(self,
             {"INFO"},
             f"已创建 {len(grid)} 列{('闭合面' if closed else '开放代理')}、每列 {min(row_counts)}–{max(row_counts)} 个代理点，共 {bone_count} 根骨骼"
             + (f"；镜像侧按{'精确镜像' if mirror_exact else '独立拟合'}生成" if selected_side else ""),
@@ -1158,7 +1160,7 @@ class SPX_PT_SurfaceProxyCreator(Panel):
         repository = title_row.operator("wm.url_open", text="GitHub", icon="URL")
         package = sys.modules.get(__package__ or "mmd_station")
         repository.url = getattr(package, "bl_info", {}).get("doc_url", "")
-        column.label(text=_version_text(), icon="BLANK1")
+        column.label(text=iface(_version_text()), icon="BLANK1")
         draw_workspace(self.layout, context)
 
 
@@ -1185,6 +1187,7 @@ CLASSES = (
 
 
 def register():
+    i18n.register()
     preload_physics_libraries()
     register_physics_cache_services()
     register_settings(SPX_Settings)
@@ -1228,7 +1231,9 @@ def unregister():
     unregister_sync_services()
     del bpy.types.Scene.surface_proxy_creator
     for cls in reversed(CLASSES):
-        bpy.utils.unregister_class(cls)
+        if getattr(cls, "is_registered", False):
+            bpy.utils.unregister_class(cls)
+    i18n.unregister()
 
 
 if __name__ == "__main__":

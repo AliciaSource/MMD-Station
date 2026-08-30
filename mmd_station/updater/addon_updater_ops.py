@@ -20,6 +20,7 @@
 
 Implements draw calls, popups, and operators that use the addon_updater.
 """
+from ..i18n import iface, report
 
 import os
 import threading
@@ -191,9 +192,9 @@ def _draw_update_job_progress(layout):
     else:
         filled = round(progress * 20)
         bar = "█" * filled + "░" * (20 - filled)
-        layout.label(text="{}  总体 {}%".format(bar, percent), icon="TIME")
-        layout.label(text=phase)
-    layout.label(text=detail)
+        layout.label(text=iface("{}  总体 {}%".format(bar, percent)), icon="TIME")
+        layout.label(text=iface(phase))
+    layout.label(text=iface(detail))
     layout.label(text="更新期间仍可继续使用 Blender；完成后会弹出结果。")
     return True
 
@@ -291,7 +292,7 @@ class AddonUpdaterInstallPopup(bpy.types.Operator):
         elif updater.update_ready:
             col = layout.column()
             col.scale_y = 0.7
-            col.label(text="更新 {} 已就绪！".format(updater.update_version),
+            col.label(text=iface("更新 {} 已就绪！".format(updater.update_version)),
                       icon="LOOP_FORWARDS")
             col.label(text="选择「立即更新」并点 OK 安装，",
                       icon="BLANK1")
@@ -417,16 +418,16 @@ class AddonUpdaterUpdateNow(bpy.types.Operator):
                 target_version <= updater.current_version:
             # Guard against stale cache surviving a manual addon install.
             updater.json_reset_restore()
-            self.report({'INFO'}, "插件已是最新版本")
+            report(self, {'INFO'}, "插件已是最新版本")
             return {'CANCELLED'}
 
         if updater.manual_only:
             bpy.ops.wm.url_open(url=updater.website)
         if updater.update_ready:
             if not _start_update_job(clean=self.clean_install):
-                self.report({'INFO'}, "更新正在进行中")
+                report(self, {'INFO'}, "更新正在进行中")
                 return {'CANCELLED'}
-            self.report({'INFO'}, "更新已在后台开始，完成后会提示结果")
+            report(self, {'INFO'}, "更新已在后台开始，完成后会提示结果")
         elif updater.update_ready is None:
             (update_ready, version, link) = updater.check_for_update(now=True)
             # Re-launch this dialog.
@@ -434,10 +435,10 @@ class AddonUpdaterUpdateNow(bpy.types.Operator):
             getattr(getattr(bpy.ops, atr[0]), atr[1])('INVOKE_DEFAULT')
 
         elif not updater.update_ready:
-            self.report({'INFO'}, "没有需要更新的内容")
+            report(self, {'INFO'}, "没有需要更新的内容")
             return {'CANCELLED'}
         else:
-            self.report(
+            report(self,
                 {'ERROR'}, "尝试更新时遇到问题")
             return {'CANCELLED'}
 
@@ -507,9 +508,9 @@ class AddonUpdaterUpdateTarget(bpy.types.Operator):
         if not _start_update_job(
                 revert_tag=self.target,
                 clean=self.clean_install):
-            self.report({'INFO'}, "更新正在进行中")
+            report(self, {'INFO'}, "更新正在进行中")
             return {'CANCELLED'}
-        self.report({'INFO'}, "指定版本已在后台开始安装，完成后会提示结果")
+        report(self, {'INFO'}, "指定版本已在后台开始安装，完成后会提示结果")
         return {'FINISHED'}
 
 
@@ -610,7 +611,7 @@ class AddonUpdaterUpdatedSuccessful(bpy.types.Operator):
             col.scale_y = 0.7
             col.label(text="发生错误，未安装", icon="ERROR")
             msg = updater.error_msg if updater.error_msg else self.error
-            col.label(text=str(msg), icon="BLANK1")
+            col.label(text=iface(str(msg)), icon="BLANK1")
             rw = col.row()
             rw.scale_y = 2
             rw.operator(
@@ -710,7 +711,7 @@ class AddonUpdaterIgnore(bpy.types.Operator):
         if updater.invalid_updater:
             return {'CANCELLED'}
         updater.ignore_update()
-        self.report({"INFO"}, "在插件首选项中查看更新器选项")
+        report(self, {"INFO"}, "在插件首选项中查看更新器选项")
         return {'FINISHED'}
 
 
@@ -936,7 +937,7 @@ def check_for_update_nonthreaded(self, context):
         getattr(getattr(bpy.ops, atr[0]), atr[1])('INVOKE_DEFAULT')
     else:
         updater.print_verbose("No update ready")
-        self.report({'INFO'}, "No update ready")
+        report(self, {'INFO'}, "No update ready")
 
 
 def show_reload_popup():
@@ -1063,7 +1064,7 @@ def update_settings_ui(self, context, element=None):
     # In case of error importing updater.
     if updater.invalid_updater:
         box.label(text="更新器代码初始化出错：")
-        box.label(text=updater.error_msg)
+        box.label(text=iface(updater.error_msg))
         return
     settings = get_user_preferences(context)
     if not settings:
@@ -1098,11 +1099,11 @@ def update_settings_ui(self, context, element=None):
         if "ssl" in updater.error_msg.lower():
             split.enabled = True
             split.operator(AddonUpdaterInstallManually.bl_idname,
-                           text=updater.error)
+                           text=iface(updater.error))
         else:
             split.enabled = False
             split.operator(AddonUpdaterCheckNow.bl_idname,
-                           text=updater.error)
+                           text=iface(updater.error))
         split = sub_col.split(align=True)
         split.scale_y = 2
         split.operator(AddonUpdaterCheckNow.bl_idname,
@@ -1132,7 +1133,7 @@ def update_settings_ui(self, context, element=None):
         split.scale_y = 2
         update_now_txt = "直接更新到 {}".format(
             updater.include_branch_list[0])
-        split.operator(AddonUpdaterUpdateNow.bl_idname, text=update_now_txt)
+        split.operator(AddonUpdaterUpdateNow.bl_idname, text=iface(update_now_txt))
         split = sub_col.split(align=True)
         split.scale_y = 2
         split.operator(AddonUpdaterCheckNow.bl_idname,
@@ -1144,7 +1145,7 @@ def update_settings_ui(self, context, element=None):
         split = sub_col.split(align=True)
         split.scale_y = 2
         split.operator(AddonUpdaterUpdateNow.bl_idname,
-                       text="立即更新到 " + str(updater.update_version))
+                       text=iface("立即更新到 " + str(updater.update_version)))
         split = sub_col.split(align=True)
         split.scale_y = 2
         split.operator(AddonUpdaterCheckNow.bl_idname,
@@ -1154,7 +1155,7 @@ def update_settings_ui(self, context, element=None):
         col.scale_y = 2
         dl_now_txt = "下载 " + str(updater.update_version)
         col.operator("wm.url_open",
-                     text=dl_now_txt).url = updater.website
+                     text=iface(dl_now_txt)).url = updater.website
     else:  # i.e. that updater.update_ready == False.
         sub_col = col.row(align=True)
         sub_col.scale_y = 1
@@ -1173,7 +1174,7 @@ def update_settings_ui(self, context, element=None):
         if updater.include_branches and len(updater.include_branch_list) > 0:
             branch = updater.include_branch_list[0]
             col.operator(AddonUpdaterUpdateTarget.bl_idname,
-                         text="安装 {} / 旧版本".format(branch))
+                         text=iface("安装 {} / 旧版本".format(branch)))
         else:
             col.operator(AddonUpdaterUpdateTarget.bl_idname,
                          text="（重新）安装插件版本")
@@ -1185,7 +1186,7 @@ def update_settings_ui(self, context, element=None):
             else:
                 last_date = updater.json["backup_date"]
         backup_text = "还原插件备份（{}）".format(last_date)
-        col.operator(AddonUpdaterRestoreBackup.bl_idname, text=backup_text)
+        col.operator(AddonUpdaterRestoreBackup.bl_idname, text=iface(backup_text))
 
     row = box.row()
 
@@ -1214,10 +1215,10 @@ def update_settings_ui(self, context, element=None):
     row.scale_y = 0.7
     last_check = updater.json["last_check"]
     if updater.error is not None and updater.error_msg is not None:
-        row.label(text=updater.error_msg)
+        row.label(text=iface(updater.error_msg))
     elif last_check:
         last_check = last_check[0: last_check.index(".")]
-        row.label(text="上次检查更新：" + last_check)
+        row.label(text=iface("上次检查更新：" + last_check))
     else:
         row.label(text="上次检查更新：从未")
 
@@ -1236,7 +1237,7 @@ def update_settings_ui_condensed(self, context, element=None):
     # In case of error importing updater.
     if updater.invalid_updater:
         row.label(text="Error initializing updater code:")
-        row.label(text=updater.error_msg)
+        row.label(text=iface(updater.error_msg))
         return
     settings = get_user_preferences(context)
     if not settings:
@@ -1266,11 +1267,11 @@ def update_settings_ui_condensed(self, context, element=None):
         if "ssl" in updater.error_msg.lower():
             split.enabled = True
             split.operator(AddonUpdaterInstallManually.bl_idname,
-                           text=updater.error)
+                           text=iface(updater.error))
         else:
             split.enabled = False
             split.operator(AddonUpdaterCheckNow.bl_idname,
-                           text=updater.error)
+                           text=iface(updater.error))
         split = sub_col.split(align=True)
         split.scale_y = 2
         split.operator(AddonUpdaterCheckNow.bl_idname,
@@ -1299,7 +1300,7 @@ def update_settings_ui_condensed(self, context, element=None):
         split = sub_col.split(align=True)
         split.scale_y = 2
         now_txt = "Update directly to " + str(updater.include_branch_list[0])
-        split.operator(AddonUpdaterUpdateNow.bl_idname, text=now_txt)
+        split.operator(AddonUpdaterUpdateNow.bl_idname, text=iface(now_txt))
         split = sub_col.split(align=True)
         split.scale_y = 2
         split.operator(AddonUpdaterCheckNow.bl_idname,
@@ -1311,7 +1312,7 @@ def update_settings_ui_condensed(self, context, element=None):
         split = sub_col.split(align=True)
         split.scale_y = 2
         split.operator(AddonUpdaterUpdateNow.bl_idname,
-                       text="立即更新到 " + str(updater.update_version))
+                       text=iface("立即更新到 " + str(updater.update_version)))
         split = sub_col.split(align=True)
         split.scale_y = 2
         split.operator(AddonUpdaterCheckNow.bl_idname,
@@ -1320,7 +1321,7 @@ def update_settings_ui_condensed(self, context, element=None):
     elif updater.update_ready and updater.manual_only:
         col.scale_y = 2
         dl_txt = "Download " + str(updater.update_version)
-        col.operator("wm.url_open", text=dl_txt).url = updater.website
+        col.operator("wm.url_open", text=iface(dl_txt)).url = updater.website
     else:  # i.e. that updater.update_ready == False.
         sub_col = col.row(align=True)
         sub_col.scale_y = 1
@@ -1341,10 +1342,10 @@ def update_settings_ui_condensed(self, context, element=None):
     row.scale_y = 0.7
     last_check = updater.json["last_check"]
     if updater.error is not None and updater.error_msg is not None:
-        row.label(text=updater.error_msg)
+        row.label(text=iface(updater.error_msg))
     elif last_check != "" and last_check is not None:
         last_check = last_check[0: last_check.index(".")]
-        row.label(text="Last check: " + last_check)
+        row.label(text=iface("Last check: " + last_check))
     else:
         row.label(text="Last check: Never")
 

@@ -4,8 +4,7 @@ MMD Station is a Blender 4.4 add-on for editing, validating, previewing, and
 exporting MikuMikuDance models in one workspace.
 
 > **Development status:** the current build is `v0.1.8-dev`. No stable GitHub
-> Release has been published yet. The current UI is Chinese; automatic Chinese
-> and English UI selection is planned for the next development phase.
+> Release has been published yet.
 
 ## Highlights
 
@@ -60,6 +59,20 @@ default, MMD Station checks stable GitHub Releases once per day and shows a
 banner at the top of its panel when an update is available. Pre-release builds
 are opt-in. Installation creates one rollback backup and requires Blender to be
 closed and reopened after files are replaced.
+
+## Interface Language
+
+MMD Station follows Blender's selected interface language automatically.
+Simplified Chinese and Traditional Chinese locales use the Chinese interface;
+every other locale uses English. Labels, hover descriptions, enum choices,
+runtime status text, warnings, and errors share one bilingual catalog and do
+not require separate implementations for each Blender language.
+
+The localization coverage test is a required development gate. A new
+user-facing Chinese source string without an English catalog entry fails the
+test, while runtime-composed UI text and operator reports must pass through the
+central localization boundary. This keeps future features bilingual by
+default instead of relying on a release-time translation pass.
 
 ## Building a Release Package
 

@@ -1,3 +1,4 @@
+from .i18n import report
 import bpy
 from bpy.types import Operator
 
@@ -30,7 +31,7 @@ class _MMDToolsIOProxy(Operator):
             operator = getattr(getattr(bpy.ops, module_name), operator_name)
             return operator("INVOKE_DEFAULT", **self._target_invoke_kwargs(context))
         except (AttributeError, RuntimeError, ValueError) as error:
-            self.report({"ERROR"}, f"无法启动 mmd_tools I/O：{error}")
+            report(self, {"ERROR"}, f"无法启动 mmd_tools I/O：{error}")
             return {"CANCELLED"}
 
     def invoke(self, context, _event):

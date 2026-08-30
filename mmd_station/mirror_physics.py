@@ -1,3 +1,4 @@
+from .i18n import iface, report
 import re
 
 import bpy
@@ -666,7 +667,7 @@ class SPX_OT_CreateMirroredMMDItems(Operator):
         try:
             result = _run(context, True)
         except (MirrorPhysicsError, RuntimeError, ValueError) as error:
-            self.report({"ERROR"}, str(error))
+            report(self, {"ERROR"}, str(error))
             return {"CANCELLED"}
         _report(self, result, True)
         return {"FINISHED"}
@@ -682,7 +683,7 @@ class SPX_OT_SyncMirroredMMDItems(Operator):
         try:
             result = _run(context, False)
         except (MirrorPhysicsError, RuntimeError, ValueError) as error:
-            self.report({"ERROR"}, str(error))
+            report(self, {"ERROR"}, str(error))
             return {"CANCELLED"}
         _report(self, result, False)
         return {"FINISHED"}
@@ -699,12 +700,12 @@ class SPX_OT_SyncJointAxesFromRigids(Operator):
         try:
             synced = _sync_joint_axes_from_rigids(context, settings)
         except (MirrorPhysicsError, RuntimeError, ValueError) as error:
-            self.report({"ERROR"}, str(error))
+            report(self, {"ERROR"}, str(error))
             return {"CANCELLED"}
         if not synced:
-            self.report({"WARNING"}, "勾选刚体没有以其为 B 端点的关联 Joint")
+            report(self, {"WARNING"}, "勾选刚体没有以其为 B 端点的关联 Joint")
             return {"FINISHED"}
-        self.report({"INFO"}, f"已同步 {synced} 个关联 Joint 的轴向")
+        report(self, {"INFO"}, f"已同步 {synced} 个关联 Joint 的轴向")
         return {"FINISHED"}
 
 
@@ -713,7 +714,7 @@ def draw_mirror_tools(layout, settings):
         return
     label = "刚体" if settings.browser_kind == "RIGID" else "Joint"
     box = layout.box()
-    box.label(text=f"镜像{label}", icon="MOD_MIRROR")
+    box.label(text=iface(f"镜像{label}"), icon="MOD_MIRROR")
     if settings.browser_kind == "RIGID":
         box.operator(
             SPX_OT_SyncJointAxesFromRigids.bl_idname,
@@ -725,12 +726,12 @@ def draw_mirror_tools(layout, settings):
     row = box.row(align=True)
     row.operator(
         SPX_OT_CreateMirroredMMDItems.bl_idname,
-        text=f"创建镜像{label}",
+        text=iface(f"创建镜像{label}"),
         icon="DUPLICATE",
     )
     row.operator(
         SPX_OT_SyncMirroredMMDItems.bl_idname,
-        text=f"同步镜像{label}",
+        text=iface(f"同步镜像{label}"),
         icon="FILE_REFRESH",
     )
     box.label(text="仅处理当前列表已勾选的源项", icon="INFO")

@@ -1,3 +1,4 @@
+from .i18n import iface, report
 import importlib
 
 import bpy
@@ -186,9 +187,9 @@ class SPX_UL_DisplayFrames(UIList):
         row.prop(item, FRAME_SELECTED_PROPERTY, text="")
         if item.is_special:
             split = row.split(factor=0.5, align=True)
-            split.label(text=item.name)
+            split.label(text=iface(item.name))
             names = split.row(align=True)
-            names.label(text=item.name_e)
+            names.label(text=iface(item.name_e))
             names.label(text="", icon="LOCKED")
         else:
             split = row.split(factor=0.5, align=True)
@@ -242,7 +243,7 @@ class SPX_OT_RefreshDisplayFrameEditor(Operator):
         settings = context.scene.surface_proxy_creator
         root = _find_root(context, settings)
         if root is None:
-            self.report({"ERROR"}, "找不到 MMD 模型 Root")
+            report(self, {"ERROR"}, "找不到 MMD 模型 Root")
             return {"CANCELLED"}
         settings.display_frame_root = root
         _FnModel, Model = _mmd_api()
@@ -309,7 +310,7 @@ class SPX_OT_RemoveSelectedDisplayFrames(Operator):
         )
         if not removed and not cleared:
             return {"CANCELLED"}
-        self.report({"INFO"}, f"已删除 {removed} 个显示枠，清空 {cleared} 个特殊枠")
+        report(self, {"INFO"}, f"已删除 {removed} 个显示枠，清空 {cleared} 个特殊枠")
         return {"FINISHED"}
 
 
@@ -380,12 +381,12 @@ class SPX_OT_ReorderDisplayFrames(Operator):
             if self.action in {"TOP", "UP", "DOWN", "BOTTOM"} and active is not None:
                 selected.add(active)
             else:
-                self.report({"WARNING"}, "请先勾选可移动显示枠")
+                report(self, {"WARNING"}, "请先勾选可移动显示枠")
                 return {"CANCELLED"}
         if self.action in {"BEFORE", "AFTER"} and (
             active is None or active in selected
         ):
-            self.report({"WARNING"}, "请选择不属于勾选块的普通活动显示枠")
+            report(self, {"WARNING"}, "请选择不属于勾选块的普通活动显示枠")
             return {"CANCELLED"}
         desired_movable = _reordered_pointers(
             order,
@@ -419,14 +420,14 @@ class SPX_OT_AddSelectedDisplayItems(Operator):
             armature = FnModel.find_armature_object(root)
             bone_names = _selected_bone_names(context, armature)
             if not bone_names:
-                self.report({"WARNING"}, "请在当前模型 Armature 的 Edit Mode 或 Pose Mode 中选择骨骼")
+                report(self, {"WARNING"}, "请在当前模型 Armature 的 Edit Mode 或 Pose Mode 中选择骨骼")
                 return {"CANCELLED"}
             added = _append_bone_items(frame, bone_names)
             noun = "骨骼"
         if not added:
-            self.report({"INFO"}, f"所选 {noun} 已在当前显示枠中")
+            report(self, {"INFO"}, f"所选 {noun} 已在当前显示枠中")
             return {"CANCELLED"}
-        self.report({"INFO"}, f"已添加 {added} 个{noun}")
+        report(self, {"INFO"}, f"已添加 {added} 个{noun}")
         return {"FINISHED"}
 
 
@@ -453,7 +454,7 @@ class SPX_OT_RemoveSelectedDisplayItems(Operator):
         frame.active_item = min(frame.active_item, max(0, len(frame.data) - 1))
         if not indices:
             return {"CANCELLED"}
-        self.report({"INFO"}, f"已删除 {len(indices)} 个显示项")
+        report(self, {"INFO"}, f"已删除 {len(indices)} 个显示项")
         return {"FINISHED"}
 
 
@@ -519,14 +520,14 @@ class SPX_OT_SelectDisplayInterval(Operator):
             if getattr(item, property_name)
         ]
         if len(selected_indices) < 2:
-            self.report({"WARNING"}, f"区间选组至少需要勾选两个{noun}")
+            report(self, {"WARNING"}, f"区间选组至少需要勾选两个{noun}")
             return {"CANCELLED"}
         added = 0
         for item in collection[selected_indices[0] : selected_indices[-1] + 1]:
             if not getattr(item, property_name):
                 setattr(item, property_name, True)
                 added += 1
-        self.report({"INFO"}, f"已补选区间内 {added} 个{noun}")
+        report(self, {"INFO"}, f"已补选区间内 {added} 个{noun}")
         return {"FINISHED"}
 
 
@@ -544,7 +545,7 @@ class SPX_OT_CleanInvalidDisplayItems(Operator):
         FnModel, _Model = _mmd_api()
         armature = FnModel.find_armature_object(root)
         if armature is None and any(item.type == "BONE" for item in frame.data):
-            self.report({"ERROR"}, "找不到当前 MMD 模型的 Armature，未执行清理")
+            report(self, {"ERROR"}, "找不到当前 MMD 模型的 Armature，未执行清理")
             return {"CANCELLED"}
         invalid_indices = []
         for index, item in enumerate(frame.data):
@@ -556,12 +557,12 @@ class SPX_OT_CleanInvalidDisplayItems(Operator):
             if invalid:
                 invalid_indices.append(index)
         if not invalid_indices:
-            self.report({"INFO"}, "当前显示枠中没有失效显示项")
+            report(self, {"INFO"}, "当前显示枠中没有失效显示项")
             return {"CANCELLED"}
         for index in reversed(invalid_indices):
             frame.data.remove(index)
         frame.active_item = min(frame.active_item, max(0, len(frame.data) - 1))
-        self.report({"INFO"}, f"已清理 {len(invalid_indices)} 个失效显示项")
+        report(self, {"INFO"}, f"已清理 {len(invalid_indices)} 个失效显示项")
         return {"FINISHED"}
 
 
@@ -582,18 +583,18 @@ class SPX_OT_SelectCheckedDisplayBones(Operator):
             if item.type == "BONE" and getattr(item, ITEM_SELECTED_PROPERTY)
         ]
         if not checked_names:
-            self.report({"ERROR"}, "当前显示枠中没有勾选骨骼")
+            report(self, {"ERROR"}, "当前显示枠中没有勾选骨骼")
             return {"CANCELLED"}
         FnModel, _Model = _mmd_api()
         armature = FnModel.find_armature_object(root)
         if armature is None:
-            self.report({"ERROR"}, "找不到当前 MMD 模型的 Armature")
+            report(self, {"ERROR"}, "找不到当前 MMD 模型的 Armature")
             return {"CANCELLED"}
         valid_names = [
             name for name in checked_names if armature.data.bones.get(name) is not None
         ]
         if not valid_names:
-            self.report({"ERROR"}, "勾选骨骼均已失效，请先清理残余显示项")
+            report(self, {"ERROR"}, "勾选骨骼均已失效，请先清理残余显示项")
             return {"CANCELLED"}
         if context.object is not None and context.object.mode != "OBJECT":
             bpy.ops.object.mode_set(mode="OBJECT")
@@ -610,7 +611,7 @@ class SPX_OT_SelectCheckedDisplayBones(Operator):
         message = f"已将 {len(valid_names)} 根勾选骨骼选入 Blender"
         if skipped:
             message += f"；跳过 {skipped} 个失效项"
-        self.report({"INFO"}, message)
+        report(self, {"INFO"}, message)
         return {"FINISHED"}
 
 
@@ -646,12 +647,12 @@ class SPX_OT_ReorderDisplayItems(Operator):
             if self.action in {"TOP", "UP", "DOWN", "BOTTOM"} and active is not None:
                 selected.add(active)
             else:
-                self.report({"WARNING"}, "请先勾选显示项")
+                report(self, {"WARNING"}, "请先勾选显示项")
                 return {"CANCELLED"}
         if self.action in {"BEFORE", "AFTER"} and (
             active is None or active in selected
         ):
-            self.report({"WARNING"}, "请选择不属于勾选块的活动显示项")
+            report(self, {"WARNING"}, "请选择不属于勾选块的活动显示项")
             return {"CANCELLED"}
         desired = _reordered_pointers(order, selected, active, self.action)
         _apply_index_order(frame.data, desired)
@@ -672,12 +673,12 @@ class SPX_OT_SmartFillDisplayFrameBones(Operator):
         if frame is None:
             return {"CANCELLED"}
         if frame.name == "表情":
-            self.report({"WARNING"}, "表情枠只收录 Morph，请选择其它显示枠")
+            report(self, {"WARNING"}, "表情枠只收录 Morph，请选择其它显示枠")
             return {"CANCELLED"}
         FnModel, _Model = _mmd_api()
         armature = FnModel.find_armature_object(root)
         if armature is None:
-            self.report({"ERROR"}, "找不到当前 MMD 模型的 Armature")
+            report(self, {"ERROR"}, "找不到当前 MMD 模型的 Armature")
             return {"CANCELLED"}
         registered = {
             item.name
@@ -692,9 +693,9 @@ class SPX_OT_SmartFillDisplayFrameBones(Operator):
         ]
         added = _append_bone_items(frame, bone_names)
         if not added:
-            self.report({"INFO"}, "没有可补充的未收录可见骨骼")
+            report(self, {"INFO"}, "没有可补充的未收录可见骨骼")
             return {"CANCELLED"}
-        self.report({"INFO"}, f"已智能补充 {added} 根骨骼")
+        report(self, {"INFO"}, f"已智能补充 {added} 根骨骼")
         return {"FINISHED"}
 
 
@@ -708,7 +709,7 @@ class SPX_OT_SmartReorderFacialFrame(Operator):
         root = _find_root(context, context.scene.surface_proxy_creator)
         frame = _active_frame(root) if root is not None else None
         if frame is None or frame.name != "表情":
-            self.report({"WARNING"}, "请先选择表情显示枠")
+            report(self, {"WARNING"}, "请先选择表情显示枠")
             return {"CANCELLED"}
         from .mmd_morph_editor import _morph_has_details
 
@@ -737,7 +738,7 @@ class SPX_OT_SmartReorderFacialFrame(Operator):
             item.morph_type = morph_type
             item.name = morph_name
         frame.active_item = 0
-        self.report(
+        report(self,
             {"INFO"},
             f"表情枠已重排，共收录 {len(ordered)} 个非隐藏且非空 Morph",
         )
@@ -811,8 +812,8 @@ def _draw_active_frame_statistics(layout, frame):
     bone_count = sum(item.type == "BONE" for item in frame.data)
     layout.label(
         text=(
-            f"当前显示枠：共 {len(frame.data)} 项；"
-            f"Morph：{morph_count} 项；骨骼：{bone_count} 项"
+            iface(f"当前显示枠：共 {len(frame.data)} 项；"
+            f"Morph：{morph_count} 项；骨骼：{bone_count} 项")
         )
     )
 
