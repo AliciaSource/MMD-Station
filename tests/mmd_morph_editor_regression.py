@@ -30,12 +30,12 @@ from mmd_station.mmd_morph_editor import (
     VERTEX_DETAIL_SELECTED_PROPERTY,
     _clear_uv_morph_preview,
     _create_uv_morph_preview,
+    _migrate_existing_vmd_morph_animations,
     _migrate_placeholder_animation,
     _morph_state_data_path,
     _morph_state_structure_is_current,
     _morph_states_are_current,
     _refresh_morph_state_metadata,
-    _preinitialize_imported_morphs,
     _remove_imported_shape_key_curves,
     ensure_morph_states,
 )
@@ -1376,7 +1376,8 @@ mesh_curve = mesh_action.fcurves.new(
 mesh_curve.keyframe_points.insert(10.0, 0.0)
 mesh_curve.keyframe_points.insert(20.0, 1.0)
 
-imported_uids = _migrate_placeholder_animation(root)
+migrated = _migrate_existing_vmd_morph_animations()
+imported_uids = migrated[root.name]
 assert imported_uids == {
     states[name].uid
     for name in ("Smile", "Hide", "BoneMove", "UVShift", "GroupHide")
@@ -1386,10 +1387,46 @@ assert {
     _morph_state_data_path(states[name])
     for name in ("Smile", "Hide", "BoneMove", "UVShift", "GroupHide")
 }.issubset(destination_paths)
-_remove_imported_shape_key_curves(root)
 assert not source_action.fcurves
 assert not mesh_action.fcurves
-_preinitialize_imported_morphs(root, imported_uids)
+
+# Existing builds stored imported curves under stable UID paths, while an
+# interactive I press created Blender's index path. Reload migration merges
+# both into the single UI-native path and keeps the interactive frame value.
+hide_path = _morph_state_data_path(states["Hide"])
+legacy_hide_curve = root.animation_data.action.fcurves.find(hide_path)
+legacy_hide_curve.data_path = (
+    f'spx_morph_states["{states["Hide"].uid}"].value'
+)
+manual_hide_curve = root.animation_data.action.fcurves.new(hide_path)
+manual_hide_curve.keyframe_points.insert(15.0, 0.75)
+assert ensure_morph_states(root)
+hide_curves = [
+    curve
+    for curve in root.animation_data.action.fcurves
+    if curve.data_path == _morph_state_data_path(states["Hide"])
+]
+assert len(hide_curves) == 1
+assert any(
+    abs(point.co.x - 15.0) < 1.0e-6 and abs(point.co.y - 0.75) < 1.0e-6
+    for point in hide_curves[0].keyframe_points
+)
+
+# The central property now has Blender's three native animation states:
+# keyed frame (yellow), animated non-keyed frame (green), and an overridden
+# value that differs from the F-Curve evaluation (orange).
+smile_curve = root.animation_data.action.fcurves.find(
+    _morph_state_data_path(states["Smile"])
+)
+assert smile_curve is not None
+bpy.context.scene.frame_set(20)
+assert any(abs(point.co.x - 20.0) < 1.0e-6 for point in smile_curve.keyframe_points)
+assert abs(states["Smile"].value - smile_curve.evaluate(20.0)) < 1.0e-6
+bpy.context.scene.frame_set(15)
+assert not any(abs(point.co.x - 15.0) < 1.0e-6 for point in smile_curve.keyframe_points)
+assert abs(states["Smile"].value - smile_curve.evaluate(15.0)) < 1.0e-6
+states["Smile"].value = smile_curve.evaluate(15.0) + 0.25
+assert abs(states["Smile"].value - smile_curve.evaluate(15.0)) > 0.2
 bpy.context.scene.frame_set(20)
 assert abs(states["Smile"].value - 1.0) < 1.0e-6
 assert abs(states["Hide"].value - 1.0) < 1.0e-6

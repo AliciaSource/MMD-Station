@@ -287,7 +287,8 @@ def _schedule_morph_state_refresh(root):
 def ensure_morph_states(root):
     global _MUTATING
     if root is None or not hasattr(root, "spx_morph_states"):
-        return
+        return False
+    old_uids = [state.uid for state in root.spx_morph_states]
     used = set()
     ordered = []
     for morph_type, morph in _ordered_morphs(root):
@@ -318,6 +319,7 @@ def ensure_morph_states(root):
                 states.move(current_index, target_index)
     finally:
         _MUTATING = False
+    return _remap_morph_state_animation_paths(root, old_uids)
 
 
 def _effective_weights(root, morph_lookup):
@@ -1027,8 +1029,94 @@ def _shape_key_action_paths(shape_keys):
 
 
 def _morph_state_data_path(state):
-    uid = bpy.utils.escape_identifier(state.uid)
-    return f'spx_morph_states["{uid}"].value'
+    return state.path_from_id("value")
+
+
+_MORPH_STATE_INDEX_PATH = re.compile(r"^spx_morph_states\[(\d+)\]\.value$")
+_MORPH_STATE_UID_PATH = re.compile(
+    r'^spx_morph_states\["([0-9a-f]+)"\]\.value$'
+)
+
+
+def _copy_keyframe_point(source, destination):
+    destination.co = source.co
+    destination.interpolation = source.interpolation
+    destination.easing = source.easing
+    destination.type = source.type
+    destination.amplitude = source.amplitude
+    destination.back = source.back
+    destination.period = source.period
+    destination.handle_left_type = source.handle_left_type
+    destination.handle_right_type = source.handle_right_type
+    destination.handle_left = source.handle_left
+    destination.handle_right = source.handle_right
+
+
+def _merge_fcurve_points(source, destination):
+    by_frame = {
+        round(float(point.co.x), 6): point
+        for point in destination.keyframe_points
+    }
+    for source_point in source.keyframe_points:
+        frame_key = round(float(source_point.co.x), 6)
+        destination_point = by_frame.get(frame_key)
+        if destination_point is None:
+            destination_point = destination.keyframe_points.insert(
+                source_point.co.x,
+                source_point.co.y,
+                options={"FAST"},
+            )
+            by_frame[frame_key] = destination_point
+        _copy_keyframe_point(source_point, destination_point)
+    destination.update()
+
+
+def _remap_morph_state_animation_paths(root, old_uids):
+    animation_data = root.animation_data
+    if animation_data is None:
+        return False
+    new_index_by_uid = {
+        state.uid: index for index, state in enumerate(root.spx_morph_states)
+    }
+    changed = False
+    for action in tuple(_iter_animation_actions(animation_data) or ()):
+        grouped = {}
+        for curve in tuple(action.fcurves):
+            uid = None
+            index_match = _MORPH_STATE_INDEX_PATH.fullmatch(curve.data_path)
+            if index_match is not None:
+                old_index = int(index_match.group(1))
+                if 0 <= old_index < len(old_uids):
+                    uid = old_uids[old_index]
+            else:
+                uid_match = _MORPH_STATE_UID_PATH.fullmatch(curve.data_path)
+                if uid_match is not None:
+                    uid = uid_match.group(1)
+            new_index = new_index_by_uid.get(uid)
+            if new_index is None:
+                continue
+            target_path = f"spx_morph_states[{new_index}].value"
+            grouped.setdefault(target_path, []).append(curve)
+
+        for target_path, curves in grouped.items():
+            canonical = next(
+                (
+                    curve
+                    for curve in curves
+                    if _MORPH_STATE_UID_PATH.fullmatch(curve.data_path)
+                ),
+                curves[0],
+            )
+            for curve in curves:
+                if curve is canonical:
+                    continue
+                _merge_fcurve_points(curve, canonical)
+                action.fcurves.remove(curve)
+                changed = True
+            if canonical.data_path != target_path:
+                canonical.data_path = target_path
+                changed = True
+    return changed
 
 
 def _iter_animation_actions(animation_data):
@@ -1073,17 +1161,7 @@ def _copy_fcurve(source, destination_action, data_path):
         destination.keyframe_points[original_count:],
         strict=False,
     ):
-        destination_point.co = source_point.co
-        destination_point.interpolation = source_point.interpolation
-        destination_point.easing = source_point.easing
-        destination_point.type = source_point.type
-        destination_point.amplitude = source_point.amplitude
-        destination_point.back = source_point.back
-        destination_point.period = source_point.period
-        destination_point.handle_left_type = source_point.handle_left_type
-        destination_point.handle_right_type = source_point.handle_right_type
-        destination_point.handle_left = source_point.handle_left
-        destination_point.handle_right = source_point.handle_right
+        _copy_keyframe_point(source_point, destination_point)
     destination.extrapolation = source.extrapolation
     if original_count == 0 and not destination.modifiers:
         for source_modifier in source.modifiers:
@@ -1138,7 +1216,7 @@ def _ensure_root_action(root, source_action):
     )
 
 
-def _migrate_placeholder_animation(root):
+def _migrate_placeholder_animation(root, skip_existing=False):
     placeholder = _animation_placeholder(root)
     if placeholder is None or placeholder.data.shape_keys is None:
         return set()
@@ -1146,6 +1224,16 @@ def _migrate_placeholder_animation(root):
     state_by_name = {}
     for state in root.spx_morph_states:
         state_by_name.setdefault(state.morph_name, state)
+    existing_uids = set()
+    if skip_existing:
+        state_by_path = {
+            _morph_state_data_path(state): state for state in root.spx_morph_states
+        }
+        for action in tuple(_iter_animation_actions(root.animation_data) or ()):
+            for curve in action.fcurves:
+                state = state_by_path.get(curve.data_path)
+                if state is not None:
+                    existing_uids.add(state.uid)
     shape_keys = placeholder.data.shape_keys
     animation_data = shape_keys.animation_data
     if animation_data is None:
@@ -1154,12 +1242,22 @@ def _migrate_placeholder_animation(root):
     imported_uids = set()
     active_action = animation_data.action
     if active_action is not None:
-        curves = _morph_curves(active_action, path_names, state_by_name)
+        curves = [
+            (curve, state)
+            for curve, state in _morph_curves(
+                active_action,
+                path_names,
+                state_by_name,
+            )
+            if not skip_existing or state.uid not in existing_uids
+        ]
         if curves:
             destination_action = _ensure_root_action(root, active_action)
             for curve, state in curves:
                 _copy_fcurve(curve, destination_action, _morph_state_data_path(state))
                 imported_uids.add(state.uid)
+                if skip_existing:
+                    existing_uids.add(state.uid)
             if root.animation_data.action is None:
                 root.animation_data.action = destination_action
 
@@ -1170,7 +1268,15 @@ def _migrate_placeholder_animation(root):
             source_action = source_strip.action
             if source_action is None:
                 continue
-            curves = _morph_curves(source_action, path_names, state_by_name)
+            curves = [
+                (curve, state)
+                for curve, state in _morph_curves(
+                    source_action,
+                    path_names,
+                    state_by_name,
+                )
+                if not skip_existing or state.uid not in existing_uids
+            ]
             if not curves:
                 continue
             destination_action = destination_actions.get(source_action.as_pointer())
@@ -1186,6 +1292,8 @@ def _migrate_placeholder_animation(root):
                         _morph_state_data_path(state),
                     )
                     imported_uids.add(state.uid)
+                    if skip_existing:
+                        existing_uids.add(state.uid)
             if destination_track is None:
                 destination_track = root.animation_data_create().nla_tracks.new()
                 destination_track.name = source_track.name + ".spx_morph"
@@ -1330,6 +1438,63 @@ def _import_vmd_execute(operator, context):
                 obj.select_set(True)
         if original_active is not None and original_active.name in bpy.data.objects:
             context.view_layer.objects.active = original_active
+
+
+def _migrate_existing_vmd_morph_animations():
+    migrated = {}
+    changed_roots = set()
+    for root in tuple(bpy.data.objects):
+        if getattr(root, "mmd_type", "") != "ROOT" or not hasattr(
+            root,
+            "spx_morph_states",
+        ):
+            continue
+        try:
+            if ensure_morph_states(root):
+                changed_roots.add(root.name)
+            imported_uids = _migrate_placeholder_animation(
+                root,
+                skip_existing=True,
+            )
+            if not imported_uids:
+                continue
+            _remove_imported_shape_key_curves(root)
+            _preinitialize_imported_morphs(root, imported_uids)
+            migrated[root.name] = imported_uids
+            changed_roots.add(root.name)
+        except Exception as error:
+            root[RUNTIME_ERROR_PROPERTY] = f"现有 VMD Morph 接管失败: {error}"
+    if changed_roots:
+        scene = bpy.context.scene
+        if scene is not None:
+            global _MUTATING
+            _MUTATING = True
+            try:
+                scene.frame_set(scene.frame_current)
+            finally:
+                _MUTATING = False
+        for root_name in changed_roots:
+            root = bpy.data.objects.get(root_name)
+            if root is not None:
+                evaluate_morph_root(root)
+        _tag_view3d_redraw()
+    return migrated
+
+
+def _migrate_existing_vmd_morph_animations_timer():
+    _migrate_existing_vmd_morph_animations()
+    return None
+
+
+@persistent
+def _migrate_existing_vmd_morph_animations_on_load(_dummy):
+    if not bpy.app.timers.is_registered(
+        _migrate_existing_vmd_morph_animations_timer
+    ):
+        bpy.app.timers.register(
+            _migrate_existing_vmd_morph_animations_timer,
+            first_interval=0.0,
+        )
 
 
 def _vmd_export_morph_curves(root):
@@ -4003,6 +4168,20 @@ def register_services():
     )
     if _morph_frame_change not in bpy.app.handlers.frame_change_post:
         bpy.app.handlers.frame_change_post.append(_morph_frame_change)
+    if (
+        _migrate_existing_vmd_morph_animations_on_load
+        not in bpy.app.handlers.load_post
+    ):
+        bpy.app.handlers.load_post.append(
+            _migrate_existing_vmd_morph_animations_on_load
+        )
+    if not bpy.app.timers.is_registered(
+        _migrate_existing_vmd_morph_animations_timer
+    ):
+        bpy.app.timers.register(
+            _migrate_existing_vmd_morph_animations_timer,
+            first_interval=0.0,
+        )
     retry_interval = _install_vmd_io_hooks()
     if (
         retry_interval is not None
@@ -4019,6 +4198,17 @@ def unregister_services():
     if bpy.app.timers.is_registered(_install_vmd_io_hooks):
         bpy.app.timers.unregister(_install_vmd_io_hooks)
     _remove_vmd_io_hooks()
+    if bpy.app.timers.is_registered(
+        _migrate_existing_vmd_morph_animations_timer
+    ):
+        bpy.app.timers.unregister(_migrate_existing_vmd_morph_animations_timer)
+    if (
+        _migrate_existing_vmd_morph_animations_on_load
+        in bpy.app.handlers.load_post
+    ):
+        bpy.app.handlers.load_post.remove(
+            _migrate_existing_vmd_morph_animations_on_load
+        )
     if _morph_frame_change in bpy.app.handlers.frame_change_post:
         bpy.app.handlers.frame_change_post.remove(_morph_frame_change)
     if hasattr(bpy.types.Object, "spx_morph_active_index"):
