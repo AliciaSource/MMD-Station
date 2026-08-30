@@ -693,7 +693,7 @@ class BakeJob:
         try:
             if self.fast_mode:
                 self._create_working_copy()
-            self.action_bindings = self._build_action_bindings()
+            self.action_bindings = self._build_action_bindings(self.source_action)
             self._prepare()
         except Exception:
             if self.world is not None:
@@ -710,28 +710,37 @@ class BakeJob:
     def _prepare(self):
         self.work_armature.animation_data_create()
         self.work_armature.animation_data.action = self.source_action
-        if self.fast_mode:
-            self._reset_working_physics_pose()
-            self._evaluate_source_action(self.simulation_start)
-        else:
-            self.scene.frame_set(self.simulation_start)
-        self.context.view_layer.update()
-        self.session = runtime.PreviewSession(
-            self.scene,
-            self.settings,
-            self.work_root,
-            armature=self.work_armature,
-        )
-        self.session.suppress_redraw = self.fast_mode
-        self.session.offline_bake = True
-        self.world = runtime.PreviewWorld(
-            ("bake", self.work_root.name, id(self)),
-            self.session.import_scale,
-            self.session.solver_target,
-            self.session.library,
-        )
-        self.world.add(self.session)
-        self.world.reset(prepared_session=self.session)
+        normalize_fast_frame = self.mode == "FAST"
+        restore_fast_frame = normalize_fast_frame and self.original_frame != self.simulation_start
+        try:
+            if self.fast_mode:
+                if normalize_fast_frame:
+                    self.scene.frame_set(self.simulation_start)
+                self._reset_working_physics_pose()
+                self._evaluate_source_action(self.simulation_start)
+            else:
+                self.scene.frame_set(self.simulation_start)
+            self.context.view_layer.update()
+            self.session = runtime.PreviewSession(
+                self.scene,
+                self.settings,
+                self.work_root,
+                armature=self.work_armature,
+            )
+            self.session.suppress_redraw = self.fast_mode
+            self.session.offline_bake = True
+            self.world = runtime.PreviewWorld(
+                ("bake", self.work_root.name, id(self)),
+                self.session.import_scale,
+                self.session.solver_target,
+                self.session.library,
+            )
+            self.world.add(self.session)
+            self.world.reset(prepared_session=self.session)
+        finally:
+            if restore_fast_frame:
+                self.scene.frame_set(self.original_frame)
+                self.context.view_layer.update()
         self.cache_context_hash = physics_cache.context_hash(
             self.root,
             self.source_action,
@@ -753,6 +762,12 @@ class BakeJob:
             self.world.solver.restore_snapshot(
                 self.cached_checkpoints[checkpoint_frame]
             )
+            self._evaluate_action_bindings(
+                self._build_action_bindings(self.output_action),
+                checkpoint_frame,
+            )
+            self.session.pose_input.invalidate()
+            self.session.last_output_basis = self.session._capture_driver_basis()
             self.session.mmd_step_count = 4
             self.steps = [
                 (frame, frame >= self.start)
@@ -848,9 +863,9 @@ class BakeJob:
             bpy.data.collections.remove(self.work_collection)
         self.work_collection = None
 
-    def _build_action_bindings(self):
+    def _build_action_bindings(self, action):
         bindings = []
-        for curve in self.source_action.fcurves:
+        for curve in action.fcurves:
             if curve.mute or not curve.is_valid:
                 continue
             owner_path, separator, property_name = curve.data_path.rpartition(".")
@@ -875,8 +890,8 @@ class BakeJob:
             bindings.append((curve, owner, property_name, value_kind))
         return tuple(bindings)
 
-    def _evaluate_source_action(self, frame):
-        for curve, owner, property_name, value_kind in self.action_bindings:
+    def _evaluate_action_bindings(self, bindings, frame):
+        for curve, owner, property_name, value_kind in bindings:
             value = curve.evaluate(frame)
             if value_kind == "ARRAY":
                 getattr(owner, property_name)[curve.array_index] = value
@@ -889,6 +904,9 @@ class BakeJob:
         self.work_armature.update_tag(refresh={"OBJECT"})
         if self.session is not None:
             self.session.offline_frame = frame
+
+    def _evaluate_source_action(self, frame):
+        self._evaluate_action_bindings(self.action_bindings, frame)
 
     def restore_display_state(self):
         self.armature.animation_data.action = self.original_action

@@ -16,6 +16,7 @@ import mmd_station
 from mmd_station.mmd_physics import _mmd_api
 from mmd_station.physics_preview.bake import (
     BakeJob,
+    _action_basis,
     _repair_layers,
     _segments,
     _source_action,
@@ -23,6 +24,7 @@ from mmd_station.physics_preview.bake import (
     draw_bake,
 )
 from mmd_station.physics_preview import cache as physics_cache
+from mmd_station.physics_preview import runtime as physics_runtime
 from bl_ext.blender_org.mmd_tools.core.model import Model
 
 
@@ -150,10 +152,25 @@ _store_segments(output, legacy_segments)
 settings.physics_bake_start = 4
 settings.physics_bake_end = 5
 settings.physics_bake_continuity = "CONTINUE"
-bpy.context.scene.frame_set(3)
+bpy.context.scene.frame_set(252)
 armature.pose.bones[physics_bone.name].location.x = 42.0
 assert not armature.pose.bones[physics_bone.name].matrix_basis.is_identity
-job = BakeJob(bpy.context, "FAST")
+preview_frames = []
+original_preview_session = physics_runtime.PreviewSession
+
+
+def recording_preview_session(scene, *args, **kwargs):
+    preview_frames.append(scene.frame_current)
+    return original_preview_session(scene, *args, **kwargs)
+
+
+physics_runtime.PreviewSession = recording_preview_session
+try:
+    job = BakeJob(bpy.context, "FAST")
+finally:
+    physics_runtime.PreviewSession = original_preview_session
+assert preview_frames == [1]
+assert bpy.context.scene.frame_current == 252
 assert job.simulation_start == 1
 assert job.simulation_preroll == 2
 assert job.restored_checkpoint is None
@@ -214,6 +231,13 @@ original_end = [
 repair_job = BakeJob(bpy.context, "REPAIR", repair_layer=repair_layer)
 assert repair_job.restored_checkpoint == 1
 assert repair_job.steps == [(2, True), (3, True), (4, True), (5, True)]
+checkpoint_bone = repair_job.work_armature.pose.bones[physics_bone.name]
+checkpoint_basis = _action_basis(repair_output, checkpoint_bone, 1)
+assert max(
+    abs(checkpoint_bone.matrix_basis[row][column] - checkpoint_basis[row][column])
+    for row in range(4)
+    for column in range(4)
+) < 1.0e-6
 while repair_job.step():
     pass
 repair_segment = repair_job.finish()
