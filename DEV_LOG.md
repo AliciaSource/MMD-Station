@@ -1,5 +1,13 @@
 # Development Log
 
+## 2026-08-30 - V0.1.8 分 Action 分段物理烘焙与非阻塞双模式
+
+- 物理预览页新增 `快速烘焙` 与 `播放烘焙`：前者关闭刚体/Joint 调试回写和 View3D redraw，并以最多约 `40 ms` 的主线程时间片连续求解后主动归还 UI；后者按场景 FPS 逐帧推进、显示最终物理姿态并同步采样，机器不足目标帧率时只降低播放速度、不跳过待烘焙帧。两者均使用持续进度框显示阶段、当前帧、已完成帧、平均速度与 ETA，支持 `Esc` / 右键取消；取消或失败会恢复原 Action、原时间帧和启动姿态，不提交半成品。
+- 每个源 Action 通过稳定 UID 绑定独立的 `<源动作> · Physics Bake` 输出 Action，原 Action 不写入；只采样实际物理驱动骨骼的 `location` 与当前 rotation mode，Quaternion 连续修正符号，最后按 F-Curve 批量重建并写入每帧 `LINEAR` keyframe。输出 Action 持久记录已完成区间、模式、衔接方式、预热、速度与骨骼清单；UI 可逐段删除或清空当前动作全部烘焙，不同源 Action 的结果互不混用。
+- 支持“独立烘焙”和“续接上一段”。独立段默认预热 `30` 帧且预热只求解不写键；续接段要求上一有效区间恰好结束于新起点前一帧，并从该链最早的 `simulation_start` 确定性静默重放后再写新范围，避免仅恢复末尾骨骼姿势而丢失刚体速度。删除或替换前段后，依赖它的后续续接段标记为“已过期”；当前 native ABI 尚无完整 Bullet state snapshot，因此跨会话续接优先正确性而不是伪快照。
+- 新增 `tests/physics_bake_regression.py`，以真实 `mmd_tools` MMD Root、静态/动态刚体和 PMX/MMD 两套 DLL 覆盖快速/播放两种核心步进、Action 隔离、批量 F-Curve、`1–3` 独立段 + `4–5` 续接重放、区间绘制、逐段删除后过期传播及清空恢复源 Action，Blender 4.4.3 输出 `MMD_PHYSICS_BAKE_REGRESSION_OK`；`MMD_TIME_DRIVER_UNIT_OK`、全包 `py_compile` 与 `git diff --check` 通过。
+- 对未保存的 `D:\MMD\模型\Alicia\Endfield-Rossi\洛茜\07.blend` 做 30 帧快速烘焙基准：Root `合并`、`339` 刚体、`471` Joint，包含 session 建立和最终批量写 Action 的总耗时 `1.3058 s`，即 `22.974 帧/秒`；烘焙区间自身记录 `24.66 帧/秒`。这是 headless PMX DLL 证据，不冒充播放烘焙的真实 GUI 体感。版本保持 V0.1.8，真实 Blender 4.4 继续通过源码 Junction 生效，不打包 ZIP、不 push。
+
 ## 2026-08-29 - V0.1.8 运行时 PMX Shadow 快速覆盖与另存为
 
 - 新增 `mmd_shadow.py`，第一次完整 PMX 导出时直接保留 `mmd_tools` 已构建的 `pmx.Model`、骨骼/材质索引映射及安全签名，不再从磁盘重新解析旧 PMX。Shadow 只存在于当前 Blender 进程内，不在 `.blend` 同目录、导出目录或用户配置目录写缓存文件；关闭 Blender、切换 `.blend`、Reload Scripts 或禁用 MMD Station 后立即清空，因此每次新会话第一次导出仍是完整导出并重新建立 Shadow。

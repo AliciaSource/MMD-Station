@@ -1259,7 +1259,7 @@ class PreviewSession:
                     self.rigid_debug_scales[index],
                 )
         self.pose_input.mark_output(present_output, debugged=update_debug)
-        if not present_output:
+        if not present_output and not getattr(self, "suppress_redraw", False):
             _tag_view3d_redraw()
         self.last_output_basis = self._capture_driver_basis()
         self.last_frame = (self.scene.frame_current, self.scene.frame_subframe)

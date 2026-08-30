@@ -385,6 +385,9 @@ def draw_preview(layout, settings):
     box.label(text="清空全部姿态或发生异常时恢复启动快照并继续运行", icon="INFO")
     box.label(text="启动快照包含全部骨骼、刚体和 Joint", icon="INFO")
     box.label(text="不创建 Blender Rigid Body World", icon="INFO")
+    from .bake import draw_bake
+
+    draw_bake(layout, settings)
 
 
 CLASSES = (
