@@ -3,9 +3,6 @@
 MMD Station is a Blender 4.4 add-on for editing, validating, previewing, and
 exporting MikuMikuDance models in one workspace.
 
-> **Development status:** the current build is `v0.1.8-dev`. No stable GitHub
-> Release has been published yet.
-
 ## Highlights
 
 - MMD model, VMD, and VPD import/export shortcuts backed by `mmd_tools`.
@@ -24,18 +21,23 @@ exporting MikuMikuDance models in one workspace.
 ## Requirements
 
 - Blender 4.4
+- **MMD Tools is a required dependency.** Install and enable it before MMD
+  Station. MMD Station relies on MMD Tools for the MMD model data API and
+  PMX/VMD/VPD import and export workflows.
+  - [Official MMD Tools page on Blender Extensions](https://extensions.blender.org/add-ons/mmd-tools/)
+  - [MMD Tools source code on GitHub](https://github.com/MMD-Blender/blender_mmd_tools)
 - Windows x64 for the bundled native physics and IK libraries
-- A compatible `mmd_tools` installation for PMX/VMD/VPD I/O and MMD data access
 
 ## Installation
 
 There is no stable release package yet. For development use:
 
-1. Clone this repository.
-2. Copy or link the `mmd_station` directory into Blender's add-on directory:
+1. Install and enable [MMD Tools](https://extensions.blender.org/add-ons/mmd-tools/).
+2. Clone this repository.
+3. Copy or link the `mmd_station` directory into Blender's add-on directory:
    `%APPDATA%\Blender Foundation\Blender\4.4\scripts\addons\mmd_station`
-3. In Blender, open **Edit > Preferences > Add-ons** and enable **MMD Station**.
-4. Open the 3D Viewport sidebar and select the **MMD Station** tab.
+4. In Blender, open **Edit > Preferences > Add-ons** and enable **MMD Station**.
+5. Open the 3D Viewport sidebar and select the **MMD Station** tab.
 
 When stable releases begin, install the `mmd_station-X.Y.Z.zip` asset attached
 to the matching GitHub Release. The built-in updater intentionally follows

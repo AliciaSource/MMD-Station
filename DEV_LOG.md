@@ -1,5 +1,11 @@
 # Development Log
 
+## 2026-08-30 - V0.1.8-dev README 依赖说明修正
+
+- 移除 README 顶部 GitHub 灰底引用样式的开发状态提示，不再把内部开发阶段作为项目首页重点展示。
+- 将 MMD Tools 从“兼容安装”明确改为 MMD Station 的必需依赖，说明其承担 MMD 数据 API 与 PMX/VMD/VPD 导入导出，并加入 Blender Extensions 官方页面及 `MMD-Blender/blender_mmd_tools` GitHub 源码链接；安装步骤同步要求先安装并启用 MMD Tools。
+- 仅修改英文 README 与开发日志，不改插件源码、功能、版本号或发布状态；链接已对照 MMD Tools 官方 GitHub README 当前提供的 Blender Extensions 地址确认。
+
 ## 2026-08-30 - V0.1.8-dev 架构级中英双语 UI
 
 - 新增中央 `mmd_station/i18n/` 本地化层：保留现有中文 msgid 与全部兼容标识，通过 Blender 原生 translations 生命周期统一提供英文 catalog。`zh_HANS` / `zh_HANT`（并兼容 `zh_CN` / `zh_TW` 别名）保持当前中文 UI，其它所有 Blender locale 复用同一套英文 UI，不按语言复制功能代码或维护多套非中文界面。
