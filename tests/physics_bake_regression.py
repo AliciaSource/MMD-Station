@@ -60,6 +60,15 @@ add_rigid("BakeDynamic", 1, -0.3)
 
 source = bpy.data.actions.new("BakeSource")
 armature.animation_data_create().action = source
+source_curve = source.fcurves.new(
+    f'pose.bones["{bpy.utils.escape_identifier(bone.name)}"].location',
+    index=0,
+)
+source_curve.keyframe_points.add(2)
+source_curve.keyframe_points.foreach_set("co", (1.0, 0.1, 3.0, 0.3))
+for point in source_curve.keyframe_points:
+    point.interpolation = "LINEAR"
+bpy.context.scene.frame_set(bpy.context.scene.frame_current)
 settings = bpy.context.scene.surface_proxy_creator
 settings.mmd_root = root
 settings.preview_scope = "MODEL"
@@ -67,9 +76,32 @@ settings.preview_solver_target = "PMX"
 settings.preview_update_rigids = False
 settings.physics_bake_start = 1
 settings.physics_bake_end = 3
-settings.physics_bake_preroll = 0
+settings.physics_bake_preroll = 2
 settings.physics_bake_continuity = "INDEPENDENT"
 
+original_frame = bpy.context.scene.frame_current
+original_action = armature.animation_data.action
+original_basis = armature.pose.bones[bone.name].matrix_basis.copy()
+cancelled = BakeJob(bpy.context, "FAST")
+assert cancelled.steps[:2] == [(1, False), (1, False)]
+assert min(frame for frame, _store in cancelled.steps) == 1
+cancelled._evaluate_source_action(2)
+assert abs(armature.pose.bones[bone.name].location.x - 0.2) < 1.0e-6
+cancelled.step()
+armature.pose.bones[bone.name].location.x += 42.0
+cancelled.close()
+assert bpy.context.scene.frame_current == original_frame
+assert armature.animation_data.action is original_action
+assert not root.hide_get() and not armature.hide_get()
+restored_basis = armature.pose.bones[bone.name].matrix_basis
+restore_delta = max(
+    abs(restored_basis[row][column] - original_basis[row][column])
+    for row in range(4)
+    for column in range(4)
+)
+assert restore_delta < 1.0e-6
+
+settings.physics_bake_preroll = 0
 job = BakeJob(bpy.context, "FAST")
 while job.step():
     pass
@@ -83,7 +115,7 @@ assert _segments(output) == [first]
 bone_prefix = f'pose.bones["{bpy.utils.escape_identifier(bone.name)}"]'
 assert output.fcurves.find(f"{bone_prefix}.location", index=0) is not None
 assert output.fcurves.find(f"{bone_prefix}.rotation_quaternion", index=0) is not None
-assert len(source.fcurves) == 0
+assert len(source.fcurves) == 1
 
 settings.physics_bake_start = 4
 settings.physics_bake_end = 5
@@ -142,7 +174,7 @@ location_curve = armature.animation_data.action.fcurves.find(
     f"{bone_prefix}.location",
     index=0,
 )
-assert [point.co.x for point in location_curve.keyframe_points] == [4, 5]
+assert [point.co.x for point in location_curve.keyframe_points] == [1, 3, 4, 5]
 
 assert bpy.ops.surface_proxy.clear_mmd_physics_bake() == {"FINISHED"}
 assert armature.animation_data.action is source

@@ -35,7 +35,17 @@ class MmdIkPhysicsAdapter:
             operation_center_matrix = (
                 operation_center.matrix.copy() if operation_center is not None else None
             )
-            native_pose_active = evaluate_physics_pose(session.root, session) is not None
+            vmd_frame = None
+            if session.offline_bake and hasattr(session, "offline_frame"):
+                vmd_frame = (
+                    native_session.vmd_start
+                    + session.offline_frame
+                    - native_session.blender_start
+                )
+            native_pose_active = (
+                evaluate_physics_pose(session.root, session, vmd_frame=vmd_frame)
+                is not None
+            )
             if operation_center is not None and operation_center_matrix is not None:
                 operation_center.matrix = operation_center_matrix
             exact_targets = uses_exact_physics_targets(session.root, session)
@@ -96,7 +106,8 @@ class MmdIkPhysicsAdapter:
             if preserved:
                 session.armature.update_tag(refresh={"OBJECT"})
                 bpy.context.view_layer.update()
-            native_session.sync_output_pose(session.armature, session.scene)
+            if not session.offline_bake:
+                native_session.sync_output_pose(session.armature, session.scene)
             return result
         finally:
             native_session.suspended = previous_suspended

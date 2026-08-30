@@ -840,6 +840,7 @@ class PreviewSession:
         self.consecutive_tick_failures = 0
         self.snapshot_reset_pending = False
         self.mmd_step_count = 0
+        self.offline_bake = False
         self.closed = False
         self.world = None
         self.solver = None
@@ -1014,6 +1015,8 @@ class PreviewSession:
             _apply_source_joint_values(self.joint_descs, source_joint_items)
 
     def _broad_pose_reset_detected(self):
+        if self.offline_bake:
+            return False
         driver_names = self.driver_pose_bones
         current_frame = (self.scene.frame_current, self.scene.frame_subframe)
         if (

@@ -94,10 +94,11 @@ def active_progress():
     job = _ACTIVE_JOB
     if job is None:
         return None
-    elapsed = max(time.perf_counter() - job.started_at, 1.0e-6)
+    elapsed = max(time.perf_counter() - job.solve_started_at, 1.0e-6)
     completed = job.output_frames_completed
-    speed = completed / elapsed
-    remaining = max(job.output_frame_count - completed, 0)
+    simulation_completed = job.frame_index
+    speed = simulation_completed / elapsed
+    remaining = max(len(job.steps) - simulation_completed, 0)
     return {
         "mode": job.mode,
         "frame": job.current_frame,
@@ -347,9 +348,16 @@ class BakeJob:
                 self.existing_segments,
                 self.start,
             )
+            self.steps = [
+                (frame, frame >= self.start)
+                for frame in range(self.simulation_start, self.end + 1)
+            ]
         else:
-            self.simulation_start = self.start - self.preroll
-        self.frames = list(range(self.simulation_start, self.end + 1))
+            self.simulation_start = self.start
+            self.steps = [
+                *((self.start, False) for _index in range(self.preroll)),
+                *((frame, True) for frame in range(self.start, self.end + 1)),
+            ]
         self.frame_index = 0
         self.current_frame = self.simulation_start
         self.output_frames_completed = 0
@@ -362,6 +370,26 @@ class BakeJob:
         self.phase = "准备物理"
         self.original_frame = self.scene.frame_current
         self.original_action = self.armature.animation_data.action
+        self.original_root_matrix = self.root.matrix_world.copy()
+        self.original_armature_matrix = self.armature.matrix_world.copy()
+        self.original_pose_basis = {
+            pose_bone.name: pose_bone.matrix_basis.copy()
+            for pose_bone in self.armature.pose.bones
+        }
+        self.original_rigid_matrices = {
+            obj.name: obj.matrix_world.copy()
+            for obj in runtime._rigid_objects(self.root)
+        }
+        self.original_joint_matrices = {
+            obj.name: obj.matrix_world.copy()
+            for obj in runtime._joint_objects(self.root)
+        }
+        self.original_visibility = {
+            obj.name: obj.hide_get()
+            for obj in (self.root, *self.root.children_recursive)
+            if obj.name in self.context.view_layer.objects
+        }
+        self.action_bindings = self._build_action_bindings()
         self.session = None
         self.world = None
         self.closed = False
@@ -372,17 +400,22 @@ class BakeJob:
                 self.world.close()
             if self.session is not None:
                 self.session.close(restore=True)
-            self.armature.animation_data.action = self.original_action
-            self.scene.frame_set(self.original_frame)
+            self.restore_display_state()
+            self.restore_visibility()
             raise
+        self.solve_started_at = time.perf_counter()
         self.settings.physics_bake_progress = 0.0
 
     def _prepare(self):
         self.armature.animation_data.action = self.source_action
-        self.scene.frame_set(self.simulation_start)
+        if self.mode == "FAST":
+            self._evaluate_source_action(self.simulation_start)
+        else:
+            self.scene.frame_set(self.simulation_start)
         self.context.view_layer.update()
         self.session = runtime.PreviewSession(self.scene, self.settings, self.root)
         self.session.suppress_redraw = self.mode == "FAST"
+        self.session.offline_bake = True
         self.world = runtime.PreviewWorld(
             ("bake", self.root.name, id(self)),
             self.session.import_scale,
@@ -391,14 +424,93 @@ class BakeJob:
         )
         self.world.add(self.session)
         self.world.reset(prepared_session=self.session)
-        self.phase = "预热" if self.simulation_start < self.start else "烘焙"
+        self.phase = "预热" if self.preroll and self.continuation == "INDEPENDENT" else "烘焙"
+        if self.mode == "FAST":
+            self.restore_display_state()
+            for name in self.original_visibility:
+                obj = bpy.data.objects.get(name)
+                if obj is not None:
+                    obj.hide_set(True)
+
+    def _build_action_bindings(self):
+        bindings = []
+        for curve in self.source_action.fcurves:
+            if curve.mute or not curve.is_valid:
+                continue
+            owner_path, separator, property_name = curve.data_path.rpartition(".")
+            try:
+                owner = (
+                    self.armature.path_resolve(owner_path)
+                    if separator
+                    else self.armature
+                )
+                value = getattr(owner, property_name)
+            except (AttributeError, ValueError):
+                continue
+            value_kind = (
+                "ARRAY"
+                if hasattr(value, "__len__")
+                else "BOOLEAN"
+                if isinstance(value, bool)
+                else "INTEGER"
+                if isinstance(value, int)
+                else "FLOAT"
+            )
+            bindings.append((curve, owner, property_name, value_kind))
+        return tuple(bindings)
+
+    def _evaluate_source_action(self, frame):
+        for curve, owner, property_name, value_kind in self.action_bindings:
+            value = curve.evaluate(frame)
+            if value_kind == "ARRAY":
+                getattr(owner, property_name)[curve.array_index] = value
+            elif value_kind == "BOOLEAN":
+                setattr(owner, property_name, value >= 0.5)
+            elif value_kind == "INTEGER":
+                setattr(owner, property_name, round(value))
+            else:
+                setattr(owner, property_name, value)
+        self.armature.update_tag(refresh={"OBJECT"})
+        if self.session is not None:
+            self.session.offline_frame = frame
+
+    def restore_display_state(self):
+        self.armature.animation_data.action = self.original_action
+        if self.mode != "FAST":
+            self.scene.frame_set(self.original_frame)
+        self.context.view_layer.update()
+        self.root.matrix_world = self.original_root_matrix
+        self.armature.matrix_world = self.original_armature_matrix
+        for name, matrix_basis in self.original_pose_basis.items():
+            pose_bone = self.armature.pose.bones.get(name)
+            if pose_bone is not None:
+                pose_bone.matrix_basis = matrix_basis
+        for name, matrix_world in self.original_rigid_matrices.items():
+            obj = bpy.data.objects.get(name)
+            if obj is not None:
+                obj.matrix_world = matrix_world
+        for name, matrix_world in self.original_joint_matrices.items():
+            obj = bpy.data.objects.get(name)
+            if obj is not None:
+                obj.matrix_world = matrix_world
+
+    def restore_visibility(self):
+        for name, hidden in self.original_visibility.items():
+            obj = bpy.data.objects.get(name)
+            if obj is not None:
+                obj.hide_set(hidden)
 
     def step(self):
-        if self.frame_index >= len(self.frames):
+        if self.frame_index >= len(self.steps):
             return False
-        frame = self.frames[self.frame_index]
+        frame, store_output = self.steps[self.frame_index]
         self.current_frame = frame
-        self.scene.frame_set(frame)
+        if self.armature.animation_data.action is not self.source_action:
+            self.armature.animation_data.action = self.source_action
+        if self.mode == "FAST":
+            self._evaluate_source_action(frame)
+        else:
+            self.scene.frame_set(frame)
         self.session.prepare_step()
         fps = self.scene.render.fps / max(self.scene.render.fps_base, 1.0e-6)
         self.world.pending_step_seconds = 1.0 / max(fps, 1.0e-6)
@@ -409,7 +521,7 @@ class BakeJob:
                 update_debug=False,
             )
         pose = _capture_pose(self.session, self.previous_rotations)
-        if frame >= self.start:
+        if store_output:
             for bone_name, sample in pose.items():
                 self.samples_by_bone.setdefault(bone_name, []).append(sample)
             self.output_frames.append(frame)
@@ -419,7 +531,7 @@ class BakeJob:
             )
             self.phase = "烘焙"
         self.frame_index += 1
-        return self.frame_index < len(self.frames)
+        return self.frame_index < len(self.steps)
 
     def finish(self):
         self.phase = "写入 Action"
@@ -484,8 +596,10 @@ class BakeJob:
                 self.session.close(restore=True)
         finally:
             if restore_action and self.armature is not None:
-                self.armature.animation_data.action = self.original_action
-            self.scene.frame_set(self.original_frame)
+                self.restore_display_state()
+            else:
+                self.scene.frame_set(self.original_frame)
+            self.restore_visibility()
 
 
 def _redraw(context):
@@ -500,7 +614,7 @@ class SPX_OT_BakeMMDPhysics(Operator):
 
     mode: EnumProperty(
         items=(
-            ("FAST", "快速烘焙", "不刷新物理显示，按时间片尽快求解"),
+            ("FAST", "快速烘焙", "暂时隐藏模型并直接采样 Action，不播放时间轴"),
             ("PLAYBACK", "播放烘焙", "逐帧显示物理结果并同步写入烘焙数据"),
         ),
         options={"HIDDEN"},
@@ -539,7 +653,7 @@ class SPX_OT_BakeMMDPhysics(Operator):
             return {"RUNNING_MODAL"}
         try:
             running = True
-            deadline = time.perf_counter() + (0.04 if job.mode == "FAST" else 0.0)
+            deadline = time.perf_counter() + (0.25 if job.mode == "FAST" else 0.0)
             while running:
                 running = job.step()
                 if job.mode != "FAST" or time.perf_counter() >= deadline:
