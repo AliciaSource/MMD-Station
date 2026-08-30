@@ -1,60 +1,82 @@
 # MMD Station
 
-面向 Blender 4.4 的一体化 MMD 模型制作与运行预览工具，覆盖代理创建、模型查看与诊断、Morph 编辑、MMD 物理以及 MMD IK。当前功能包括：
+MMD Station is a Blender 4.4 add-on for editing, validating, previewing, and
+exporting MikuMikuDance models in one workspace.
 
-- PMX 模型第一次完整导出后，在当前 Blender 会话内保留运行时 Shadow Model；后续无论覆盖原路径还是另存为新路径，只要 Mesh、Armature、ShapeKey、材质结构和导出选项仍兼容，就直接复用既有顶点、面、材质与骨骼数据，仅重建模型信息、显示枠、刚体、Joint、Bone/Material/Group Morph，并允许 Vertex/UV Morph 改名与分类。缓存只存在于内存，关闭 Blender、切换 `.blend`、Reload Scripts 或禁用插件后自动清空；Vertex/UV Morph 增删、Mesh/权重/Modifier 等结构变化或任何无法证明安全的情况会自动完整导出并重建 Shadow，不在工程或导出目录写缓存文件。
-- 从 Mesh Edit Mode 选区拟合闭合或开放裙面代理；闭合模式按中心轴做圆柱拟合，开放模式直接沿选区横向主方向分列并在选中表面采样，再用顶部精确锚定、底部异常采样降权的全局三次曲线拟合过滤褶皱、孔洞与不对称轮廓造成的逐层抖动，末端沿全局曲线切线连续延伸。“圆周方向”为 `1` 时生成贴合平滑中线的单列骨链以及全宽为中位骨段长度 `9%` 的极窄十字控制带；控制带提供 Sculpt Mode 所需的面，但不会增加第二列骨骼、刚体或横 Joint。
-- 代理名称以`左`或`右`开头时启用双侧模式，例如`左Skirt`：当前选区作为左侧，插件在局部 X=0 另一侧识别对应布料，并把左右两套控制带创建在同一个代理 Mesh 中；面板仍可独立选择闭合或打开拓扑。完全镜像的原网格会得到严格镜像的控制链并自动启用 Mesh X Mirror；非镜像网格会在另一侧独立拟合、独立计算权重并保持 X Mirror 关闭。Blender 骨骼名使用 `.L/.R`，MMD 日文名使用`左/右`前缀，MMD 英文名使用 `_L/_R` 后缀；左右逻辑组之间不会互相生成面或横 Joint。
-- MMD 查看器骨骼页可先用名称前缀勾选完整父子骨链，再点击“从勾选骨骼恢复或新建代理”。旧式 `名称_Cxx_Rxx` 继续按编号反建；任意统一前缀名称则按真实父子关系分列，并按 Rest Bone 的 head/tail 和空间位置排序，支持 `.L/.R` 与 `_L/_R`。打开类型可选择“连接左右”：开启后左右所有列形成连续表面，适合跨中间连续的多列头发；关闭后左右在同一个 Mesh 中保持两个独立表面，适合左右裙摆。闭合类型始终按各逻辑组分别闭环。代理会保存每一段对应的真实骨名，后续骨骼同步、权重与 MMD 物理不再依赖 `_Cxx_Rxx`；骨骼之后即使整体改名，“识别或恢复所选代理”也会用保存的代理控制点位置和骨骼父子层级重新找到骨链并更新真实骨名。同名代理已存在时原地恢复 Mesh，不存在时新建；严格对称时自动启用 X Mirror。恢复时还会按真实骨名接管模型中已绑定的刚体，并识别同列相邻骨的纵 Joint、相邻列同层的横 Joint 及顶层父骨锚定 Joint；已有代理在首次同步时也会自动补做该关联。
-- 新建代理的默认名称前缀为 `Skirt`；选择目标 Armature 后，“连接骨骼”会显示该骨架的可搜索骨骼列表。
-- 为每列代理创建对应的连续纵向骨链；
-- 写入并规格化原裙面权重；
-- 编辑代理后同步骨骼，并可按代理重新计算权重；
-- 每个代理列使用自身角向邻域的两侧最高支持顶点，线性插值得到局部顶端高度。
-- 从已识别代理生成 MMD 刚体、纵向 Joint 和可选的环向 Joint；环向 Joint 覆盖包括第一圈在内的每一层相邻刚体。“生成 MMD 刚体和 Joint”名称保持不变：当前代理已有物理时，再次点击会按面板当前参数完整重建该代理的刚体与 Joint，可补齐缺失对象；其它代理的物理不受影响。纵向与顶层锚定 Joint 直接采用刚体 B 的 MMD 名称，横向 Joint 采用刚体 B 名称加 `_H`，不再生成包含 `JOINT_HORIZONTAL` 等角色文本的超长名称。若每列顶骨骼的直接父骨骼已绑定 MMD 刚体，还会为该列生成“父骨骼刚体 → 第一圈刚体”的顶层 Joint，避免动态链失去静态锚定。每列第一层使用“顶层类型”，其余层使用“下层类型”；新建设置默认采用盒体、顶层“物理 + 骨骼”、下层“物理”。形状、尺寸比例、碰撞组、质量、阻尼、Joint 限制及弹簧参数均可调整并重新应用。
-- `当前代理网格` 是生成、参数应用、手工同步和自动同步的明确作用域；每个代理分别保存物理参数与稳定关联 ID，因此多个代理可以共用同一 MMD Armature，而不会互相覆盖刚体或 Joint。
-- 可开启“骨骼变动后自动同步刚体与 Joint”：代理同步骨骼后，或当前代理所属 Armature 退出 Edit Mode 后，只更新当前代理刚体与 Joint 的位置和旋转；刚体尺寸、形状、类型以及质量、碰撞组、阻尼、Joint 限制等参数保持不变，也不会修改其它代理。
-- `MMD 刚体与 Joint` 采用 `基本 / 刚体 / 纵 Joint / 横 Joint` 页签，不再把全部参数纵向堆叠；代理创建和代理编辑已合并到`基本`页，纵向与横向 Joint 使用互相独立的移动限制、旋转限制和弹簧参数。
-- N 面板只注册一个顶层 `MMD Station` Panel，顶部以横向 Tab 在“代理创建 / MMD 查看器 / Morph 编辑器 / 物理预览 / MMD IK”五个独立工作区之间切换；切换页面不会重置当前代理、查看器筛选或正在运行的预览状态。“代理创建”页面内部继续保留 `基本 / 刚体 / 纵 Joint / 横 Joint` 二级页签。
-- `物理参数预设`提供内置“稳定中长裙”一键填入，并支持把当前刚体、碰撞、纵 Joint、横 Joint及全部补间参数保存为 Blender 用户预设。全部已启用的刚体与 Joint 线性补间统一使用当前代理最长列的全局层深：同一圈层始终取得相同补间系数，短列末端不会提前套用末端值，只有最长列末端达到最终参数。内置方案让纵/横 Joint 的旋转限制和弹簧由腰部向裙摆线性过渡为“上紧下松”；始终为零的移动限制不启用无意义补间。自定义预设跨 `.blend` 持久保存，可从下拉菜单重新载入或删除；预设只填入面板，仍需点击“应用参数到当前代理”才会修改已经生成的物理对象。
-- `基本`页只保留自动同步与手工同步入口；“生成横向 Joint”只在`横 Joint`页出现。骨骼变动后的刚体/Joint 自动同步默认启用。
-- MMD 查看器的骨骼、刚体和 Joint 三页都同时提供“将勾选项选入 Blender”和“从 3D 视图同步选中项目”两个互逆入口。Joint 页另提供“同步刚体 B 名称到 Joint”的“同步勾选 / 同步全部”：纵向与锚定 Joint 直接使用刚体 B 名称，横向 Joint 追加 `_H`。
-- MMD 查看器的刚体页与 Joint 页提供“创建镜像”和“同步镜像”，且只处理列表中已勾选的源项。镜像组可由 `.L/.R`、`_L/_R`、`左/右`识别；没有侧向标识时，创建项使用 `_M` 后缀，并可在之后作为同一镜像组同步。镜像刚体必须同时匹配镜像骨骼绑定和换算后的 MMD 名称，因此同一骨骼可安全拥有多套左右刚体，例如`左足/右足`与`左足2/右足2`不会互相误认。变换以 MMD Armature 局部 X=0 平面执行完整矩阵镜像，Joint 的移动/旋转上下限同时按镜像轴换算，不会直接复制 Euler 数值。创建镜像刚体会改绑镜像骨骼；无侧向骨名的 `_M` 刚体继续绑定原骨骼。刚体页可勾选“同时处理关联 Joint”，范围严格取刚体 B 属于勾选源刚体的 Joint：镜像 B 指向勾选刚体的镜像体；刚体 A 若有已存在的左右或 `_M` 镜像体则改接镜像体，否则无侧向标识的 A 原样共用。横 Joint 沿既有 A/B 拓扑镜像，不额外创建连接左右物理组的中间 Joint。
-- 刚体页按“形状与类型 / 尺寸 / 物理演算参数 / 碰撞”分组，并提供 PMX 曲面设定式的起始值、普通复选框线性补间和末端值。补间深度以最长列为统一基准，适用于尺寸比例、质量、移动/旋转阻尼、弹性和摩擦。宽度、高度、深度为 `0` 时自动从代理单元的横向跨度、Joint 间距和局部厚度计算覆盖尺寸；非 `0` 时才作为骨长比例手工覆盖。宽度和高度另有独立“倍加”复选框。
-- 刚体、纵 Joint 与横 Joint 的浮点参数使用自适应数值栏：默认至少显示两位小数，只在实际数值需要时继续显示，最多四位。例如 `2` 显示为 `2.00`、`0.99` 保持 `0.99`、`0.995` 保持 `0.995`，不会补成 `0.9900` 或舍入成 `1.00`。该显示层直接读写原 RNA 数值，不进入预设与物理数据。
-- 自动盒体尺寸优先保证连续覆盖：横向取当前段到左右相邻列的较大间距，半宽使用该距离的 `55%`，使相邻刚体约有 `10%` 搭接；纵向总高为骨段长的 `110%`，与上下刚体各跨过节点约 `5%`；厚度为局部宽度与高度较小者的 `20%`。刚体中心、骨骼绑定及 Joint 位置不偏移，所谓“交错”由相邻盒体跨过共享边界实现，不破坏骨链拓扑。手工输入非 `0` 比例时仍严格使用手工值。
-- 纵/横 Joint 页按照 PMX 曲面设定的操作顺序显示：移动/旋转限制每个 XYZ 行同时排列起始下限、起始上限、线性补间复选框、末端下限和末端上限；移动/旋转弹簧每行排列起始值、复选框和末端值。全部物理数值默认从 `0` 开始，由用户自行设定。
-- 线性补间标题和普通复选框使用独立居中单元格，避免复选框贴在列左侧造成与标题、末端值视觉错位。
-- 开放代理只在相邻列之间生成面和横 Joint，不会把末列重新连接到首列；单列代理只生成纵向骨链、刚体与纵 Joint。
-- “应用参数到当前代理”可随时把面板当前参数重新应用到已经生成或从现有骨骼物理接管、且属于所选代理网格的刚体和 Joint，同时更新其骨骼对齐变换；不会创建缺失物理对象，也不会修改其它代理的刚体或 Joint。纵 Joint 位于上下刚体交界的骨骼节点，横 Joint 位于同层左右刚体中心的平均位置，两者在高度上交错；旧式同节点高度的横 Joint 会在应用参数时自动纠正。“同步当前代理刚体和 Joint”也保持该交错布局，但只更新刚体与 Joint 的位置、旋转；刚体形状、物理类型、尺寸、质量、阻尼、碰撞以及 Joint 限制与弹簧全部保持不变。只有明确点击“应用参数到当前代理”时，才按刚体页当前设置重算形状、类型和尺寸并写入动力学及 Joint 参数。
-- 刚体和 Joint 使用 `mmd_tools` 的批量创建入口，只产生少量 Blender operator/依赖图更新；实际 `04.blend` 的 `165` 个刚体与 `285` 个 Joint 从原约 `21.405 s` 降至约 `0.507 s`。
-- 生成设定中的碰撞组与不碰撞组统一按用户可见的 `1–16` 编号显示；内部 MMD 索引仍保持 `0–15`。刚体页另提供“屏蔽同组碰撞”开关，直接把当前碰撞组加入不碰撞组，避免手工对照编号时错选相邻组。活动刚体检查器会明确把原始字段标为“内部 0–15”。
-- 提供接近 PMXEditor 数据表操作方式的 MMD 模型查看器：按材质、骨骼、刚体、Joint 分类列出模型内容，支持搜索、逐行勾选、全选/反选和稳定块排序。材质页按真实 PMX 提交顺序逐行直接编辑 Blender 材质名、MMD 名称和 MMD 英文名，并提供 Blender 名同步到 MMD 中/英文名、MMD 名同步到 Blender 材质名两个批量入口。插件为每个模型持久保存独立材质顺序；合并/拆分 Mesh、调整物体名或改材质名后仍按该顺序接管 `mmd_tools` PMX 导出，不再依赖“Mesh 物体名排序 + 材质槽首次出现位置”。“校对材质 ID 与物体编号”把当前模型材质 ID 按查看器顺序写为 0-based `0…N-1`，并只把单材质 Mesh 的三位前缀改成对应顺序；多材质 Mesh 名称保持不动，但其全部材质序号自然成为预留空位。首次手动校对后可开启“自动同步”：每次单个或多个材质作为稳定块移动时，只更新新旧顺序中实际换位位置上的材质 ID、Material Morph 引用和对应单材质 Mesh 前缀，不扫描重编号其它单材质 Mesh，也不改多材质 Mesh 名称。“按材质拆分（保留法向）”复用官方 `mmd_tools` 的拆分和法向恢复逻辑，只给本次目标 Mesh 拆出的物体写入这些预留编号，不重排其它 Mesh。骨骼、刚体和 Joint 列表编号同样与实际 PMX 导出顺序一致；多个勾选项可作为稳定块置顶、上移、下移、置底，或插到蓝色活动行前后。骨骼排序直接修改真实 `bone_id`，只移动用户明确勾选的骨骼，不自动携带子级，也不拦截父子骨或追加变换骨之间的顺序调整。刚体和 Joint 排序使用 `mmd_tools` 的对象名前缀规则，不是只改变查看器显示。
-- 在 `MMD 查看器` 与 `物理预览` 之间提供独立 `Morph 编辑器`：按材质、UV、骨骼、顶点、群组五类直接编辑 `mmd_tools` 已导入的 Morph 日文名、英文名、分类和 Offset，支持逐行勾选、搜索、批量稳定块排序、新增/删除以及可直接 K 帧的中央滑条。Vertex Morph 的一个中央值同步模型全部 Mesh 中的同名 ShapeKey；Bone/UV/Group 首次使用时只建立不含官方 Material Morph 节点链的轻量 `mmd_tools` Runtime。Material Morph 首次产生非零值时才在目标材质的活动 `Material Output` 前插入一个 `SPX_MaterialMorphOutput`，后续只更新聚合输入：Alpha 按 PMX `MULT` 与 `ADD`（负值即减法）统一合成，RGB 作为不依赖上游 Shader 类型的视觉染色。无论上游是 MMD Shader、Principled BSDF、Emission 还是用户自制 Shader Group，只要最终连接 `Material Output.Surface` 即可接管；后期新增的 `mmd_edge.<本体材质名>` 描边会在后续滑条/关键帧求值时自动补装，并以“本体 Alpha × 描边 Alpha”强制随本体隐藏。
-- 骨骼查看页提供“骨骼细分”：可设置每根勾选骨骼最终包含的分段数；使用相邻父子骨 rest-pose 节点建立 centripetal Catmull–Rom 曲线并按弧长均分，而不是沿每根骨骼的原直线机械切割。同一勾选骨链会按原首骨的数字编号连续重命名，例如 `Bone_Piao160–162` 各分三段后变为 `Bone_Piao160–168`；Blender 骨名、MMD 日/英文名与顶点组同步更新，可直接用于代理生成。新骨保留父子层级但不启用 Connected，head/tail 只做位置重合，因此 Edit Mode 的 G 移动不会被连接锁定。原子骨重挂到末段，PMX `bone_id` 按细分后的连续骨链重排；模型 Mesh 中原顶点组的每个权重在全部分段间等分，权重总和保持不变。没有可用相邻曲率信息的孤立骨骼退回直线均分。
-- 骨骼查看页可从当前 MMD Armature 的 Edit Mode 或 Pose Mode 读取 3D 视图选骨并同步为查看器勾选；同一区域提供独立的“从选中骨骼创建 MMD 物理”模块，可创建骨骼追踪刚体、物理刚体、基础 Joint，或一次创建/复用刚体并按直接父子骨骼连接 Joint。刚体使用 Rest Pose 的骨骼头尾生成，创建结束后恢复原骨架模式和选骨；物理刚体支持 type 1/type 2，重复执行默认复用同类型刚体并跳过已有刚体对 Joint。新建刚体与 Joint 的 MMD 日/英文名称都直接取对应骨骼名并限制为最多 `16` 个字符；创建后自动清空旧搜索、关闭“仅显示当前代理”、切换到刚体/Joint 页并勾选新对象，避免结果被查看器过滤条件隐藏。
-- 查看器可启用“仅显示当前代理”，只列出当前代理对应的骨骼、刚体或 Joint，便于多代理模型分别管理。
-- “快速选组”支持对骨骼、刚体和 Joint 按任意 Unicode 名称前缀勾选；前缀可手动输入，也可从活动项自动提取第一个数字之前的部分，例如由 `スカート_0_1` 得到 `スカート_`。
-- 骨骼批量清理会先把待删除骨骼的顶点组权重归并到用户明确指定的保留骨骼，再删除骨骼、绑定刚体及所有相关 Joint；未删除子骨骼会改挂到该保留骨骼。刚体和 Joint 也可分别批量删除，删除刚体时自动清理悬空 Joint。
-- 查看器下方提供活动项属性检查器，可直接单独编辑骨骼 MMD 名称、刚体绑定/类型/形状/尺寸/碰撞/动力学参数，以及 Joint 两端、限制和弹簧参数。
-- 裙面代理器新建骨骼时会自动用 Blender 骨骼名初始化 MMD 名称与英文名称；骨骼查看器可对勾选骨骼、全部骨骼或当前骨骼补全并标准化名称：`.L/.R`、`_L/_R` 镜像骨骼统一为 MMD 名称的 `左/右` 前缀与英文名称的 `_L/_R` 后缀。普通名称主体按 Blender 骨骼名重建；已有“中文 MMD 名称 + 英文名称”的双语主体会保留，只校正左右标记。
-- 刚体查看器提供“同步勾选刚体轴到关联 Joint”：保持 Joint 位置与缩放不变，将勾选刚体的当前世界轴向复制到以它为 B 端点的 Joint。随后保持“同时处理关联 Joint”开启并执行“同步镜像刚体”，镜像侧刚体与 Joint 会一起按镜像坐标更新。
-- 骨骼、刚体和 Joint 查看器的“快速选组”菜单提供“按镜像加选另一边”：保留当前所有勾选并追加对应镜像项，识别 MMD 名称的 `左/右` 前缀以及 Blender/MMD 英文名称的 `.L/.R`、`_L/_R` 后缀；刚体和 Joint 使用绑定骨骼及端点关系配对，不依赖带顺序号的对象名。
-- 新增独立 `physics_preview/` 模块和 Rust `cdylib`：直接读取当前 MMD 模型已经导入的刚体、碰撞组、六轴 Joint 和骨骼关联，以固定 timestep 调用静态链接 Bullet 的 DLL，非破坏性回写 Pose Bone。启动时建立单一完整快照，包含整个 MMD Armature 的全部 Pose Bone、模型全部刚体及全部 Joint 世界矩阵；快照以稳定名称和普通矩阵值保存，不把可能被 Blender 撤销系统移除的 RNA Object 引用当成长期身份。每个 tick 和每次恢复都会从当前 `bpy.data` 重新解析对象。执行“清空用户变换”且关闭“仅选中”、手工重置、RNA 数据块重建或发生 tick 异常时，host 都恢复启动快照、重建 solver 并保持预览会话与 timer 开启。0 型骨骼追踪刚体在重建后继续逐帧读取骨骼目标。不创建 Blender `RigidBodyWorld`。
-- 物理预览保持 MMD 刚体/Joint 原始列表顺序，不按骨名写死特殊分支，因此可处理普通裙发链和 RGBA 式胸部辅助刚体图。每个 tick 按“恢复动画基姿态 → 只同步 0 型运动学刚体 → Bullet 固定步 → 按父到子层级回写 1/2 型骨骼”的顺序运行；2 型动态刚体不会被动画骨骼反向瞬移，骨骼采用物理旋转，并在每个父骨更新后沿动画局部偏移传播子骨位置，因此连续链跟随刚体运动且保持骨长、不再逐根原地旋转。同骨骼多个动态刚体只由质量最大的刚体回写。启动时会检查每个 Joint 连通分量；动态分量若没有任何 0 型静态刚体，会列名警告其将按 MMD 语义自由下落，不用非 MMD 隐式锁定掩盖模型数据问题。
-- Rust DLL 使用 vendored Bullet Physics `2.75`（SVN r1754），在内部把 `mmd_tools` 默认 `0.08` 导入尺度还原到 MMD/Bullet 尺度，并使用 Z 轴 capsule、additional damping、MMD 式 0/1/2 刚体绑定和原版 `btGeneric6DofSpringConstraint`。C ABI v2 同时输出刚体、骨骼与 Joint 两侧 frame；Blender 显示对象全部读取这套世界空间结果。预览期间会临时解除动态代理骨骼的 Blender `use_connect`，避免 Blender 强制连接覆盖 MMD 的物理世界位置，停止时恢复原连接状态。Rust crate、C ABI、host adapter、vendored backend 和 Windows x64 DLL 均在独立目录内，今后可整体拆成单独插件。
-- 预览范围默认是“当前代理”：只求解当前代理所属动态刚体和 Joint，同时保留模型全部 0 型刚体作为身体碰撞体与锚点；模型中其它头发、飘带、胸部等动态刚体不会被顺带释放。“整个模型”是独立的显式模式，只有选择该模式时才运行模型全部物理图。
+> **Development status:** the current build is `v0.1.8-dev`. No stable GitHub
+> Release has been published yet. The current UI is Chinese; automatic Chinese
+> and English UI selection is planned for the next development phase.
 
-本插件不依赖或复用 `MMD-Nova` / `MMD-Nova-Rebuild` 的求解器代码；新预览器完全位于本独立项目。当前已验证 DLL、Bullet 刚体/Joint 建图、Blender 回写与停止恢复闭环；MMD/RGBA 逐帧数值一致性仍需使用同一 PMX/VMD 的 MMD oracle 数据验收，不能由 headless smoke 代替。
+## Highlights
 
-## 开发安装
+- MMD model, VMD, and VPD import/export shortcuts backed by `mmd_tools`.
+- PMX-aware bone, rigid body, Joint, Morph, material-order, and display-frame
+  editing.
+- Surface-proxy authoring for skirts, hair, ribbons, and similar physics chains.
+- Rigid body and Joint generation, mirroring, parameter presets, and pose
+  alignment.
+- Native Windows x64 Bullet physics preview and non-destructive physics baking.
+- MMD-compatible IK authoring and runtime preview without polluting PMX export.
+- Session-local Shadow Model acceleration for repeated compatible PMX exports,
+  with automatic fallback to a complete export when structural data changes.
+- In-panel version display, GitHub shortcut, release notifications, rollback
+  backup, and self-update support.
 
-真实 Blender 4.4 安装目录使用 Junction，持续桥接独立源码：
+## Requirements
 
-`%APPDATA%\Blender Foundation\Blender\4.4\scripts\addons\mmd_station`
+- Blender 4.4
+- Windows x64 for the bundled native physics and IK libraries
+- A compatible `mmd_tools` installation for PMX/VMD/VPD I/O and MMD data access
 
-Junction 目标：
+## Installation
 
-`D:\MOD\BlenderAddonProjects\MMD-Station\mmd_station`
+There is no stable release package yet. For development use:
 
-旧的 `surface_proxy_creator` 不再桥接 `MMD-Nova-Rebuild`。
+1. Clone this repository.
+2. Copy or link the `mmd_station` directory into Blender's add-on directory:
+   `%APPDATA%\Blender Foundation\Blender\4.4\scripts\addons\mmd_station`
+3. In Blender, open **Edit > Preferences > Add-ons** and enable **MMD Station**.
+4. Open the 3D Viewport sidebar and select the **MMD Station** tab.
+
+When stable releases begin, install the `mmd_station-X.Y.Z.zip` asset attached
+to the matching GitHub Release. The built-in updater intentionally follows
+published Releases only; development commits on `main` are never offered as
+updates.
+
+## Main Workspaces
+
+- **Proxy Creation** — create or recover proxy surfaces, bones, weights, rigid
+  bodies, and Joints.
+- **MMD Viewer** — inspect and edit bones, rigid bodies, Joints, Morphs, and
+  display frames.
+- **Morph Editor** — edit, order, preview, keyframe, copy, and paste MMD Morphs.
+- **Physics Preview** — preview, align, cache, and bake MMD physics.
+- **MMD IK** — author and preview MMD-compatible IK behavior.
+
+## Updating
+
+Update settings are available in the MMD Station add-on preferences. By
+default, MMD Station checks stable GitHub Releases once per day and shows a
+banner at the top of its panel when an update is available. Pre-release builds
+are opt-in. Installation creates one rollback backup and requires Blender to be
+closed and reopened after files are replaced.
+
+## Building a Release Package
+
+`pack.ps1` is a pure packager. It does not change the version, create a commit,
+push, tag, or publish a Release.
+
+```powershell
+.\pack.ps1 -Ref v0.1.8
+```
+
+The resulting ZIP is written to `dist\` and must be attached to the matching
+GitHub Release for the built-in updater to use it.
+
+## License and Third-Party Software
+
+MMD Station is distributed under the GNU General Public License v3.0. The
+vendored add-on updater is derived from the GPL-licensed
+[`CGCookie/blender-addon-updater`](https://github.com/CGCookie/blender-addon-updater).
+The native solver directories include their own third-party notices and license
+files for Bullet Physics and related components.

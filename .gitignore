@@ -4,6 +4,7 @@ __pycache__/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+mmd_station/mmd_station_updater/
 
 # Rust build output
 native/mmd_physics_solver/target/

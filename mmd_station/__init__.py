@@ -5,12 +5,14 @@ bl_info = {
     "blender": (4, 4, 0),
     "location": "View3D > Sidebar > MMD Station",
     "description": "Create and edit MMD models, Morphs, physics, and IK workflows",
+    "doc_url": "https://github.com/AliciaSource/MMD-Station",
     "category": "Rigging",
 }
 
 import bmesh
 import bpy
 import re
+import sys
 from math import atan2
 from bpy.props import (
     BoolProperty,
@@ -89,6 +91,23 @@ from .mmd_shadow import unregister_services as unregister_shadow_services
 from .vertex_group_tools import CLASSES as VERTEX_GROUP_TOOL_CLASSES
 from .vertex_group_tools import register_menu as register_vertex_group_menu
 from .vertex_group_tools import unregister_menu as unregister_vertex_group_menu
+from . import updater
+from .updater import notify as updater_notify
+
+
+def _version_text():
+    package = sys.modules.get(__package__ or "mmd_station")
+    version = getattr(package, "bl_info", {}).get("version", (0, 0, 0))
+    text = "v" + ".".join(str(part) for part in version)
+    try:
+        from ._version import BUILD, PRERELEASE
+        if PRERELEASE:
+            text += "-" + PRERELEASE
+        if BUILD:
+            text += " (" + BUILD + ")"
+    except Exception:
+        pass
+    return text
 
 def _armature_poll(_self, obj):
     return obj is not None and obj.type == "ARMATURE"
@@ -1132,6 +1151,14 @@ class SPX_PT_SurfaceProxyCreator(Panel):
     bl_category = "MMD Station"
 
     def draw(self, context):
+        updater_notify.draw_update_banner(self, context)
+        column = self.layout.column(align=True)
+        title_row = column.row(align=True)
+        title_row.label(text="MMD 模型制作工具", icon="TOOL_SETTINGS")
+        repository = title_row.operator("wm.url_open", text="GitHub", icon="URL")
+        package = sys.modules.get(__package__ or "mmd_station")
+        repository.url = getattr(package, "bl_info", {}).get("doc_url", "")
+        column.label(text=_version_text(), icon="BLANK1")
         draw_workspace(self.layout, context)
 
 
@@ -1182,9 +1209,11 @@ def register():
     register_mmd_ik_runtime_services()
     register_morph_editor_services()
     register_display_frame_services()
+    updater.register()
 
 
 def unregister():
+    updater.unregister()
     unregister_shadow_services()
     unregister_export_profile_hook()
     unregister_morph_order_export_hook()

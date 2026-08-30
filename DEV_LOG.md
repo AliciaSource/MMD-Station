@@ -1,5 +1,12 @@
 # Development Log
 
+## 2026-08-30 - V0.1.8-dev GitHub 发布准备与宿主级自动更新器
+
+- 新增与 Velo Tools 同路线的宿主级 `updater/`：只读取 `AliciaSource/MMD-Station` 已发布的 GitHub Releases，普通 `main` commit 不会成为更新；稳定版默认接收，pre-release 需用户显式开启。更新过程保留单份 rollback backup，支持进度反馈，并把 `*.dll` 纳入覆盖规则，避免 native solver 停留在旧版。
+- MMD Station 顶层面板新增“`MMD 模型制作工具` + GitHub 按钮 + `v0.1.8-dev`”信息区；`bl_info["doc_url"]` 固定指向 Alicia 账号仓库。新增 `_version.py`，当前保持开发标记，不创建 tag 或正式 Release。
+- 将根 `README.md` 改为英文，新增英文 `RELEASE_NOTES_NEXT.md`、GPL-3.0 `LICENSE` 与纯打包 `pack.ps1`；自动更新只接受未来 Release 附带的 `mmd_station-X.Y.Z.zip`。本轮不实现 UI 国际化，只在 README 明确记录当前中文 UI 与下一阶段边界。
+- 验证：`tests/test_host_updater.py` 6 项通过，`python -m compileall -q mmd_station` 通过，Blender 4.4.3 `tests/updater_blender_smoke.py` 输出 `MMD_STATION_UPDATER_SMOKE_OK`，working-tree package 内容校验为 58 项且不含 runtime updater state/`__pycache__`。未制作正式 ZIP、未 tag、未创建 Release。
+
 ## 2026-08-30 - V0.1.8 Blender 文件启动阶段 N 面板注册恢复
 
 - 修复启用 MMD Station 后 N 面板整体消失的问题。新增的物理缓存服务在 Blender 从用户偏好自动注册插件、但当前 `.blend` 尚未完成载入时立即遍历 `bpy.data.actions`；此时 `bpy.data` 是受限的 `_RestrictData`，异常会中断 `mmd_station.register()`，导致包括 Morph 编辑器在内的全部面板与属性均未注册。
