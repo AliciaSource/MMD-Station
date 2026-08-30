@@ -1,5 +1,12 @@
 # Development Log
 
+## 2026-08-30 - V0.1.8 续接物理烘焙初态与预热重放修复
+
+- 修复“续接上一段”从首个新帧开始爆炸的问题。根因有两处：快速烘焙副本此前继承了当前输出 Action 已求解的动态骨骼姿态；同时续接虽然从最早 `simulation_start` 重放，却遗漏首段独立烘焙的预热步数，导致续接求解器状态与首段末尾状态并不一致。快速烘焙现在会先把副本中全部动态刚体绑定骨骼恢复为确定性初态，再应用源 Action；续接会继承并完整重放首段 `simulation_preroll`，不再把带速度状态的物理链仅按末帧姿态硬接。
+- 临时模型复制不再把当前 depsgraph 求值后的 `matrix_world` 强写回副本对象；保留 `Object.copy()` 得到的本地变换、父级逆矩阵和重映射后的副本层级，避免把上一段当前帧的刚体/Joint 求值旋转固化成下一次 solver 的初始对象变换。新 segment 持久记录 `simulation_preroll`，旧 segment 则从最早独立段的既有 `preroll` 向后兼容恢复，因此已有正常的 `1–250` 首段无需删除。
+- `tests/physics_bake_regression.py` 新增无源 Action 曲线的动态物理骨、故意污染本体物理姿态、预热继承及“分段续接结果等于一次性整段结果”的回归。Blender 4.4.3 合成回归输出 `MMD_PHYSICS_BAKE_REGRESSION_OK`，`MMD_TIME_DRIVER_UNIT_OK`、`compileall` 与 `git diff --check` 通过。
+- 对真实 `D:\MMD\模型\Alicia\鳴潮-達妮婭\達妮婭\36.blend` + `TOMBOY.vmd` 做不保存验证：`1–250` 独立快速烘焙（预热 `30`）后续接 `251–300`，再与一次性 `1–300` 的 oracle 逐值比较；`439` 个动态骨骼、`153650` 个 location/rotation 分量最大差值为 `0.0`，续接副本初态污染从 `0.466153` 归零为 `0.0`。版本保持 V0.1.8，真实 Blender 4.4 源码 Junction 直接生效，不保存测试工程、不打包 ZIP、不 push。
+
 ## 2026-08-30 - V0.1.8 VMD Morph 滑块原生动画颜色修复
 
 - 修复 VMD Morph 已联动但中央滑块始终保持蓝色的问题。根因是导入桥此前把 F-Curve 写到可求值的稳定 UID 路径 `spx_morph_states["uid"].value`，而 Blender 4.4 的 UI animation decoration 实际只按该 `CollectionProperty` 项目的原生索引路径 `spx_morph_states[index].value` 判断绿色、黄色与橘色状态；所以动画数值会变化，UI 却不认为当前滑块拥有 F-Curve，只有用户手动按 `I` 生成索引路径后才变色。
