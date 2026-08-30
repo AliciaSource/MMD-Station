@@ -1,10 +1,10 @@
 # Development Log
 
-## 2026-08-30 - V0.1.8 材质 Morph 的本体 Alpha 同步约束描边透明度
+## 2026-08-30 - V0.1.8 描边材质被普通材质复位覆盖的 Alpha 修复
 
-- 修复自动补入 `Morph Output` 的 `mmd_edge.*` 描边材质不响应常见隐藏 Morph 的问题。旧实现把 `diffuse_color[3]` 与 `edge_color[3]` 当成完全独立的可见度通道，因此仅写 `diffuse Alpha = -1`、保持 `edge Alpha = 0` 的 Material Morph 会隐藏本体却留下描边；现在描边仍先按自己的 Edge Alpha 计算，但最终透明度不会高于同一基础材质的当前本体透明度。
-- 同一约束同时覆盖直接拖动、Group Morph、关键帧逐帧求值和 Morph 归零后的基础 Alpha 恢复；Edge Alpha 仍可让描边比本体更透明，不会反向提高描边可见度或改写 PMX Morph 数据。
-- `tests/mmd_morph_editor_regression.py` 新增并调整晚创建描边材质、`diffuse Alpha = -1`、Group Morph 与关键帧路径断言。Blender 4.4.3 focused regression 输出 `MMD_MORPH_EDITOR_REGRESSION_OK`，`py_compile` 通过。版本保持 V0.1.8，真实 Blender 4.4 源码 Junction 直接生效，不打包 ZIP、不 push；未进行人工 GUI 点击验收。
+- 修复 Material Morph 已明确提供 `edge_color[3] = -1`，但自动补入 `Morph Output` 的 `mmd_edge.*` 描边材质最终仍显示 `Opacity = 1` 的问题。根因是 `_model_materials()` 把 MMD edge preview Mesh 使用的 `mmd_edge.*` 材质也收进普通基础材质集合：同一轮先按对应基础材质的 Edge Alpha 把描边更新为 `0`，随后普通材质的中性复位路径又把同一描边覆盖回 `1`。
+- `_model_materials()` 现在排除以 `mmd_edge.` 命名或持有 `spx_morph_edge_parent_uid` 的描边预览材质。基础材质继续按 `diffuse_color[3]` 独立计算，描边继续按 `edge_color[3]` 独立计算；已撤销本轮早先错误加入的“描边透明度不得高于本体透明度”约束，不再用 Diffuse Alpha 干预 Edge Alpha。
+- `tests/mmd_morph_editor_regression.py` 现在把描边材质也放入模型材质槽，复现真实工程中的二次复位覆盖，并同时断言 `diffuse A=-1 / edge A=-1` 各自生效及 `diffuse A=-1 / edge A=0` 时描边保持可见。Blender 4.4.3 focused regression 输出 `MMD_MORPH_EDITOR_REGRESSION_OK`，`py_compile` 通过。对 `D:\MMD\模型\Alicia\鳴潮-達妮婭\Show\00.blend` 做了不保存的内存验证：`袖子-*` 的 `袖子1` 数据确认为 Diffuse/Edge Alpha 均 `-1`，滑块置 `1` 后本体与 `mmd_edge.袖子1` 的 `Morph Output / Opacity` 均为 `0`。版本保持 V0.1.8，源码 Junction 直接生效，不打包 ZIP、不 push。
 
 ## 2026-08-30 - V0.1.8 重复姿态对齐的物理烘焙回灌与刚体世界覆盖修复
 
