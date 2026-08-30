@@ -389,11 +389,19 @@ class BakeJob:
             for obj in (self.root, *self.root.children_recursive)
             if obj.name in self.context.view_layer.objects
         }
-        self.action_bindings = self._build_action_bindings()
+        self.work_collection = None
+        self.work_objects = []
+        self.work_data = []
+        self.work_root = self.root
+        self.work_armature = self.armature
+        self.action_bindings = ()
         self.session = None
         self.world = None
         self.closed = False
         try:
+            if self.mode == "FAST":
+                self._create_working_copy()
+            self.action_bindings = self._build_action_bindings()
             self._prepare()
         except Exception:
             if self.world is not None:
@@ -402,22 +410,29 @@ class BakeJob:
                 self.session.close(restore=True)
             self.restore_display_state()
             self.restore_visibility()
+            self._remove_working_copy()
             raise
         self.solve_started_at = time.perf_counter()
         self.settings.physics_bake_progress = 0.0
 
     def _prepare(self):
-        self.armature.animation_data.action = self.source_action
+        self.work_armature.animation_data_create()
+        self.work_armature.animation_data.action = self.source_action
         if self.mode == "FAST":
             self._evaluate_source_action(self.simulation_start)
         else:
             self.scene.frame_set(self.simulation_start)
         self.context.view_layer.update()
-        self.session = runtime.PreviewSession(self.scene, self.settings, self.root)
+        self.session = runtime.PreviewSession(
+            self.scene,
+            self.settings,
+            self.work_root,
+            armature=self.work_armature,
+        )
         self.session.suppress_redraw = self.mode == "FAST"
         self.session.offline_bake = True
         self.world = runtime.PreviewWorld(
-            ("bake", self.root.name, id(self)),
+            ("bake", self.work_root.name, id(self)),
             self.session.import_scale,
             self.session.solver_target,
             self.session.library,
@@ -425,12 +440,72 @@ class BakeJob:
         self.world.add(self.session)
         self.world.reset(prepared_session=self.session)
         self.phase = "预热" if self.preroll and self.continuation == "INDEPENDENT" else "烘焙"
-        if self.mode == "FAST":
-            self.restore_display_state()
-            for name in self.original_visibility:
-                obj = bpy.data.objects.get(name)
-                if obj is not None:
-                    obj.hide_set(True)
+
+    def _create_working_copy(self):
+        collection = bpy.data.collections.new(
+            f".MMD Station Bake {uuid.uuid4().hex[:8]}"
+        )
+        self.scene.collection.children.link(collection)
+        self.work_collection = collection
+        sources = (self.root, *self.root.children_recursive)
+        copies = {}
+        for source in sources:
+            duplicate = source.copy()
+            if source.type == "ARMATURE":
+                duplicate.data = source.data.copy()
+                self.work_data.append(duplicate.data)
+            collection.objects.link(duplicate)
+            copies[source] = duplicate
+            self.work_objects.append(duplicate)
+        for source, duplicate in copies.items():
+            duplicate.parent = copies.get(source.parent)
+            duplicate.matrix_parent_inverse = source.matrix_parent_inverse.copy()
+            duplicate.matrix_world = source.matrix_world.copy()
+            self._remap_constraint_targets(duplicate.constraints, copies)
+            if duplicate.rigid_body_constraint is not None:
+                source_constraint = source.rigid_body_constraint
+                duplicate.rigid_body_constraint.object1 = copies.get(
+                    source_constraint.object1,
+                    source_constraint.object1,
+                )
+                duplicate.rigid_body_constraint.object2 = copies.get(
+                    source_constraint.object2,
+                    source_constraint.object2,
+                )
+            if duplicate.type == "ARMATURE":
+                for pose_bone in duplicate.pose.bones:
+                    self._remap_constraint_targets(pose_bone.constraints, copies)
+            duplicate.hide_set(True)
+            duplicate.hide_render = True
+        self.work_root = copies[self.root]
+        self.work_armature = copies[self.armature]
+
+    @staticmethod
+    def _remap_constraint_targets(constraints, copies):
+        for constraint in constraints:
+            for property_name in ("target", "pole_target"):
+                if not hasattr(constraint, property_name):
+                    continue
+                target = getattr(constraint, property_name)
+                duplicate = copies.get(target)
+                if duplicate is not None:
+                    setattr(constraint, property_name, duplicate)
+
+    def _remove_working_copy(self):
+        for obj in reversed(self.work_objects):
+            if obj.name in bpy.data.objects:
+                bpy.data.objects.remove(obj, do_unlink=True)
+        self.work_objects.clear()
+        for data in self.work_data:
+            if data.users == 0 and data.name in bpy.data.armatures:
+                bpy.data.armatures.remove(data)
+        self.work_data.clear()
+        if (
+            self.work_collection is not None
+            and self.work_collection.name in bpy.data.collections
+        ):
+            bpy.data.collections.remove(self.work_collection)
+        self.work_collection = None
 
     def _build_action_bindings(self):
         bindings = []
@@ -440,9 +515,9 @@ class BakeJob:
             owner_path, separator, property_name = curve.data_path.rpartition(".")
             try:
                 owner = (
-                    self.armature.path_resolve(owner_path)
+                    self.work_armature.path_resolve(owner_path)
                     if separator
-                    else self.armature
+                    else self.work_armature
                 )
                 value = getattr(owner, property_name)
             except (AttributeError, ValueError):
@@ -470,7 +545,7 @@ class BakeJob:
                 setattr(owner, property_name, round(value))
             else:
                 setattr(owner, property_name, value)
-        self.armature.update_tag(refresh={"OBJECT"})
+        self.work_armature.update_tag(refresh={"OBJECT"})
         if self.session is not None:
             self.session.offline_frame = frame
 
@@ -478,7 +553,7 @@ class BakeJob:
         self.armature.animation_data.action = self.original_action
         if self.mode != "FAST":
             self.scene.frame_set(self.original_frame)
-        self.context.view_layer.update()
+            self.context.view_layer.update()
         self.root.matrix_world = self.original_root_matrix
         self.armature.matrix_world = self.original_armature_matrix
         for name, matrix_basis in self.original_pose_basis.items():
@@ -505,8 +580,8 @@ class BakeJob:
             return False
         frame, store_output = self.steps[self.frame_index]
         self.current_frame = frame
-        if self.armature.animation_data.action is not self.source_action:
-            self.armature.animation_data.action = self.source_action
+        if self.work_armature.animation_data.action is not self.source_action:
+            self.work_armature.animation_data.action = self.source_action
         if self.mode == "FAST":
             self._evaluate_source_action(frame)
         else:
@@ -595,6 +670,7 @@ class BakeJob:
             if self.session is not None:
                 self.session.close(restore=True)
         finally:
+            self._remove_working_copy()
             if restore_action and self.armature is not None:
                 self.restore_display_state()
             else:
@@ -614,7 +690,7 @@ class SPX_OT_BakeMMDPhysics(Operator):
 
     mode: EnumProperty(
         items=(
-            ("FAST", "快速烘焙", "暂时隐藏模型并直接采样 Action，不播放时间轴"),
+            ("FAST", "快速烘焙", "在临时复制体上求解，本体保持原姿势且不播放时间轴"),
             ("PLAYBACK", "播放烘焙", "逐帧显示物理结果并同步写入烘焙数据"),
         ),
         options={"HIDDEN"},
