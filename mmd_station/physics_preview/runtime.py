@@ -1014,6 +1014,7 @@ class PreviewSession:
         self.solver = None
         self.body_offset = 0
         self.joint_offset = 0
+        self.pending_type_zero_displays = ()
         self.pose_input = PoseInputAdapter(self)
         self.runtime_adapter = create_session_adapter(self)
         self.pose_input.set_native_input_active(self.runtime_adapter is not None)
@@ -1297,6 +1298,7 @@ class PreviewSession:
         joint_states=None,
         present_output=True,
         update_debug=None,
+        evaluate_output=True,
     ):
         animation_pose = self.pending_animation_pose
         if transforms is None:
@@ -1313,6 +1315,7 @@ class PreviewSession:
         armature_inverse = self.armature.matrix_world.inverted_safe()
         bone_targets = {}
         type_zero_displays = []
+        self.pending_type_zero_displays = ()
         if update_debug is None:
             update_debug = present_output
         update_debug = bool(update_debug and self.settings.preview_update_rigids)
@@ -1416,19 +1419,11 @@ class PreviewSession:
                 parent_matrix_local=parent.bone.matrix_local,
                 invert=True,
             )
-        if present_output:
+        if present_output and evaluate_output:
             _update_view_layer()
-            for index, rigid, pose_bone in type_zero_displays:
-                rigid_world = (
-                    self.armature.matrix_world
-                    @ pose_bone.matrix
-                    @ self.bone_offsets[index]
-                )
-                rigid.matrix_world = Matrix.LocRotScale(
-                    rigid_world.translation,
-                    rigid_world.to_quaternion(),
-                    self.rigid_debug_scales[index],
-                )
+            self._apply_type_zero_displays(type_zero_displays)
+        elif present_output:
+            self.pending_type_zero_displays = tuple(type_zero_displays)
         self.pose_input.mark_output(present_output, debugged=update_debug)
         if not present_output and not getattr(self, "suppress_redraw", False):
             _tag_view3d_redraw()
@@ -1437,6 +1432,22 @@ class PreviewSession:
         if self.solver_target == "MMD":
             self.mmd_step_count += 1
         self.pending_animation_pose = None
+
+    def _apply_type_zero_displays(self, displays=None):
+        if displays is None:
+            displays = self.pending_type_zero_displays
+        for index, rigid, pose_bone in displays:
+            rigid_world = (
+                self.armature.matrix_world
+                @ pose_bone.matrix
+                @ self.bone_offsets[index]
+            )
+            rigid.matrix_world = Matrix.LocRotScale(
+                rigid_world.translation,
+                rigid_world.to_quaternion(),
+                self.rigid_debug_scales[index],
+            )
+        self.pending_type_zero_displays = ()
 
     def apply_step(
         self,

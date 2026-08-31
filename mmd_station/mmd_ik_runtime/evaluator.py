@@ -1229,8 +1229,7 @@ def submit_physics_feedback(root, preview_session, transforms=None):
         session.solver.commit_external()
     runtime = bpy.data.objects.get(session.runtime_name)
     if runtime is not None:
-        session._apply_output(runtime)
-        bpy.context.view_layer.update()
+        session._apply_output(runtime, update=False)
     return submitted
 
 

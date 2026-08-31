@@ -6,6 +6,13 @@
 - 新增 `tools/security_scan.py`、仓库自带 pre-push hook 与 `tools/install_git_hooks.ps1`。每次 push 会扫描全部可达 Git blob；`pack.ps1` 会在打包前扫描 Git ref 或工作树，并在打包后再次扫描 ZIP。命中凭据或真实 AI 翻译端点时硬阻断且不保留被拒 ZIP。
 - `AGENTS.md` / `CLAUDE.md` 同步加入长期规则；`.gitignore` 增加本地 secret 文件边界。行为边界仅涉及安全审计、发布/推送门禁和 AI URL 空默认值，不改变 Morph AI 请求协议、Morph 编辑、物理、IK、MMD I/O 或更新器行为。
 
+## 2026-08-31 - V1.0.1-dev MMD IK + MMD DLL Root 快移延迟与预览重复求值修复
+
+- 用真实 `D:\MMD\模型\Alicia\鳴潮-達妮婭\New Folder\00.blend` 复现 MMD IK 兼容开启后快速移动 MMD Root 时动态物理呈现落后一拍、type-0 骨骼追踪刚体正常、PMX DLL 不受影响的问题。根因是 `MmdIkPhysicsAdapter.prepare_step()` 在 Blender 尚未求值 Root 原始 `location` 时提前缓存 `armature.matrix_world`；本次 `0.2 m` 探针中当前 Armature 已到 `0.2 m`，MMD feedback motion anchor 仍为 `0 m`。现在先完成 authored pose/depsgraph 求值，再采集同一物理步的运动锚点，避免 MMD-only 外部刚体反馈减去上一拍位移。
+- 合并 MMD IK physics feedback 的中间呈现求值：基础物理 writeback 与 native feedback 先在 RNA 层完成，最后只提交一次最终 MMD IK + physics Pose；不再在最终 native 输出之前重复求值整套可见 Armature modifier。该优化不改变 PMX DLL、Bullet stepping、刚体/Joint 图或离线烘焙语义。
+- 对 `00.blend` 与旧 `36.blend` 做同口径剖析，排除“其它模型或隐藏对象被加入 DLL 扫描范围”：临时隐藏 `36.blend` 当前模型外对象后单步中位数基本不变（`45.277 ms -> 45.182 ms`）。主差异来自当前模型本身：`00.blend` 只有 `1` 个可见 Mesh / `1` 个 Armature modifier，而 `36.blend` 的 `合并2` 有 `99` 个可见 Mesh / `99` 个 Armature modifier；两者顶点数分别约 `306236` 与 `291950`。因此旧工程剩余瓶颈是 Blender 对 99 条真实可见变形管线的 depsgraph 成本，不能通过忽略隐藏物体扫描解决，也未用隐藏模型或停用变形冒充真实预览。
+- 验证：真实 `00.blend` 回归输出 `MMD_00_IK_MMD_PARENT_EMPTY_LATENCY_OK moves=8 anchor_error=0 type0=61 view_updates=16`；`MMD_IK_PHYSICS_RESET_REGRESSION_OK` 通过。`00.blend` 的 MMD IK 快移探针单步中位数由修复前约 `80.926 ms` 降至约 `68.187 ms`；`36.blend` 仍由 99 个可见 Armature modifier 主导，未把一次 headless 计时冒充 GUI 帧率保证。开发期 Junction 直接生效；未制作 ZIP、未 tag、未 push，两个真实工程均未保存。
+
 ## 2026-08-30 - V1.0.1-dev 物理修复爆炸与乱飞骨骼安全姿态修复
 
 - 修复从物理快照直接开始修复烘焙仍会整条刚体链爆炸的问题。真实 `36.blend + TOMBOY.vmd` 证明 `.mspc` 虽保存刚体变换、速度与激活状态，但不包含 Bullet contact manifold、constraint warm-start impulse 等内部求解缓存；复杂衣物链无法仅靠该快照确定性热恢复。修复烘焙现在从所属独立段的原始 `simulation_start + simulation_preroll` 完整静默重放，且禁止一个修复范围跨越两个独立烘焙状态。

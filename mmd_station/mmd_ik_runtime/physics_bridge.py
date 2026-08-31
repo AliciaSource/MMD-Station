@@ -1,5 +1,3 @@
-import bpy
-
 from .runtime import selected_armature
 
 
@@ -28,9 +26,6 @@ class MmdIkPhysicsAdapter:
             session.armature
         )
         try:
-            session.ik_motion_anchor = physics_runtime._model_motion_anchor(
-                session.armature
-            )
             operation_center = session.armature.pose.bones.get("操作中心")
             operation_center_matrix = (
                 operation_center.matrix.copy() if operation_center is not None else None
@@ -59,6 +54,9 @@ class MmdIkPhysicsAdapter:
             finally:
                 if native_pose_active:
                     session._broad_pose_reset_detected = reset_probe
+            session.ik_motion_anchor = physics_runtime._model_motion_anchor(
+                session.armature
+            )
             if exact_targets:
                 prepare_physics_targets(session.root, session)
             return result
@@ -74,6 +72,7 @@ class MmdIkPhysicsAdapter:
         present_output=True,
         update_debug=None,
     ):
+        from ..physics_preview import runtime as physics_runtime
         from .evaluator import submit_physics_feedback
 
         session = self.physics_session
@@ -91,6 +90,7 @@ class MmdIkPhysicsAdapter:
                 joint_states,
                 present_output=present_output,
                 update_debug=update_debug,
+                evaluate_output=False,
             )
             submit_physics_feedback(session.root, session, transforms)
             preserved = getattr(session, "_mmd_ik_modal_pose_matrices", {})
@@ -103,9 +103,10 @@ class MmdIkPhysicsAdapter:
                 pose_bone = session.armature.pose.bones.get(name)
                 if pose_bone is not None:
                     pose_bone.matrix_basis = matrix
-            if preserved:
+            if present_output:
                 session.armature.update_tag(refresh={"OBJECT"})
-                bpy.context.view_layer.update()
+                physics_runtime._update_view_layer()
+                session._apply_type_zero_displays()
             if not session.offline_bake:
                 native_session.sync_output_pose(session.armature, session.scene)
             return result
