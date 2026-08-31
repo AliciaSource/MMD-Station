@@ -1,5 +1,11 @@
 # Development Log
 
+## 2026-08-31 - V1.0.1-dev Morph AI 设置宿主冲突修复
+
+- 修复 Morph AI“设置”按钮点击后报 `MMD_STATION_AddonUpdaterPreferences` 缺少 `morph_ai_api_url` 的问题。根因是 Morph AI 与宿主更新器各自注册了一套相同 `bl_idname = "mmd_station"` 的 `AddonPreferences`，后注册的更新器类成为真实 Preferences 宿主，AI 代码却仍按另一套类读取属性。
+- 删除重复的 `SPX_MorphAIAddonPreferences`，把 `morph_ai_api_url`、`morph_ai_api_key`、`morph_ai_model` 合并到唯一的 `MMD_STATION_AddonUpdaterPreferences`；URL、Key 与模型源码默认值均为空，已保存的 Blender 用户首选项仍沿用相同属性标识。`_addon_preferences()` 同时增加属性契约检查，未来宿主异常时返回可读错误而不是 `AttributeError`。
+- Add-ons 首选项保留 Morph AI 与更新器两组设置；更新 Blender smoke 覆盖真实生效 Preferences 的三个 AI 属性。行为边界不改变 AI 请求协议或凭据本地保存位置，不触及 Morph 翻译结果、物理、IK、MMD I/O 或更新器下载逻辑。
+
 ## 2026-08-31 - V1.0.0 GitHub AI 翻译凭据与私有端点清理
 
 - 审计公开 GitHub 默认分支、全部可达历史、tag、Release 文本与 `mmd_station-1.0.0.zip`：未发现实际 API Key 值，但确认 Morph AI 默认服务 URL 已进入源码历史与 Release ZIP。将该 URL 从全部可达历史移除，`morph_ai_api_url` / `morph_ai_api_key` 源码默认值均保持为空，并重建同版本 Release 资产。

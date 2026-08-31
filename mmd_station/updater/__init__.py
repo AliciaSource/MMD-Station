@@ -45,9 +45,30 @@ class MMD_STATION_AddonUpdaterPreferences(bpy.types.AddonPreferences):
                      "默认只接收稳定的正式版本"),
         default=False,
     )  # type: ignore
+    morph_ai_api_url: bpy.props.StringProperty(
+        name="API 基础地址",
+        description="只填写服务端基础地址，插件会自动追加 v1/chat/completions",
+        default="",
+    )  # type: ignore
+    morph_ai_api_key: bpy.props.StringProperty(
+        name="API Key",
+        subtype="PASSWORD",
+        default="",
+    )  # type: ignore
+    morph_ai_model: bpy.props.StringProperty(
+        name="调用模型",
+        description="填写服务端实际支持的模型名称",
+        default="",
+    )  # type: ignore
 
     def draw(self, context):
         layout = self.layout
+        layout.label(text="Morph AI 设置")
+        layout.prop(self, "morph_ai_api_url")
+        layout.label(text="只填写基础地址；插件自动追加 /v1/chat/completions", icon="INFO")
+        layout.prop(self, "morph_ai_api_key")
+        layout.prop(self, "morph_ai_model")
+        layout.separator()
         layout.prop(self, "auto_update_notify")
         layout.prop(self, "receive_prereleases")
         addon_updater_ops.check_for_update_background()

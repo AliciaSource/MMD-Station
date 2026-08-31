@@ -20,7 +20,7 @@ from bpy.props import (
     PointerProperty,
     StringProperty,
 )
-from bpy.types import AddonPreferences, Operator, PropertyGroup, UIList
+from bpy.types import Operator, PropertyGroup, UIList
 from mathutils import Vector
 
 from .mmd_material_order import ordered_materials
@@ -65,27 +65,6 @@ _EXPORT_VMD_CLASS = None
 _DETAIL_SELECTION_REGISTRATIONS = ()
 
 
-class SPX_MorphAIAddonPreferences(AddonPreferences):
-    bl_idname = ADDON_PACKAGE
-
-    morph_ai_api_url: StringProperty(
-        name="API 基础地址",
-        description="只填写服务端基础地址，插件会自动追加 v1/chat/completions",
-        default="",
-    )
-    morph_ai_api_key: StringProperty(
-        name="API Key",
-        subtype="PASSWORD",
-    )
-    morph_ai_model: StringProperty(
-        name="调用模型",
-        description="填写服务端实际支持的模型名称",
-    )
-
-    def draw(self, _context):
-        _draw_morph_ai_settings(self.layout, self)
-
-
 def _draw_morph_ai_settings(layout, settings):
     is_preferences = hasattr(settings, "morph_ai_api_url")
     layout.prop(settings, "morph_ai_api_url" if is_preferences else "api_url")
@@ -96,7 +75,17 @@ def _draw_morph_ai_settings(layout, settings):
 
 def _addon_preferences(context):
     addon = context.preferences.addons.get(ADDON_PACKAGE)
-    return addon.preferences if addon is not None else None
+    preferences = addon.preferences if addon is not None else None
+    required_properties = (
+        "morph_ai_api_url",
+        "morph_ai_api_key",
+        "morph_ai_model",
+    )
+    if preferences is None or not all(
+        hasattr(preferences, name) for name in required_properties
+    ):
+        return None
+    return preferences
 
 
 def _morph_ai_base_url(url):
@@ -4225,7 +4214,6 @@ def unregister_services():
 
 
 CLASSES = (
-    SPX_MorphAIAddonPreferences,
     SPX_MorphState,
     SPX_OT_SetMorphValue,
     SPX_UL_MorphEditor,

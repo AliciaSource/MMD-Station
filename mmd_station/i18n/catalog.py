@@ -238,6 +238,7 @@ ENGLISH = {
     'MMD 骨骼求值已启动：匹配 ': 'MMD bone evaluation started: match ',
     'Mesh 数据已存在：': 'Mesh data already exists:',
     'Morph AI 翻译设置': 'Morph AI Translation Settings',
+    'Morph AI 设置': 'Morph AI Settings',
     'Morph AI 设置已全局保存': 'Morph AI settings saved globally',
     'Morph 值': 'Morph value',
     'Morph 类型': 'Morph type',
