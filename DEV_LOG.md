@@ -3,9 +3,9 @@
 ## 2026-08-31 - V1.0.1-dev 分材质预览物理语义与性能回归修复
 
 - 用真实 `New Folder/00.blend` 在内存中执行 Blender 原生“按材质分离”，从 1 个 Mesh 生成 98 个 Mesh 后复现上一版展示代理错误。根因不是 IK：临时第二 Armature 删除了原骨架 constraint/driver，physics 只写临时父骨，RGBA 胸部依赖的 `胸01.L` 等辅助约束链仍停在 canonical 静态姿态；`足D`/`足D++` 混合链也因此可能产生错误层级变形。上一版只测 physics driver 与干净骨架成本，没有验证最终 deform bone/网格语义，结论不充分。
-- 删除 physics presentation Armature。IK、constraint/driver 和 physics output 现在始终留在同一原生 Armature，通过 IK closure 与 physics driver ownership 隔离，而不是靠复制骨架隔离。MODEL 优化仅处理 Mesh：按 Armature modifier 与 ShapeKey 结构分兼容组临时 Join，代理继续绑定原生 Armature；源分片移入当前 View Layer 排除的临时集合，停止时按原 Collection、可见性和 modifier 状态恢复。含 `UV_WARP`、额外 modifier、对象动画或约束的 Mesh 不参与不安全合并。
-- 真实 `00.blend` 分材质回归保持 294632 顶点、完整 ShapeKey/Vertex Group 与原 Armature modifier；MMD physics 下 `胸上2.L` 位移 `0.0112585583`、约束子骨 `胸01.L` 位移 `0.00328183009`，足 D 移动后的展示包围盒比例 `0.996803`，不再静止或炸权重。单 Mesh 与 98 Mesh 代理的完整 tick 中位在重复探针中处于同一量级（代表性一次 `29.138 ms -> 27.544 ms`），不再保留 98 个源对象的 View Layer 求值。
-- 真实 `36.blend` 只合并可证明兼容的 34/97 个源 Mesh 为 6 个代理 Mesh，其余复杂管线保持原样；read-only depsgraph 中位 `16.712 ms -> 12.707 ms`。该收益低于上一版牺牲 rig 语义得到的错误数字，但保留 RGBA、UV Morph、constraint/driver 与对象级行为。开发 Junction 直接生效；真实工程均未保存，未制作 ZIP、未 tag、未 push。
+- 删除 physics presentation Armature。IK、constraint/driver 和 physics output 现在始终留在同一原生 Armature，通过 IK closure 与 physics driver ownership 隔离，而不是靠复制骨架隔离。MODEL 优化仅处理 Mesh：全部只有原生 Armature modifier、没有对象动画/约束的兼容分片直接 Join 为一个代理 Mesh，不同 ShapeKey 子集恢复为并集并从对应源对象同步值。源分片仍留在原 Collection，但预览期间同时关闭小眼睛、小相机以及全部 modifier 的视图/渲染开关；停止时逐对象恢复原值。含 `UV_WARP`、额外 modifier、对象动画或约束的 Mesh 不参与不安全合并。
+- 真实 `00.blend` 分材质回归保持 294632 顶点、完整 ShapeKey/Vertex Group 与唯一原 Armature modifier；98 个分片只生成 1 个代理 Mesh。MMD physics 下 `胸上2.L` 位移 `0.0112585583`、约束子骨 `胸01.L` 位移 `0.00328183009`，足 D 移动后的展示包围盒比例 `0.996803`，不再静止或炸权重。单 Mesh 与98分片代理的 depsgraph 中位为 `8.194 ms -> 8.064 ms`，完整 tick 仍处于同一性能区间。
+- 真实 `36.blend` 把可证明兼容的 74/97 个源 Mesh 合并为 1 个代理 Mesh，其余复杂管线保持原样；read-only depsgraph 中位 `15.543 ms -> 11.071 ms`。该路线不再用简化 rig 换取错误数字，并保留 RGBA、UV Morph、constraint/driver 与对象级行为。开发 Junction 直接生效；真实工程均未保存，未制作 ZIP、未 tag、未 push。
 
 ## 2026-08-31 - V1.0.1-dev Morph AI 设置宿主冲突修复
 

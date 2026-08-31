@@ -18,7 +18,7 @@ PMX/MMD DLL 的单 Session、未启用 MMD IK 路径统一使用双缓冲热路�
 
 基础物理路径每个 solver tick 都提交 Bone output，但交互 timer 不同步阻塞 `view_layer.update()`；它标记 VIEW_3D redraw，让 Blender 把物理输出与下一次自然 depsgraph evaluation 合并。不存在 30 FPS presentation cap，也不跳过 physics tick。启用“显示刚体运动”时，Rigid/Joint 调试对象也随每个 solver tick 写入，避免可见刚体落后物理解算；该写入同样不强制 evaluation，关闭显示则完全省去对象回写成本。MMD IK 兼容与物理预览没有 Session adapter、刚体 feedback 或 after-physics bone evaluation：IK 只更新 canonical authored Pose，0 型刚体读取当前骨骼目标，1/2 型刚体只按自身模式输出物理结果。开关 IK 不重建或切换 physics Session、world、solver 与速度状态。
 
-`MODEL` 预览不会复制 Armature。MMD IK、原有 constraint/driver 链和 physics output 始终作用于同一原生 Armature，但通过各自的 bone ownership 隔离。两个及以上只有同一 Armature modifier、没有对象动画/约束且 ShapeKey 结构相同的拆分 Mesh，会按兼容组临时合并为绑定原生 Armature 的 presentation proxy；源 Mesh 在预览期间移入当前 View Layer 排除的临时集合，避免隐藏对象仍参与 depsgraph。含 `UV_WARP`、额外 modifier 或不同 ShapeKey 结构的对象保持原样，不为了性能破坏其变形语义。停止预览后删除临时 Mesh，并按原 Collection、可见性和 modifier 状态恢复全部源对象。
+`MODEL` 预览不会复制 Armature。MMD IK、原有 constraint/driver 链和 physics output 始终作用于同一原生 Armature，但通过各自的 bone ownership 隔离。两个及以上只有同一 Armature modifier、没有对象动画/约束的拆分 Mesh，会临时合并为一个绑定原生 Armature 的 presentation proxy；不同 ShapeKey 子集在 Join 时重新组成并集，并从对应源对象同步值。源 Mesh 保留在原 Collection，但预览期间同时关闭视图、渲染以及全部 modifier 的视图/渲染求值。含 `UV_WARP`、额外 modifier、对象动画或约束的对象保持原样，不为了性能破坏其变形语义。停止预览后删除临时 Mesh，并逐对象恢复原来的小眼睛、小相机和 modifier 状态。
 
 启动预览会在修改连接状态和创建 solver 之前建立唯一的启动快照：整个 MMD Armature 的全部 Pose Bone、模型全部刚体对象矩阵和全部 Joint 对象矩阵。对象身份以 Blender 数据名称保存，矩阵是与 RNA 生命周期无关的普通副本；停止时还会恢复动态骨骼连接状态。
 

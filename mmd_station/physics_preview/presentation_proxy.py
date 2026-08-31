@@ -11,8 +11,8 @@ _COLLECTION_PREFIX = "_MMD_STATION_PHYSICS_VIEW_"
 class SourceMeshState:
     name: str
     hidden: bool
+    hide_render: bool
     modifier_visibility: tuple
-    collection_names: tuple
 
 
 def _eligible_meshes(meshes, armature, view_layer):
@@ -22,6 +22,7 @@ def _eligible_meshes(meshes, armature, view_layer):
             obj.type != "MESH"
             or obj.name not in view_layer.objects
             or obj.hide_get()
+            or obj.hide_render
         ):
             continue
         armature_modifiers = [
@@ -29,7 +30,11 @@ def _eligible_meshes(meshes, armature, view_layer):
             for modifier in obj.modifiers
             if modifier.type == "ARMATURE" and modifier.object == armature
         ]
-        if len(armature_modifiers) != 1:
+        if (
+            len(armature_modifiers) != 1
+            or not armature_modifiers[0].show_viewport
+            or not armature_modifiers[0].show_render
+        ):
             continue
         eligible.append(obj)
     return eligible
@@ -45,26 +50,6 @@ def _merge_safe(sources, armature):
     return True
 
 
-def _shape_signature(source):
-    shape_keys = source.data.shape_keys
-    if shape_keys is None:
-        return ()
-    return tuple(
-        (key_block.name, float(key_block.value))
-        for key_block in shape_keys.key_blocks
-    )
-
-
-def _find_layer_collection(layer_collection, name):
-    if layer_collection.collection.name == name:
-        return layer_collection
-    for child in layer_collection.children:
-        found = _find_layer_collection(child, name)
-        if found is not None:
-            return found
-    return None
-
-
 class PhysicsPresentationProxy:
     def __init__(self, scene, root, armature, meshes, _driver_names):
         self.scene = scene
@@ -76,7 +61,6 @@ class PhysicsPresentationProxy:
         self.proxy_mesh_names = ()
         identity = hashlib.blake2b(root.name.encode("utf-8"), digest_size=6).hexdigest()
         self.collection_name = f"{_COLLECTION_PREFIX}{identity}"
-        self.source_collection_name = f"{self.collection_name}_Sources"
         self.proxy_mesh_name = f"{self.collection_name}_Mesh"
         self.merged = False
         try:
@@ -110,80 +94,68 @@ class PhysicsPresentationProxy:
             for source in _eligible_meshes(meshes, armature, view_layer)
             if _merge_safe((source,), armature)
         ]
-        groups = {}
-        for source in candidates:
-            groups.setdefault(_shape_signature(source), []).append(source)
-        merge_groups = [sources for sources in groups.values() if len(sources) >= 2]
-        if not merge_groups:
+        if len(candidates) < 2:
             raise RuntimeError("The model has no compatible split meshes for preview optimization")
 
         collection = bpy.data.collections.new(self.collection_name)
         self.scene.collection.children.link(collection)
         source_states = []
         shape_bindings = []
-        proxy_meshes = []
-        for group_index, sources in enumerate(merge_groups):
-            copies = []
-            for source_index, source in enumerate(sources):
-                source_states.append(
-                    SourceMeshState(
-                        source.name,
-                        source.hide_get(),
-                        tuple(
-                            (modifier.name, bool(modifier.show_viewport))
-                            for modifier in source.modifiers
-                        ),
-                        tuple(collection.name for collection in source.users_collection),
-                    )
+        copies = []
+        shape_sources = {}
+        for source_index, source in enumerate(candidates):
+            source_states.append(
+                SourceMeshState(
+                    source.name,
+                    source.hide_get(),
+                    bool(source.hide_render),
+                    tuple(
+                        (
+                            modifier.name,
+                            bool(modifier.show_viewport),
+                            bool(modifier.show_render),
+                        )
+                        for modifier in source.modifiers
+                    ),
                 )
-                copy = source.copy()
-                copy.data = source.data.copy()
-                copy.name = (
-                    f"{self.collection_name}_{group_index:03d}_"
-                    f"{source_index:03d}_{source.name}"
-                )
-                for target_collection in tuple(copy.users_collection):
-                    target_collection.objects.unlink(copy)
-                collection.objects.link(copy)
-                copies.append(copy)
-            proxy_mesh = self._join_copies(copies, view_layer)
-            proxy_mesh.name = (
-                self.proxy_mesh_name
-                if len(merge_groups) == 1
-                else f"{self.proxy_mesh_name}_{group_index:03d}"
             )
-            proxy_mesh.data.name = f"{proxy_mesh.name}_Data"
-            proxy_meshes.append(proxy_mesh)
-            shape_keys = proxy_mesh.data.shape_keys
+            shape_keys = source.data.shape_keys
             if shape_keys is not None:
-                shape_bindings.extend(
-                    (proxy_mesh.name, key_block.name, sources[0].name)
-                    for key_block in shape_keys.key_blocks
-                )
+                for key_block in shape_keys.key_blocks:
+                    shape_sources.setdefault(key_block.name, source.name)
+            copy = source.copy()
+            copy.data = source.data.copy()
+            copy.name = f"{self.collection_name}_{source_index:03d}_{source.name}"
+            for target_collection in tuple(copy.users_collection):
+                target_collection.objects.unlink(copy)
+            collection.objects.link(copy)
+            copies.append(copy)
+
+        proxy_mesh = self._join_copies(copies, view_layer)
+        proxy_mesh.name = self.proxy_mesh_name
+        proxy_mesh.data.name = f"{self.proxy_mesh_name}_Data"
+        shape_keys = proxy_mesh.data.shape_keys
+        if shape_keys is not None:
+            shape_bindings.extend(
+                (proxy_mesh.name, key_block.name, shape_sources[key_block.name])
+                for key_block in shape_keys.key_blocks
+            )
 
         self.source_states = tuple(source_states)
         self.shape_bindings = tuple(shape_bindings)
         self._refresh_shape_binding_refs()
-        self.proxy_mesh_names = tuple(proxy_mesh.name for proxy_mesh in proxy_meshes)
+        self.proxy_mesh_names = (proxy_mesh.name,)
         self.merged = True
 
-        source_stash = bpy.data.collections.new(self.source_collection_name)
-        self.scene.collection.children.link(source_stash)
         for state in self.source_states:
             source = bpy.data.objects.get(state.name)
             if source is None:
                 continue
-            source_stash.objects.link(source)
-            for current_collection in tuple(source.users_collection):
-                if current_collection.name != self.source_collection_name:
-                    current_collection.objects.unlink(source)
-        layer_collection = _find_layer_collection(
-            view_layer.layer_collection,
-            self.source_collection_name,
-        )
-        if layer_collection is None:
-            raise RuntimeError("Unable to isolate source meshes from the preview View Layer")
-        layer_collection.exclude = True
+            source.hide_set(True)
+            source.hide_render = True
+            for modifier in source.modifiers:
+                modifier.show_viewport = False
+                modifier.show_render = False
         view_layer.update()
 
     def _join_copies(self, copies, view_layer):
@@ -254,20 +226,6 @@ class PhysicsPresentationProxy:
         return changed
 
     def close(self):
-        source_collection = bpy.data.collections.get(self.source_collection_name)
-        for state in self.source_states:
-            source = bpy.data.objects.get(state.name)
-            if source is None:
-                continue
-            for collection_name in state.collection_names:
-                target_collection = bpy.data.collections.get(collection_name)
-                if target_collection is not None and source.name not in target_collection.objects:
-                    target_collection.objects.link(source)
-            if source_collection is not None and source.name in source_collection.objects:
-                source_collection.objects.unlink(source)
-        if source_collection is not None:
-            bpy.data.collections.remove(source_collection)
-
         collection = bpy.data.collections.get(self.collection_name)
         if collection is not None:
             for obj in tuple(collection.objects):
@@ -284,7 +242,13 @@ class PhysicsPresentationProxy:
                 continue
             if source.name in view_layer.objects:
                 source.hide_set(state.hidden)
-            visibility = dict(state.modifier_visibility)
+            source.hide_render = state.hide_render
+            visibility = {
+                name: (show_viewport, show_render)
+                for name, show_viewport, show_render in state.modifier_visibility
+            }
             for modifier in source.modifiers:
                 if modifier.name in visibility:
-                    modifier.show_viewport = visibility[modifier.name]
+                    modifier.show_viewport, modifier.show_render = visibility[
+                        modifier.name
+                    ]

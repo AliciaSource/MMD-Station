@@ -41,7 +41,11 @@ sources = [
 source_states = {
     obj.name: (
         obj.hide_get(),
-        tuple((modifier.name, modifier.show_viewport) for modifier in obj.modifiers),
+        obj.hide_render,
+        tuple(
+            (modifier.name, modifier.show_viewport, modifier.show_render)
+            for modifier in obj.modifiers
+        ),
     )
     for obj in sources
 }
@@ -66,6 +70,7 @@ if bpy.app.timers.is_registered(runtime._timer_tick):
     bpy.app.timers.unregister(runtime._timer_tick)
 proxy = preview.presentation_proxy
 assert proxy is not None and proxy.merged, preview.presentation_proxy_error
+assert len(proxy.meshes) == 1, len(proxy.meshes)
 assert preview.output_armature is armature
 assert proxy.armature is armature
 assert not any(
@@ -77,7 +82,13 @@ proxied_sources = [bpy.data.objects[state.name] for state in proxy.source_states
 unproxied_sources = [obj for obj in sources if obj not in proxied_sources]
 assert len(proxied_sources) >= 2
 assert len(proxied_sources) < len(sources)
-assert all(obj.name not in bpy.context.view_layer.objects for obj in proxied_sources)
+assert all(obj.name in bpy.context.view_layer.objects for obj in proxied_sources)
+assert all(obj.hide_get() and obj.hide_render for obj in proxied_sources)
+assert all(
+    not modifier.show_viewport and not modifier.show_render
+    for obj in proxied_sources
+    for modifier in obj.modifiers
+)
 assert all(obj.name in bpy.context.view_layer.objects for obj in unproxied_sources)
 assert all(
     [
@@ -116,12 +127,16 @@ proxy_names = tuple(obj.name for obj in proxy.meshes)
 runtime.stop_preview(root)
 assert all(bpy.data.objects.get(name) is None for name in proxy_names)
 for source in sources:
-    hidden, visibility = source_states[source.name]
+    hidden, hide_render, visibility = source_states[source.name]
     assert source.name in bpy.context.view_layer.objects
     assert source.hide_get() == hidden
-    expected = dict(visibility)
+    assert source.hide_render == hide_render
+    expected = {
+        name: (show_viewport, show_render)
+        for name, show_viewport, show_render in visibility
+    }
     assert all(
-        modifier.show_viewport == expected[modifier.name]
+        (modifier.show_viewport, modifier.show_render) == expected[modifier.name]
         for modifier in source.modifiers
         if modifier.name in expected
     )

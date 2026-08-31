@@ -117,6 +117,17 @@ separated = [
 ]
 assert len(separated) > 1
 assert sum(len(obj.data.vertices) for obj in separated) == source_vertex_count
+source_states = {
+    obj.name: (
+        obj.hide_get(),
+        obj.hide_render,
+        tuple(
+            (modifier.name, modifier.show_viewport, modifier.show_render)
+            for modifier in obj.modifiers
+        ),
+    )
+    for obj in separated
+}
 
 bpy.ops.object.select_all(action="DESELECT")
 root.hide_set(False)
@@ -141,10 +152,13 @@ try:
         for modifier in proxy_mesh.modifiers
         if modifier.type == "ARMATURE"
     ] == [armature]
-    linked_sources = [
-        obj.name for obj in separated if obj.name in bpy.context.view_layer.objects
-    ]
-    assert not linked_sources, linked_sources
+    assert all(obj.name in bpy.context.view_layer.objects for obj in separated)
+    assert all(obj.hide_get() and obj.hide_render for obj in separated)
+    assert all(
+        not modifier.show_viewport and not modifier.show_render
+        for obj in separated
+        for modifier in obj.modifiers
+    )
     assert not any(
         obj.type == "ARMATURE"
         for obj in bpy.data.collections[proxy.collection_name].objects
@@ -212,7 +226,19 @@ try:
 finally:
     runtime.stop_preview(root)
 
-assert all(obj.name in bpy.context.view_layer.objects for obj in separated)
+for obj in separated:
+    hidden, hide_render, modifier_states = source_states[obj.name]
+    assert obj.name in bpy.context.view_layer.objects
+    assert obj.hide_get() == hidden
+    assert obj.hide_render == hide_render
+    expected = {
+        name: (show_viewport, show_render)
+        for name, show_viewport, show_render in modifier_states
+    }
+    assert all(
+        (modifier.show_viewport, modifier.show_render) == expected[modifier.name]
+        for modifier in obj.modifiers
+    )
 
 print(
     "MMD_00_SPLIT_MATERIAL_PHYSICS_REGRESSION_OK",
