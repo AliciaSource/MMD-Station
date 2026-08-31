@@ -6,6 +6,12 @@ __pycache__/
 .ruff_cache/
 mmd_station/mmd_station_updater/
 
+# Local credentials and private AI translation configuration
+.env
+.env.*
+*.secrets.*
+/.local-secrets/
+
 # Rust build output
 native/mmd_physics_solver/target/
 native/mmd_physics_solver_mmd/target/

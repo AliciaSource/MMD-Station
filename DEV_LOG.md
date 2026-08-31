@@ -1,5 +1,11 @@
 # Development Log
 
+## 2026-08-31 - V1.0.0 GitHub AI 翻译凭据与私有端点清理
+
+- 审计公开 GitHub 默认分支、全部可达历史、tag、Release 文本与 `mmd_station-1.0.0.zip`：未发现实际 API Key 值，但确认 Morph AI 默认服务 URL 已进入源码历史与 Release ZIP。将该 URL 从全部可达历史移除，`morph_ai_api_url` / `morph_ai_api_key` 源码默认值均保持为空，并重建同版本 Release 资产。
+- 新增 `tools/security_scan.py`、仓库自带 pre-push hook 与 `tools/install_git_hooks.ps1`。每次 push 会扫描全部可达 Git blob；`pack.ps1` 会在打包前扫描 Git ref 或工作树，并在打包后再次扫描 ZIP。命中凭据或真实 AI 翻译端点时硬阻断且不保留被拒 ZIP。
+- `AGENTS.md` / `CLAUDE.md` 同步加入长期规则；`.gitignore` 增加本地 secret 文件边界。行为边界仅涉及安全审计、发布/推送门禁和 AI URL 空默认值，不改变 Morph AI 请求协议、Morph 编辑、物理、IK、MMD I/O 或更新器行为。
+
 ## 2026-08-30 - V1.0.0 首个正式版定版与双语使用手册
 
 - 将 `bl_info["version"]` 正式定为 `(1, 0, 0)`，`PRERELEASE=None`，面板显示 `v1.0.0`。README 改为正式 Release ZIP 安装流程，不再保留“尚无稳定版”或开发安装主路径，并加入中英使用手册入口。

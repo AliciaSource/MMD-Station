@@ -1,0 +1,20 @@
+#!/bin/sh
+# Block every push that contains credentials or private AI translation endpoints.
+set -eu
+
+root=$(git rev-parse --show-toplevel)
+refs=""
+while read -r local_ref local_sha remote_ref remote_sha; do
+    case "$local_sha" in
+        0000000000000000000000000000000000000000) ;;
+        *) refs="$refs --ref $local_sha" ;;
+    esac
+done
+
+if [ -z "$refs" ]; then
+    exit 0
+fi
+
+cd "$root"
+# shellcheck disable=SC2086
+python tools/security_scan.py $refs
