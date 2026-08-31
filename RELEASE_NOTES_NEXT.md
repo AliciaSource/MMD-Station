@@ -16,5 +16,7 @@
 - Fully isolated MMD IK compatibility from physics preview ownership, so IK can
   be toggled without rebuilding or feeding back into the active physics world.
 - Added a temporary mesh-only presentation proxy for compatible material-split
-  models, preserving the original rig, constraints, drivers, physics behavior,
-  and near-merged dependency-graph performance.
+  and mixed multi-material models, preserving the original rig, constraints,
+  drivers, physics behavior, and near-merged dependency-graph performance. The
+  proxy also rebuilds mmd_tools edge-preview materials, weights, and Solidify
+  settings against the final merged material layout.

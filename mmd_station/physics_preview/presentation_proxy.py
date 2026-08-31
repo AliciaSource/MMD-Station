@@ -1,10 +1,12 @@
 from dataclasses import dataclass
 import hashlib
+import importlib
 
 import bpy
 
 
 _COLLECTION_PREFIX = "_MMD_STATION_PHYSICS_VIEW_"
+_EDGE_PREVIEW_NAME = "mmd_edge_preview"
 
 
 @dataclass
@@ -45,9 +47,61 @@ def _merge_safe(sources, armature):
         if source.animation_data is not None or source.constraints:
             return False
         for modifier in source.modifiers:
-            if modifier.type != "ARMATURE" or modifier.object != armature:
-                return False
+            if modifier.type == "ARMATURE" and modifier.object == armature:
+                continue
+            if modifier.type == "SOLIDIFY" and modifier.name == _EDGE_PREVIEW_NAME:
+                continue
+            return False
     return True
+
+
+def _edge_preview_settings(sources):
+    settings = {
+        (
+            modifier.thickness,
+            bool(modifier.show_viewport),
+            bool(modifier.show_render),
+        )
+        for source in sources
+        for modifier in source.modifiers
+        if modifier.type == "SOLIDIFY" and modifier.name == _EDGE_PREVIEW_NAME
+    }
+    if not settings:
+        return None
+    if len(settings) != 1:
+        raise RuntimeError("Split meshes use inconsistent MMD edge preview settings")
+    return settings.pop()
+
+
+def _rebuild_mmd_edge_preview(obj, settings):
+    material_module = None
+    for module_name in (
+        "bl_ext.blender_org.mmd_tools.operators.material",
+        "mmd_tools.operators.material",
+    ):
+        try:
+            material_module = importlib.import_module(module_name)
+            break
+        except ImportError:
+            continue
+    if material_module is None:
+        raise RuntimeError("Unable to load the mmd_tools edge preview implementation")
+
+    operator_type = material_module.EdgePreviewSetup
+    operator = type("_MmdEdgePreviewBuilder", (), {})()
+    for name, method in vars(operator_type).items():
+        if name.startswith("_EdgePreviewSetup__") and callable(method):
+            setattr(operator, name, method.__get__(operator, type(operator)))
+    create_toon_edge = getattr(
+        operator,
+        "_EdgePreviewSetup__create_toon_edge",
+    )
+    thickness, show_viewport, show_render = settings
+    create_toon_edge(obj, thickness)
+    modifier = obj.modifiers.get(_EDGE_PREVIEW_NAME)
+    if modifier is not None:
+        modifier.show_viewport = show_viewport
+        modifier.show_render = show_render
 
 
 class PhysicsPresentationProxy:
@@ -96,6 +150,7 @@ class PhysicsPresentationProxy:
         ]
         if len(candidates) < 2:
             raise RuntimeError("The model has no compatible split meshes for preview optimization")
+        edge_preview_settings = _edge_preview_settings(candidates)
 
         collection = bpy.data.collections.new(self.collection_name)
         self.scene.collection.children.link(collection)
@@ -134,6 +189,8 @@ class PhysicsPresentationProxy:
         proxy_mesh = self._join_copies(copies, view_layer)
         proxy_mesh.name = self.proxy_mesh_name
         proxy_mesh.data.name = f"{self.proxy_mesh_name}_Data"
+        if edge_preview_settings is not None:
+            _rebuild_mmd_edge_preview(proxy_mesh, edge_preview_settings)
         shape_keys = proxy_mesh.data.shape_keys
         if shape_keys is not None:
             shape_bindings.extend(
