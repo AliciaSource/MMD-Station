@@ -276,7 +276,7 @@ try:
     current_model_session = _SESSIONS[root.name]
     assert current_model_session.pmx_path == "<current model>"
     preview_session = physics_runtime.start_preview(bpy.context)[0]
-    assert not current_model_session.physics_feedback_complete
+    assert not hasattr(current_model_session, "physics_feedback_complete")
     physics_runtime.stop_preview(root)
 finally:
     if source_pmx is not None:

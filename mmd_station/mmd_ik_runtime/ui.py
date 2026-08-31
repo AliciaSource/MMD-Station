@@ -8,8 +8,6 @@ from bpy.types import Operator
 
 from . import export_hook
 from .evaluator import is_active as evaluator_is_active
-from .evaluator import capture_physics_bindings
-from .evaluator import replay_live
 from .evaluator import start as start_evaluator
 from .evaluator import start_live
 from .evaluator import stop as stop_evaluator
@@ -195,10 +193,6 @@ class SPX_OT_CreateMMDIKRuntime(_RuntimeOperator, Operator):
         export_hook.install()
         install_vmd_hook()
         root = _selected_root(context)
-        from ..physics_preview import runtime as physics_runtime
-
-        runtime_switch = physics_runtime.suspend_for_runtime_switch(root)
-        started = False
         created = False
         try:
             canonical = selected_armature(root)
@@ -212,19 +206,9 @@ class SPX_OT_CreateMMDIKRuntime(_RuntimeOperator, Operator):
                 input_basis=input_basis,
                 update=False,
             )
-            started = True
         except Exception:
             restore_bindings(root, keep_runtime=False)
             raise
-        finally:
-            if runtime_switch is not None:
-                try:
-                    preview_session, _previous_suspended = runtime_switch
-                    if started:
-                        capture_physics_bindings(root, preview_session)
-                        replay_live(root, context.scene)
-                finally:
-                    physics_runtime.resume_after_runtime_switch(runtime_switch)
         _set_armature_selector(
             context.scene.surface_proxy_creator, selected_armature(root)
         )
@@ -282,17 +266,7 @@ class SPX_OT_RemoveMMDIKRuntime(_RuntimeOperator, Operator):
 
     def run(self, context):
         root = _selected_root(context)
-        from ..physics_preview import runtime as physics_runtime
-
-        handoff = physics_runtime.begin_runtime_adapter_handoff(root)
-        try:
-            count = restore_bindings(
-                root,
-                keep_runtime=False,
-                update=handoff is None,
-            )
-        finally:
-            physics_runtime.complete_runtime_adapter_handoff(handoff)
+        count = restore_bindings(root, keep_runtime=False)
         _set_armature_selector(context.scene.surface_proxy_creator, selected_armature(root))
         return f"已关闭 MMD 原生 IK 链接管，{count} 个 Mesh 继续使用原骨架"
 

@@ -20,10 +20,6 @@ POST_STEPS = 180
 
 sys.path[:0] = [str(MMD_TOOLS_PARENT), str(REPO)]
 
-import mmd_tools
-
-mmd_tools.register()
-
 import mmd_station
 from mmd_station.physics_preview import runtime
 
@@ -34,14 +30,22 @@ def tick(wall_seconds):
 
 
 def sample(session, armature, ring):
-    ring_bone = armature.pose.bones[ring.mmd_rigid.bone]
+    ring_bone = session.output_armature.pose.bones[ring.mmd_rigid.bone]
     return {
         "ring": ring.matrix_world.translation.copy(),
-        "ring_bone": (armature.matrix_world @ ring_bone.matrix).translation.copy(),
+        "ring_bone": (
+            session.output_armature.matrix_world @ ring_bone.matrix
+        ).translation.copy(),
         "rigid_matrices": [rigid.matrix_world.copy() for rigid in session.rigids],
         "bone_matrices": [
-            armature.matrix_world @ armature.pose.bones[rigid.mmd_rigid.bone].matrix
-            if rigid.mmd_rigid.bone in armature.pose.bones
+            (
+                armature.matrix_world
+                @ armature.pose.bones[rigid.mmd_rigid.bone].matrix
+                if int(rigid.mmd_rigid.type) == 0
+                else session.output_armature.matrix_world
+                @ session.output_armature.pose.bones[rigid.mmd_rigid.bone].matrix
+            )
+            if rigid.mmd_rigid.bone in session.output_armature.pose.bones
             else None
             for rigid in session.rigids
         ],
@@ -111,7 +115,8 @@ def run_case(session, move):
     assert_type0_targets(session)
 
 
-mmd_station.register()
+if not hasattr(bpy.types.Scene, "surface_proxy_creator"):
+    mmd_station.register()
 target = os.environ.get("SPX_TEST_SOLVER_TARGET", "PMX")
 assert target in {"PMX", "MMD"}
 root = bpy.data.objects.get(ROOT_NAME)
@@ -142,7 +147,10 @@ try:
     if os.environ.get("SPX_ENABLE_IK"):
         from mmd_station.mmd_ik_runtime import evaluator
 
-        assert not evaluator._SESSIONS[root.name].physics_feedback_complete
+        assert not hasattr(
+            evaluator._SESSIONS[root.name],
+            "physics_feedback_complete",
+        )
     run_case(
         session,
         lambda frame: setattr(

@@ -1,7 +1,5 @@
 from dataclasses import dataclass, field
-import math
 from pathlib import Path
-import struct
 import tempfile
 
 import bpy
@@ -45,35 +43,6 @@ def _resolve_live_source_path(root):
         root["spx_mmd_ik_source_pmx"] = str(candidates[0])
         return candidates[0]
     return source_path
-
-
-def _f32(value):
-    return struct.unpack("<f", struct.pack("<f", float(value)))[0]
-
-
-def _qmul(left, right):
-    lx, ly, lz, lw = left
-    rx, ry, rz, rw = right
-    value = (
-        _f32(_f32(_f32(lw * rx) + _f32(lx * rw)) + _f32(ly * rz) - _f32(lz * ry)),
-        _f32(_f32(_f32(lw * ry) - _f32(lx * rz)) + _f32(ly * rw) + _f32(lz * rx)),
-        _f32(_f32(_f32(lw * rz) + _f32(lx * ry)) - _f32(ly * rx) + _f32(lz * rw)),
-        _f32(_f32(_f32(lw * rw) - _f32(lx * rx)) - _f32(ly * ry) - _f32(lz * rz)),
-    )
-    length = _f32(math.sqrt(_f32(sum(_f32(item * item) for item in value))))
-    return tuple(_f32(item / length) for item in value)
-
-
-def _mmd_transform(value):
-    return (
-        float(value.position.x),
-        float(value.position.z),
-        float(value.position.y),
-        -float(value.rotation.x),
-        -float(value.rotation.z),
-        -float(value.rotation.y),
-        float(value.rotation.w),
-    )
 
 
 def _pose_bone_name(pose_bone):
@@ -194,6 +163,33 @@ def _ik_output_bone_names(armature):
     return frozenset(owned)
 
 
+def _ik_input_bone_names(armature, output_names):
+    inputs = set(output_names)
+    pending = list(output_names)
+    while pending:
+        bone_name = pending.pop()
+        pose_bone = armature.pose.bones.get(bone_name)
+        if pose_bone is None:
+            continue
+        dependencies = []
+        if pose_bone.parent is not None:
+            dependencies.append(pose_bone.parent)
+        for constraint in pose_bone.constraints:
+            for target_name in (
+                getattr(constraint, "subtarget", ""),
+                getattr(constraint, "pole_subtarget", ""),
+            ):
+                dependency = armature.pose.bones.get(target_name)
+                if dependency is not None:
+                    dependencies.append(dependency)
+        for dependency in dependencies:
+            if dependency.name in inputs:
+                continue
+            inputs.add(dependency.name)
+            pending.append(dependency.name)
+    return frozenset(inputs)
+
+
 def _restore_constraints(runtime, muted):
     for bone_name, constraint_name, previous in muted:
         pose_bone = runtime.pose.bones.get(bone_name)
@@ -257,9 +253,18 @@ def _submit_live_pose(session, canonical):
         )
 
 
-def _live_input_signature(canonical, scene):
+def _live_input_signature(canonical, scene, bone_names=None):
     values = [int(scene.frame_current), float(scene.frame_subframe)]
-    for pose_bone in canonical.pose.bones:
+    pose_bones = (
+        canonical.pose.bones
+        if bone_names is None
+        else (
+            canonical.pose.bones[name]
+            for name in sorted(bone_names)
+            if name in canonical.pose.bones
+        )
+    )
+    for pose_bone in pose_bones:
         values.extend(float(value) for row in pose_bone.matrix_basis for value in row)
     return tuple(values)
 
@@ -376,9 +381,6 @@ class Session:
     last_vmd_frame: int | None = None
     bone_indices: dict = field(default_factory=dict)
     external_transforms: dict = field(default_factory=dict)
-    physics_bind_positions: tuple = ()
-    physics_rigid_indices: tuple = ()
-    physics_feedback_complete: bool = False
     canonical_name: str = ""
     live: bool = False
     updating: bool = False
@@ -394,6 +396,7 @@ class Session:
     solver_matrices: dict = field(default_factory=dict)
     desired_pose: dict = field(default_factory=dict)
     output_indices: tuple | None = None
+    input_bone_names: frozenset = frozenset()
     undo_redo_transaction: UndoRedoPoseTransaction | None = None
 
     def output_bone_names(self):
@@ -414,7 +417,7 @@ class Session:
         current_frame = (int(scene.frame_current), float(scene.frame_subframe))
         if self.input_signature[:2] != current_frame:
             return False
-        signature = _live_input_signature(canonical, scene)
+        signature = _live_input_signature(canonical, scene, self.input_bone_names)
         if signature == self.input_signature:
             return False
         cleared = _cleared_pose_snapshot(canonical, self.presented_basis)
@@ -508,8 +511,13 @@ class Session:
         self.presented_basis = {
             pose_bone.name: pose_bone.matrix_basis.copy()
             for pose_bone in runtime.pose.bones
+            if not self.input_bone_names or pose_bone.name in self.input_bone_names
         }
-        self.input_signature = _live_input_signature(runtime, bpy.context.scene)
+        self.input_signature = _live_input_signature(
+            runtime,
+            bpy.context.scene,
+            self.input_bone_names,
+        )
         self.action_signature = _action_frame_signature(
             runtime, bpy.context.scene.frame_current
         )
@@ -524,8 +532,13 @@ class Session:
         self.presented_basis = {
             pose_bone.name: pose_bone.matrix_basis.copy()
             for pose_bone in canonical.pose.bones
+            if not self.input_bone_names or pose_bone.name in self.input_bone_names
         }
-        self.input_signature = _live_input_signature(canonical, scene)
+        self.input_signature = _live_input_signature(
+            canonical,
+            scene,
+            self.input_bone_names,
+        )
         self.action_signature = _action_frame_signature(
             canonical, scene.frame_current
         )
@@ -600,61 +613,6 @@ class Session:
     def target_frame(self, scene):
         return self.vmd_start + int(scene.frame_current) - self.blender_start
 
-    def capture_physics_bindings(self, preview_session):
-        from collections import defaultdict, deque
-
-        from ..physics_preview.runtime import _mmd_physics_name, _read_pmx_physics
-
-        self.physics_bind_positions = ()
-        self.physics_rigid_indices = ()
-        self.physics_feedback_complete = False
-        if not Path(self.pmx_path).is_file():
-            return False
-        _model_name, source_rigids, _source_joints = _read_pmx_physics(
-            self.pmx_path
-        )
-        source_indices = defaultdict(deque)
-        for index, source in enumerate(source_rigids):
-            source_indices[source[0]].append(index)
-        self.physics_rigid_indices = tuple(
-            source_indices[
-                _mmd_physics_name(rigid, "mmd_rigid")
-            ].popleft()
-            if source_indices[_mmd_physics_name(rigid, "mmd_rigid")]
-            else None
-            for rigid in preview_session.rigids
-        )
-        self.physics_feedback_complete = (
-            len(preview_session.rigids) == len(source_rigids) == self.solver.rigid_count
-            and all(index is not None for index in self.physics_rigid_indices)
-            and len(set(self.physics_rigid_indices)) == len(source_rigids)
-        )
-        dll = preview_session.solver.library.dll
-        if not hasattr(dll, "mmd_solver_get_basis_transforms"):
-            self.physics_bind_positions = ()
-            return any(index is not None for index in self.physics_rigid_indices)
-        transforms = preview_session.solver.basis_transforms()
-        start = preview_session.body_offset
-        local = transforms[start : start + len(preview_session.rigids)]
-        self.physics_bind_positions = tuple(
-            (float(item.position.x), float(item.position.y), float(item.position.z))
-            for item in local
-        )
-        return any(index is not None for index in self.physics_rigid_indices)
-
-    def corrected_rigid_position(self, rigid_index, target):
-        if (
-            rigid_index >= len(self.physics_bind_positions)
-            or rigid_index >= len(self.solver.rigid_positions)
-        ):
-            return target
-        bind = self.physics_bind_positions[rigid_index]
-        source = self.solver.rigid_positions[rigid_index]
-        return tuple(
-            _f32(_f32(bind[index] - source[index]) + target[index])
-            for index in range(3)
-        )
-
     def evaluate_to(self, scene):
         if self.live:
             return self.evaluate_live(scene)
@@ -684,7 +642,11 @@ class Session:
             raise MMDIKRuntimeError("MMD native 接管骨架已丢失")
         self.updating = True
         try:
-            signature = _live_input_signature(canonical, scene)
+            signature = _live_input_signature(
+                canonical,
+                scene,
+                self.input_bone_names,
+            )
             current_frame = (int(scene.frame_current), float(scene.frame_subframe))
             previous_frame = self.input_signature[:2] if self.input_signature else None
             new_frame = previous_frame != current_frame
@@ -845,6 +807,7 @@ def start_live(root, input_basis=None, update=True):
         raise MMDIKRuntimeError("当前模型与 native PMX 骨名完全不匹配")
     scale = _infer_scale(mapping, solver)
     owned_bones = _ik_output_bone_names(canonical)
+    input_bones = _ik_input_bone_names(canonical, owned_bones)
     output_indices = tuple(
         index
         for index, pose_bone in enumerate(mapping)
@@ -868,6 +831,7 @@ def start_live(root, input_basis=None, update=True):
         source_vmd=has_source_vmd,
         action_input=bool(state.get("action_input", False)),
         output_indices=output_indices,
+        input_bone_names=input_bones,
         input_basis={
             name: matrix.copy()
             for name, matrix in (
@@ -1085,7 +1049,7 @@ def resume_sessions_after_undo_redo(scene=None):
         session.output_basis.clear()
         session.presented_basis.clear()
         session.input_signature = (
-            _live_input_signature(canonical, scene)
+            _live_input_signature(canonical, scene, session.input_bone_names)
             if preserve_cleared_input
             else ()
         )
@@ -1093,9 +1057,6 @@ def resume_sessions_after_undo_redo(scene=None):
         session.solver_matrices.clear()
         session.desired_pose.clear()
         session.external_transforms.clear()
-        session.physics_bind_positions = ()
-        session.physics_rigid_indices = ()
-        session.physics_feedback_complete = False
         session.last_vmd_frame = None
         session.pose_override = True
         session.solver.reset()
@@ -1140,196 +1101,6 @@ def resume_live(root):
     session.suspended = False
     replay_live(root)
     return True
-
-
-def capture_physics_bindings(root, preview_session):
-    session = _SESSIONS.get(root.name) if root is not None else None
-    return bool(session and session.capture_physics_bindings(preview_session))
-
-
-def _physics_model_translation(preview_session):
-    current = getattr(preview_session, "ik_motion_anchor", None)
-    origin = getattr(preview_session, "motion_anchor_origin", None)
-    if current is None:
-        current = preview_session.armature.matrix_world
-    if origin is None:
-        origin = preview_session.saved_armature_matrix
-    return blender_position_to_mmd(
-        current.translation - origin.translation,
-        preview_session.import_scale,
-    )
-
-
-def submit_physics_feedback(root, preview_session, transforms=None):
-    session = _SESSIONS.get(root.name) if root is not None else None
-    if session is None or not session.physics_feedback_complete:
-        return 0
-    start = preview_session.body_offset
-    dll = preview_session.solver.library.dll
-    raw_basis = hasattr(dll, "mmd_solver_get_basis_transforms")
-    source = preview_session.solver.basis_transforms() if raw_basis else transforms
-    if source is None:
-        source = preview_session.solver.transforms()
-    local = source[start : start + len(preview_session.rigids)]
-    model_translation = _physics_model_translation(preview_session)
-    submitted = 0
-    for rigid_index, (rigid, transform) in enumerate(zip(preview_session.rigids, local)):
-        if int(rigid.mmd_rigid.type) == 0 or not rigid.mmd_rigid.bone:
-            continue
-        native_rigid_index = (
-            session.physics_rigid_indices[rigid_index]
-            if rigid_index < len(session.physics_rigid_indices)
-            else None
-        )
-        if native_rigid_index is None:
-            continue
-        if raw_basis:
-            position = (transform.position.x, transform.position.y, transform.position.z)
-            if preview_session.solver_target == "MMD":
-                position = tuple(
-                    position[index] - model_translation[index]
-                    for index in range(3)
-                )
-            state = (
-                position,
-                tuple(transform.basis_row_major),
-            )
-            if preview_session.solver_target == "MMD":
-                session.solver.set_external_rigid_matrix_mmd(
-                    native_rigid_index,
-                    state[0],
-                    state[1],
-                )
-            else:
-                session.solver.set_external_rigid_matrix(
-                    native_rigid_index,
-                    state[0],
-                    state[1],
-                )
-        else:
-            state = (
-                (transform.position.x, transform.position.z, transform.position.y),
-                (
-                    -transform.rotation.x,
-                    -transform.rotation.z,
-                    -transform.rotation.y,
-                    transform.rotation.w,
-                ),
-            )
-            session.solver.set_external_rigid_transform(
-                native_rigid_index,
-                state[0],
-                state[1],
-            )
-        session.external_transforms[native_rigid_index] = state
-        submitted += 1
-    if preview_session.solver_target == "MMD":
-        session.solver.evaluate_after_physics()
-    else:
-        session.solver.commit_external()
-    runtime = bpy.data.objects.get(session.runtime_name)
-    if runtime is not None:
-        session._apply_output(runtime, update=False)
-    return submitted
-
-
-def evaluate_physics_pose(root, preview_session, vmd_frame=None):
-    session = _SESSIONS.get(root.name) if root is not None else None
-    if session is None:
-        return None
-    if preview_session.solver_target == "MMD" and preview_session.mmd_step_count <= 3:
-        session.external_transforms.clear()
-        session.solver.clear_external_transforms()
-    if vmd_frame is None:
-        vmd_frame = (
-            session.vmd_start
-            + preview_session.scene.frame_current
-            + preview_session.scene.frame_subframe
-            - session.blender_start
-        )
-    if preview_session.solver_target == "MMD":
-        session.evaluate_before_physics(vmd_frame, apply_output=False)
-    else:
-        session.evaluate_exact(vmd_frame, apply_output=False)
-    runtime = bpy.data.objects.get(session.runtime_name)
-    if runtime is not None:
-        session._apply_output(runtime, update=False)
-    return float(vmd_frame)
-
-
-def uses_exact_physics_targets(root, preview_session):
-    session = _SESSIONS.get(root.name) if root is not None else None
-    return bool(
-        session
-        and preview_session.solver_target == "MMD"
-        and not session.has_blender_overrides()
-    )
-
-
-def prepare_physics_targets(root, preview_session):
-    session = _SESSIONS.get(root.name) if root is not None else None
-    if not uses_exact_physics_targets(root, preview_session):
-        return 0
-    from ..physics_preview.ffi import Quat, Transform, Vec3
-
-    dll = preview_session.solver.library.dll
-    raw_targets = hasattr(dll, "mmd_solver_set_body_target_basis")
-    model_translation = _physics_model_translation(preview_session)
-    submitted = 0
-    for rigid_index, rigid in enumerate(preview_session.rigids):
-        bone_name = rigid.mmd_rigid.bone
-        bone_index = session.bone_indices.get(bone_name) if bone_name else None
-        if bone_index is None:
-            continue
-        x, y, z, qx, qy, qz, qw = session.solver.transform(bone_index)
-        source = _mmd_transform(preview_session.body_descs[rigid_index].bone_transform)
-        rest_x, rest_y, rest_z = session.solver.rest_positions[bone_index]
-        position = (
-            _f32(_f32(source[0] - rest_x) + x),
-            _f32(_f32(source[1] - rest_y) + y),
-            _f32(_f32(source[2] - rest_z) + z),
-        )
-        delta = (qx, qy, qz, qw)
-        rotation = (
-            source[3:]
-            if delta == (0.0, 0.0, 0.0, 1.0)
-            else _qmul(delta, source[3:])
-        )
-        physics_position = tuple(
-            position[index] + model_translation[index]
-            for index in range(3)
-        )
-        preview_session.solver.set_bone_target(
-            preview_session.body_offset + rigid_index,
-            Transform(
-                Vec3(
-                    physics_position[0],
-                    physics_position[2],
-                    physics_position[1],
-                ),
-                Quat(-rotation[0], -rotation[2], -rotation[1], rotation[3]),
-            ),
-        )
-        if int(rigid.mmd_rigid.type) == 0 and raw_targets:
-            target = session.solver.rigid_target(rigid_index)
-            corrected = session.corrected_rigid_position(rigid_index, target[:3])
-            preview_session.solver.set_body_target_position(
-                preview_session.body_offset + rigid_index,
-                tuple(
-                    corrected[index] + model_translation[index]
-                    for index in range(3)
-                ),
-            )
-        submitted += 1
-    return submitted
-
-
-def clear_physics_feedback(root):
-    session = _SESSIONS.get(root.name) if root is not None else None
-    if session is None:
-        return
-    session.external_transforms.clear()
-    session.solver.clear_external_transforms()
 
 
 @persistent
@@ -1378,7 +1149,11 @@ def _depsgraph_update_post(scene, _depsgraph=None):
         if root is None or canonical is None:
             stale.append(root_name)
             continue
-        signature = _live_input_signature(canonical, scene)
+        signature = _live_input_signature(
+            canonical,
+            scene,
+            session.input_bone_names,
+        )
         action_signature = _action_frame_signature(canonical, scene.frame_current)
         action_changed = action_signature != session.action_signature
         if action_changed:
@@ -1388,12 +1163,7 @@ def _depsgraph_update_post(scene, _depsgraph=None):
         if signature == session.input_signature and not action_changed:
             continue
         try:
-            from ..physics_preview.runtime import is_running
-
-            if is_running(root):
-                session._capture_external_pose(canonical, scene)
-            else:
-                session.evaluate_live(scene, update=False)
+            session.evaluate_live(scene, update=False)
         except Exception as error:
             print(f"MMD native live evaluator stopped for {root_name}: {error}")
             stale.append(root_name)

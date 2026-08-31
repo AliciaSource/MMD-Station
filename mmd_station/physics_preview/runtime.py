@@ -24,8 +24,8 @@ from .ffi import (
     pmx_euler_to_blender_quaternion,
     transform_to_components,
 )
-from .integration import create_session_adapter, resolve_model_armature
 from .pose_pipeline import PoseInputAdapter
+from .presentation_proxy import PhysicsPresentationProxy
 from .time_driver import PreviewDeadlineScheduler, PreviewTimeDriver
 
 
@@ -40,13 +40,6 @@ _MIN_TIMER_DELAY = 0.001
 _VIEW_LAYER_UPDATE_DEPTH = 0
 _TIMER_DEADLINE = PreviewDeadlineScheduler(minimum_delay=_MIN_TIMER_DELAY)
 _REST_MATRIX_KEY = "mmd_station_physics_rest_matrix"
-
-
-@dataclass
-class RuntimeAdapterHandoff:
-    session: object
-    previous_suspended: bool
-    driver_basis: dict
 
 
 def _update_view_layer():
@@ -122,9 +115,6 @@ def _model_api():
 
 
 def _model_armature(root):
-    resolved = resolve_model_armature(root)
-    if resolved is not None:
-        return resolved
     return _model_api().find_armature_object(root)
 
 
@@ -1001,6 +991,8 @@ class PreviewSession:
             if int(rigid.mmd_rigid.type) != 0:
                 self.saved_basis[bone_name] = self.saved_pose_basis[bone_name].copy()
                 self.bone_drivers[bone_name] = index
+        self.presentation_proxy = None
+        self.output_armature = self.armature
         self._refresh_hotpath_bindings()
         self.last_output_basis = self._capture_driver_basis()
         self.last_frame = (self.scene.frame_current, self.scene.frame_subframe)
@@ -1016,16 +1008,27 @@ class PreviewSession:
         self.joint_offset = 0
         self.pending_type_zero_displays = ()
         self.pose_input = PoseInputAdapter(self)
-        self.runtime_adapter = create_session_adapter(self)
-        self.pose_input.set_native_input_active(self.runtime_adapter is not None)
 
-    def _refresh_runtime_adapter(self):
-        self.runtime_adapter = create_session_adapter(self)
-        self.pose_input.set_native_input_active(self.runtime_adapter is not None)
-        return self.runtime_adapter
+    def enable_presentation_proxy(self):
+        if self.preview_scope != "MODEL" or self.presentation_proxy is not None:
+            return False
+        proxy = PhysicsPresentationProxy(
+            self.scene,
+            self.root,
+            self.armature,
+            tuple(_model_api().iterate_mesh_objects(self.root)),
+            self.bone_drivers,
+        )
+        self.presentation_proxy = proxy
+        self.output_armature = proxy.armature
+        self._refresh_hotpath_bindings()
+        self.last_output_basis = self._capture_driver_basis()
+        self.pose_input.invalidate()
+        return True
 
     def _refresh_hotpath_bindings(self):
         pose_bones = self.armature.pose.bones
+        output_pose_bones = self.output_armature.pose.bones
         self.rigid_modes = tuple(int(rigid.mmd_rigid.type) for rigid in self.rigids)
         self.rigid_debug_scales = tuple(
             rigid.matrix_world.to_scale() for rigid in self.rigids
@@ -1041,6 +1044,10 @@ class PreviewSession:
         )
         self.driver_pose_bones = {
             name: pose_bones.get(name)
+            for name in self.bone_drivers
+        }
+        self.output_driver_pose_bones = {
+            name: output_pose_bones.get(name)
             for name in self.bone_drivers
         }
         self.driver_depths = {
@@ -1062,7 +1069,7 @@ class PreviewSession:
     def _capture_driver_basis(self):
         return {
             name: pose_bone.matrix_basis.copy()
-            for name, pose_bone in self.driver_pose_bones.items()
+            for name, pose_bone in self.output_driver_pose_bones.items()
             if pose_bone is not None
         }
 
@@ -1131,6 +1138,16 @@ class PreviewSession:
         self.settings = scene.surface_proxy_creator
         self.root = root
         self.armature = armature
+        if self.presentation_proxy is None:
+            self.output_armature = armature
+        else:
+            output_armature = self.presentation_proxy.armature
+            if output_armature is None:
+                self.presentation_proxy.close()
+                self.presentation_proxy = None
+                self.output_armature = armature
+            else:
+                self.output_armature = output_armature
         self.rigids = rigids
         self.joints = joints
         if changed:
@@ -1184,7 +1201,7 @@ class PreviewSession:
             _apply_source_joint_values(self.joint_descs, source_joint_items)
 
     def _broad_pose_reset_detected(self):
-        if self.offline_bake:
+        if self.offline_bake or self.presentation_proxy is not None:
             return False
         driver_names = self.driver_pose_bones
         current_frame = (self.scene.frame_current, self.scene.frame_subframe)
@@ -1245,6 +1262,8 @@ class PreviewSession:
                 f"运行中：已自动重置物理 {self.auto_reset_count} 次"
             )
         optimized_input = self._optimized_input_enabled()
+        if self.presentation_proxy is not None:
+            self.presentation_proxy.sync_from_canonical(self.armature)
         if not optimized_input:
             self.pose_input.invalidate()
         else:
@@ -1263,12 +1282,17 @@ class PreviewSession:
                 and not driver_changed
             ):
                 self.pose_input.capture_evaluated_input()
+                if self.presentation_proxy is not None:
+                    self.presentation_proxy.sync_from_canonical(self.armature)
                 return
-        for name, matrix_basis in self.saved_basis.items():
-            pose_bone = self.driver_pose_bones.get(name)
-            if pose_bone is not None:
-                pose_bone.matrix_basis = matrix_basis
+        if self.presentation_proxy is None:
+            for name, matrix_basis in self.saved_basis.items():
+                pose_bone = self.driver_pose_bones.get(name)
+                if pose_bone is not None:
+                    pose_bone.matrix_basis = matrix_basis
         _update_view_layer()
+        if self.presentation_proxy is not None:
+            self.presentation_proxy.sync_from_canonical(self.armature)
         self.pose_input.input_evaluation_count += 1
         animation_pose = {
             pose_bone.name: pose_bone.matrix.copy()
@@ -1283,10 +1307,7 @@ class PreviewSession:
             self.pose_input.external_input_evaluated = False
 
     def prepare_step(self):
-        adapter = self.runtime_adapter
-        if adapter is None:
-            return self._prepare_mmd_tools_step()
-        return adapter.prepare_step(self._prepare_mmd_tools_step)
+        return self._prepare_mmd_tools_step()
 
     def step_solver(self):
         return self.world.step()
@@ -1312,7 +1333,8 @@ class PreviewSession:
         joint_states = joint_states[
             self.joint_offset:self.joint_offset + len(self.joints)
         ]
-        armature_inverse = self.armature.matrix_world.inverted_safe()
+        output_armature = self.output_armature
+        armature_inverse = output_armature.matrix_world.inverted_safe()
         bone_targets = {}
         type_zero_displays = []
         self.pending_type_zero_displays = ()
@@ -1391,7 +1413,7 @@ class PreviewSession:
             for name, value in bone_targets.items()
         }
         pose_targets = _resolve_hierarchical_bone_targets(
-            self.armature,
+            output_armature,
             animation_pose,
             physics_targets,
             ordered_bones=self.ordered_pose_bones,
@@ -1400,7 +1422,7 @@ class PreviewSession:
             bone_targets.items(),
             key=lambda item: item[1][0],
         ):
-            pose_bone = self.armature.pose.bones.get(bone_name)
+            pose_bone = output_armature.pose.bones.get(bone_name)
             if pose_bone is None:
                 continue
             parent = pose_bone.parent
@@ -1457,17 +1479,7 @@ class PreviewSession:
         present_output=True,
         update_debug=None,
     ):
-        adapter = self.runtime_adapter
-        if adapter is None:
-            return self._apply_mmd_tools_step(
-                transforms,
-                bone_transforms,
-                joint_states,
-                present_output=present_output,
-                update_debug=update_debug,
-            )
-        return adapter.apply_step(
-            self._apply_mmd_tools_step,
+        return self._apply_mmd_tools_step(
             transforms,
             bone_transforms,
             joint_states,
@@ -1497,17 +1509,16 @@ class PreviewSession:
     def close(self, restore=True):
         if self.closed:
             return
-        adapter = self.runtime_adapter
-        token = adapter.before_close(restore) if adapter is not None else None
         self.closed = True
-        try:
-            if restore and self.armature is not None:
-                self._restore_start_snapshot()
-                _set_bone_connections(self.armature, self.saved_bone_connections)
-                _update_view_layer()
-        finally:
-            if adapter is not None:
-                adapter.after_close(token)
+        if self.presentation_proxy is not None:
+            self.presentation_proxy.close()
+            self.presentation_proxy = None
+            self.output_armature = self.armature
+            self._refresh_hotpath_bindings()
+        if restore and self.armature is not None:
+            self._restore_start_snapshot()
+            _set_bone_connections(self.armature, self.saved_bone_connections)
+            _update_view_layer()
 
 
 class PreviewWorld:
@@ -1533,13 +1544,6 @@ class PreviewWorld:
         session.solver = None
 
     def reset(self, prepared_session=None):
-        adapters = tuple(
-            session.runtime_adapter
-            for session in self.sessions
-            if session.runtime_adapter is not None
-        )
-        for adapter in adapters:
-            adapter.before_world_reset()
         bodies = []
         joints = []
         body_source_eulers = []
@@ -1583,8 +1587,6 @@ class PreviewWorld:
         self.time_driver.reset()
         self.pending_step_seconds = None
         self.generation += 1
-        for adapter in adapters:
-            adapter.after_world_reset()
 
     def step(self):
         settings = self.sessions[0].settings
@@ -1643,77 +1645,6 @@ def suspend_for_undo_redo():
     return _RUNTIME_SUSPENDED
 
 
-def suspend_for_runtime_switch(root):
-    global _RUNTIME_SUSPENDED
-    session = _ACTIVE_SESSIONS.get(root.name) if root is not None else None
-    if session is None:
-        return None
-    previous_suspended = _RUNTIME_SUSPENDED
-    _RUNTIME_SUSPENDED = True
-    session._rebind_blender_data(force=True)
-    session.pose_input.invalidate()
-    for name, matrix_basis in session.saved_pose_basis.items():
-        pose_bone = session.armature.pose.bones.get(name)
-        if pose_bone is not None:
-            pose_bone.matrix_basis = matrix_basis
-    session.armature.update_tag(refresh={"OBJECT"})
-    _update_view_layer()
-    return session, previous_suspended
-
-
-def begin_runtime_adapter_handoff(root):
-    global _RUNTIME_SUSPENDED
-    session = _ACTIVE_SESSIONS.get(root.name) if root is not None else None
-    if session is None:
-        return None
-    previous_suspended = _RUNTIME_SUSPENDED
-    _RUNTIME_SUSPENDED = True
-    session._rebind_blender_data(force=True)
-    return RuntimeAdapterHandoff(
-        session=session,
-        previous_suspended=previous_suspended,
-        driver_basis=session._capture_driver_basis(),
-    )
-
-
-def complete_runtime_adapter_handoff(token):
-    global _RUNTIME_SUSPENDED
-    if token is None:
-        return None
-    session = token.session
-    try:
-        session._rebind_blender_data(force=True)
-        session._refresh_runtime_adapter()
-        for name, matrix_basis in sorted(
-            token.driver_basis.items(),
-            key=lambda item: session.driver_depths.get(item[0], 0),
-        ):
-            pose_bone = session.driver_pose_bones.get(name)
-            if pose_bone is not None:
-                pose_bone.matrix_basis = matrix_basis
-        session.last_output_basis = session._capture_driver_basis()
-        session.pose_input.invalidate()
-        session.armature.update_tag(refresh={"OBJECT"})
-        _update_view_layer()
-    finally:
-        _RUNTIME_SUSPENDED = token.previous_suspended
-    return session
-
-
-def resume_after_runtime_switch(token):
-    global _RUNTIME_SUSPENDED
-    if token is None:
-        return None
-    session, previous_suspended = token
-    try:
-        session._rebind_blender_data(force=True)
-        session._refresh_runtime_adapter()
-        session.pose_input.invalidate()
-    finally:
-        _RUNTIME_SUSPENDED = previous_suspended
-    return session
-
-
 def resume_after_undo_redo():
     global _RUNTIME_SUSPENDED
     rebound = 0
@@ -1721,7 +1652,6 @@ def resume_after_undo_redo():
         for session in tuple(_ACTIVE_SESSIONS.values()):
             if session._rebind_blender_data(force=True):
                 rebound += 1
-            session._refresh_runtime_adapter()
             session.pose_input.invalidate()
     finally:
         _RUNTIME_SUSPENDED = False
@@ -1924,6 +1854,10 @@ def _start_preview(context, root):
     settings = context.scene.surface_proxy_creator
     stop_preview(root=root, restore=True)
     session = PreviewSession(context.scene, settings, root)
+    try:
+        session.enable_presentation_proxy()
+    except RuntimeError as error:
+        session.presentation_proxy_error = str(error)
     interaction_group = root.spx_mmd_interaction_group_id
     world_key = (
         "group",

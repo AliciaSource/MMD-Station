@@ -8,10 +8,12 @@
 
 ## 2026-08-31 - V1.0.1-dev MMD IK + MMD DLL Root 快移延迟与预览重复求值修复
 
-- 用真实 `D:\MMD\模型\Alicia\鳴潮-達妮婭\New Folder\00.blend` 复现 MMD IK 兼容开启后快速移动 MMD Root 时动态物理呈现落后一拍、type-0 骨骼追踪刚体正常、PMX DLL 不受影响的问题。根因是 `MmdIkPhysicsAdapter.prepare_step()` 在 Blender 尚未求值 Root 原始 `location` 时提前缓存 `armature.matrix_world`；本次 `0.2 m` 探针中当前 Armature 已到 `0.2 m`，MMD feedback motion anchor 仍为 `0 m`。现在先完成 authored pose/depsgraph 求值，再采集同一物理步的运动锚点，避免 MMD-only 外部刚体反馈减去上一拍位移。
-- 合并 MMD IK physics feedback 的中间呈现求值：基础物理 writeback 与 native feedback 先在 RNA 层完成，最后只提交一次最终 MMD IK + physics Pose；不再在最终 native 输出之前重复求值整套可见 Armature modifier。该优化不改变 PMX DLL、Bullet stepping、刚体/Joint 图或离线烘焙语义。
-- 对 `00.blend` 与旧 `36.blend` 做同口径剖析，排除“其它模型或隐藏对象被加入 DLL 扫描范围”：临时隐藏 `36.blend` 当前模型外对象后单步中位数基本不变（`45.277 ms -> 45.182 ms`）。主差异来自当前模型本身：`00.blend` 只有 `1` 个可见 Mesh / `1` 个 Armature modifier，而 `36.blend` 的 `合并2` 有 `99` 个可见 Mesh / `99` 个 Armature modifier；两者顶点数分别约 `306236` 与 `291950`。因此旧工程剩余瓶颈是 Blender 对 99 条真实可见变形管线的 depsgraph 成本，不能通过忽略隐藏物体扫描解决，也未用隐藏模型或停用变形冒充真实预览。
-- 验证：真实 `00.blend` 回归输出 `MMD_00_IK_MMD_PARENT_EMPTY_LATENCY_OK moves=8 anchor_error=0 type0=61 view_updates=16`；`MMD_IK_PHYSICS_RESET_REGRESSION_OK` 通过。`00.blend` 的 MMD IK 快移探针单步中位数由修复前约 `80.926 ms` 降至约 `68.187 ms`；`36.blend` 仍由 99 个可见 Armature modifier 主导，未把一次 headless 计时冒充 GUI 帧率保证。开发期 Junction 直接生效；未制作 ZIP、未 tag、未 push，两个真实工程均未保存。
+## 2026-08-31 - V1.0.1-dev IK/物理彻底隔离与真实预览展示代理重构
+
+- 删除 `MmdIkPhysicsAdapter`、`physics_bridge.py`、`physics_preview/integration.py` 及全部 physics feedback/handoff 路径。MMD IK 只读取并写回自身 IK dependency closure；物理预览只从 canonical Armature 读取 authored pose，并按刚体类型驱动 physics output。开关 IK 不再暂停、切换或重建当前 `PreviewSession`、`PreviewWorld`、solver 与 generation，MMD/PMX DLL 也不再知道当前骨骼是否由 IK 兼容接管。
+- MODEL 物理预览新增临时 `PhysicsPresentationProxy`：canonical Armature 始终作为动画/IK 输入；预览期间建立无 Action、无 constraint、无 driver 的干净展示 Armature，物理输出只写入该骨架，结束后删除全部临时数据并原样恢复源 Mesh。安全模型会把同骨架 Mesh 合并为单个展示 Mesh；`36.blend` 含 `UV_WARP`、ShapeKey 与对象级管线，盲目 Join 会破坏语义，因此自动保留临时分片，但仍让 97 个 Mesh 共用一副干净展示骨架。第二副骨架只在预览期间存在，不保存到工程。
+- 对真实 `36.blend/合并2` 进行当前模型内逐项剖析：97 个可见 Mesh、276292 顶点、127 个 modifier、71 个 ShapeKey Mesh；额外隐藏对象不是主因。临时展示代理保持全部源顶点、材质、Vertex Group、29 个 `UV_WARP`、162 个 ShapeKey 与对象级行为，且源模型不被 Join 或改写。相同 read-only depsgraph 探针中位数由 `20.734 ms` 降至 `10.027 ms`，约降低 52%；这是 headless 直接求值证据，不冒充 GUI FPS 保证。
+- 回归覆盖真实 `00.blend` 的 MMD physics + IK 开关原地隔离、MMD/PMX 两个 solver 的 IK 响应、Root Empty 快移 type-0 同 tick 追踪、真实 `07.blend` Root motion，以及真实 `36.blend` 的展示代理形态同步、canonical physics bone 零污染和完整清理恢复。开发期 Junction 直接生效；未制作 ZIP、未 tag、未 push，真实工程均未保存。
 
 ## 2026-08-30 - V1.0.1-dev 物理修复爆炸与乱飞骨骼安全姿态修复
 

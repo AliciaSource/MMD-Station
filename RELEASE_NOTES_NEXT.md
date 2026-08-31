@@ -11,5 +11,8 @@
   deltas without destabilizing connected rigid-body chains.
 - Added a safe-pose recovery control that restores selected physics bones from
   the last clean pose at the start of the repair range before manual adjustment.
-- Fixed one-step Root-motion latency in MMD DLL previews with MMD IK enabled and
-  coalesced intermediate pose evaluation before presenting the final physics pose.
+- Fully isolated MMD IK compatibility from physics preview ownership, so IK can
+  be toggled without rebuilding or feeding back into the active physics world.
+- Added a temporary clean presentation rig for MODEL physics preview, reducing
+  dependency-graph overhead from heavily split character meshes without changing
+  the authored model.

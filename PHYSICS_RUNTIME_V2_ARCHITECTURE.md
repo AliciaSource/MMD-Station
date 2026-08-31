@@ -27,7 +27,7 @@
 2. PMX path 从不进入现有 optimized input path；MMD path 也只有在非常狭窄的条件下才能进入。
 3. 当前 optimized interactive path 会按 `preview_frequency / 30` 降低 presentation 频率；60 Hz simulation 实际只按约 30 Hz 展示。
 4. 当前主线程仍承担 pose 扫描、强制 view-layer 更新、逐刚体 target 提交、逐骨/刚体/Joint 回写和再次更新。
-5. MMD IK 关闭时 `physics_bridge` 会委托给原 physics runtime，因此“不开 IK 也低帧”不是 IK bridge 单独造成的。
+5. 本节是 Phase 0 的历史剖析；当前实现已删除 `physics_bridge`，IK 与 physics runtime 不再互相调用。
 6. `292dcb3` 引入的 `PreviewDeadlineScheduler` 会在单轮工作超过 16.7 ms 时把下一次 Blender main-thread timer 压到最小 1 ms。以当前 PMX 单轮约 43 ms 计算，runtime 会近似连续执行 `43 ms work + 1 ms yield`；旧 runtime 则在一轮结束后仍返回完整 interval。它是“开启 PMX 后整个 Blender 不再流畅”的首要回归嫌疑，但仍需在同一 `04.blend` 上做旧/新 commit A/B profiler 才能定案。
 
 推断：即使立即重写 solver 数学，最多只能回收约 1 ms，无法解决 32–43 ms 的 host frame。
@@ -264,7 +264,7 @@ authored pose snapshot
 - Rigid/Joint debug 对象在启用时逐 solver tick 更新，不限制 Bone/mesh output，也不强制 depsgraph evaluation；
 - 删除固定 30 FPS presentation cadence；
 - scheduler 在 callback 低于预算时扣除自身耗时以保持目标频率，超预算时让出完整 interval，禁止 `work + 1 ms` 饥饿循环；
-- 新增 `physics_preview/integration.py`，MMD IK 通过显式 `MmdIkPhysicsAdapter` 接入；删除对 `PreviewSession.prepare_step/apply_step/close`、`PreviewWorld.reset` 和 `stop_preview` 的 monkey-patch；
+- 当时新增的 `physics_preview/integration.py` / `MmdIkPhysicsAdapter` 已在 2026-08-31 的隔离重构中删除；此条仅保留 Phase 1 历史结果；
 - 未修改三个 DLL、native ABI、60 Hz fixed step 或 10 substeps。
 
 同一原始 `04.blend`、持续移动 `全ての親`、60 Hz、10 substeps 的 headless 结果：
@@ -280,16 +280,16 @@ authored pose snapshot
 
 PMX `CURRENT_PROXY + debug on` 细分中位为 `prepare 1.99 ms + native step 0.99 ms + outputs 0.04 ms + apply 2.37 ms`，runtime tick p95 为 `8.03 ms`；MMD 对应 p95 为 `8.49 ms`。与 Phase 0 的 PMX 约 43.20 ms、MMD 约 32.50 ms 总路径相比，host latency 已大幅下降；两个 physics DLL 当前没有足够收益证明需要立即升级 ABI，Phase 2 暂缓到真实 GUI 验收后再决定。
 
-## 10. Phase 3 生命周期切片：IK / Physics 所有权交接
+## 10. Phase 3 生命周期切片：IK / Physics 所有权隔离
 
-2026-08-24 已实现关闭 MMD IK 兼容的第一条显式 transaction：
+2026-08-24 曾实现关闭 MMD IK 兼容的显式 transaction。该交接设计已在 2026-08-31 被完整隔离替代：
 
 - `input_basis`：authored/native 输入层；
 - `output_basis`：仅包含 `output_indices` 对应的 IK-owned output closure；
 - `presented_basis`：上一份完整展示姿态，只用于识别外部编辑与 Clear，不代表 IK 所有权；
-- `RuntimeAdapterHandoff`：保存当前 physics driver output，暂停 commit，原地切换 adapter，再恢复同一 physics Session。
+- physics 不再存在 adapter、feedback 或 handoff；IK 开关不会触碰 physics Session。
 
-关闭兼容的状态转换固定为：
+旧状态转换仅作历史记录：
 
 ```text
 IK+Physics RUNNING
@@ -303,6 +303,6 @@ IK+Physics RUNNING
 -> Physics RUNNING (same world / solver / generation)
 ```
 
-禁止在该转换中调用 `stop_preview(..., restore=True)`、重启 world 或用全 Armature pose snapshot 覆盖当前输出。这样 adapter 生命周期、IK output ownership 与全姿态编辑检测不再共享同一个隐式矩阵缓存。完整 Undo/Redo epoch 化仍属于后续 Phase 3；本切片只固化已覆盖的关闭兼容、Clear All、Clear Selected 和持续物理交接。
+当前合同更严格：MMD IK 只拥有自己的 IK dependency closure；physics 只从 canonical Armature 读取输入，并把动态输出写到临时 presentation Armature。type-0 始终追踪 canonical bone，type-1/type-2 始终按 solver 结果驱动 presentation bone；两条管线不存在反馈边。开关兼容只改变 IK Session，不调用 `stop_preview()`、不暂停 commit、不重启 world，也不恢复 physics-owned pose。
 
 2026-08-25 的 Clear/F9 候选继续把 Undo/Redo 从隐式矩阵猜测收敛为 `UndoRedoPoseTransaction`：pre 阶段冻结 authored input、完整 presentation 和 selection，post 阶段只有在 native output closure 确认回到冻结 presentation 时，才把冻结的已清空 authored input 重新提交给 selected input controls。该 transaction 解决 input-only IK control 与 native output 在不同 depsgraph 时刻落定造成的混合帧；它仍不等同于完整 worker epoch 化，后者继续保留为后续 Phase 3 工作。

@@ -44,7 +44,7 @@ session = next(
 if bpy.app.timers.is_registered(runtime._timer_tick):
     bpy.app.timers.unregister(runtime._timer_tick)
 
-anchor_errors = []
+type_zero_errors = []
 view_layer_updates = 0
 original_update_view_layer = runtime._update_view_layer
 try:
@@ -76,13 +76,23 @@ try:
 
         session.tick(interactive=True)
         evaluated_after = session.armature.matrix_world.translation.copy()
-        anchor_errors.append(
-            (session.ik_motion_anchor.translation - evaluated_after).length
+        type_zero_errors.append(
+            max(
+                (
+                    (
+                        session.armature.matrix_world
+                        @ session.rigid_pose_bones[index].matrix
+                        @ session.bone_offsets[index]
+                    ).translation
+                    - session.rigids[index].matrix_world.translation
+                ).length
+                for index in type_zero_indices
+            )
         )
         assert (evaluated_after - evaluated_before - delta).length < 2.0e-6
 
-    assert max(anchor_errors) < 1.0e-7, max(anchor_errors)
-    assert view_layer_updates == 16, view_layer_updates
+    assert max(type_zero_errors) < 2.0e-5, max(type_zero_errors)
+    assert view_layer_updates == 8, view_layer_updates
 finally:
     runtime._update_view_layer = original_update_view_layer
     runtime.stop_preview(root)
@@ -91,8 +101,8 @@ finally:
 
 print(
     "MMD_00_IK_MMD_PARENT_EMPTY_LATENCY_OK",
-    f"moves={len(anchor_errors)}",
-    f"anchor_error={max(anchor_errors):.9g}",
+    f"moves={len(type_zero_errors)}",
+    f"type0_error={max(type_zero_errors):.9g}",
     f"type0={len(type_zero_indices)}",
     f"view_updates={view_layer_updates}",
 )

@@ -64,7 +64,7 @@ assert runtime._ACTIVE_SESSIONS[root.name] is preview
 assert preview.world is world
 assert preview.solver is solver
 assert world.generation == generation
-assert preview.runtime_adapter is None
+assert not hasattr(preview, "runtime_adapter")
 
 maximum_driver_error = max(
     (

@@ -20,7 +20,6 @@ mmd_tools.register()
 
 import mmd_station
 from mmd_station.mmd_ik_runtime import evaluator
-from mmd_station.mmd_ik_runtime.physics_bridge import MmdIkPhysicsAdapter
 from mmd_station.physics_preview import runtime
 
 mmd_station.register()
@@ -40,33 +39,12 @@ normal_armature = runtime._model_armature(root)
 normal_root_bone = normal_armature.pose.bones["全ての親"]
 normal_baseline = normal_root_bone.matrix_basis.copy()
 normal_preview = runtime.start_preview(bpy.context)[0]
-assert normal_preview.runtime_adapter is None
+assert not hasattr(normal_preview, "runtime_adapter")
 assert runtime.PreviewSession.prepare_step.__module__ == runtime.__name__
 assert runtime.PreviewSession.apply_step.__module__ == runtime.__name__
 runtime._timer_tick(0.0)
-bridge_calls = []
-original_modal_capture = evaluator._transform_modal_pose_matrices
-original_feedback_submit = evaluator.submit_physics_feedback
-
-
-def track_modal_capture(armature):
-    bridge_calls.append("modal_capture")
-    return original_modal_capture(armature)
-
-
-def track_feedback_submit(root, preview_session, transforms=None):
-    bridge_calls.append("feedback_submit")
-    return original_feedback_submit(root, preview_session, transforms)
-
-
-evaluator._transform_modal_pose_matrices = track_modal_capture
-evaluator.submit_physics_feedback = track_feedback_submit
-try:
-    runtime._timer_tick(0.5 / 60.0)
-finally:
-    evaluator._transform_modal_pose_matrices = original_modal_capture
-    evaluator.submit_physics_feedback = original_feedback_submit
-assert not bridge_calls, bridge_calls
+assert not hasattr(evaluator, "submit_physics_feedback")
+runtime._timer_tick(0.5 / 60.0)
 normal_step_count = normal_preview.mmd_step_count
 original_modal_probe = getattr(evaluator, "_transform_modal_active", None)
 evaluator._transform_modal_active = lambda: True
@@ -185,7 +163,7 @@ armature.data.bones.active = pose_bone.bone
 
 settings.preview_solver_target = "PMX"
 preview_session = runtime.start_preview(bpy.context)[0]
-assert isinstance(preview_session.runtime_adapter, MmdIkPhysicsAdapter)
+assert not hasattr(preview_session, "runtime_adapter")
 runtime._timer_tick(0.0)
 baseline_input = session.input_basis[pose_bone.name].copy()
 baseline_output = pose_bone.matrix_basis.copy()

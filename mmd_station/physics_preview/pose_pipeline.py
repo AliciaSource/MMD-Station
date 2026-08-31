@@ -64,7 +64,9 @@ class PoseInputAdapter:
                         dependency = dependency.parent
         self.watched_pose_bones = tuple(watched_pose_bones.values())
         reconstructed_names = set()
-        driver_names = set(session.driver_pose_bones)
+        driver_names = (
+            set() if session.presentation_proxy is not None else set(session.driver_pose_bones)
+        )
         for pose_bone in self.ordered_input_pose_bones:
             if (
                 pose_bone.name in driver_names
@@ -127,7 +129,10 @@ class PoseInputAdapter:
         changed = False
         driver_changed = False
         for pose_bone in self.watched_pose_bones:
-            if pose_bone.name in session.driver_pose_bones:
+            if (
+                session.presentation_proxy is None
+                and pose_bone.name in session.driver_pose_bones
+            ):
                 expected = session.last_output_basis.get(pose_bone.name)
                 if expected is None or pose_bone.matrix_basis != expected:
                     changed = True
@@ -143,7 +148,8 @@ class PoseInputAdapter:
         self.cached_input_basis = {
             pose_bone.name: pose_bone.matrix_basis.copy()
             for pose_bone in self.watched_pose_bones
-            if pose_bone.name not in session.driver_pose_bones
+            if session.presentation_proxy is not None
+            or pose_bone.name not in session.driver_pose_bones
         }
         self.cached_root_matrix = session.root.matrix_world.copy()
         self.cached_armature_matrix = session.armature.matrix_world.copy()
