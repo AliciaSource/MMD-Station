@@ -13,7 +13,9 @@ _EDGE_PREVIEW_NAME = "mmd_edge_preview"
 class SourceMeshState:
     name: str
     hidden: bool
+    hide_viewport: bool
     hide_render: bool
+    collection_names: tuple
     modifier_visibility: tuple
 
 
@@ -115,6 +117,7 @@ class PhysicsPresentationProxy:
         self.proxy_mesh_names = ()
         identity = hashlib.blake2b(root.name.encode("utf-8"), digest_size=6).hexdigest()
         self.collection_name = f"{_COLLECTION_PREFIX}{identity}"
+        self.storage_collection_name = f"{self.collection_name}_Sources"
         self.proxy_mesh_name = f"{self.collection_name}_Mesh"
         self.merged = False
         try:
@@ -163,7 +166,11 @@ class PhysicsPresentationProxy:
                 SourceMeshState(
                     source.name,
                     source.hide_get(),
+                    bool(source.hide_viewport),
                     bool(source.hide_render),
+                    tuple(
+                        collection.name for collection in source.users_collection
+                    ),
                     tuple(
                         (
                             modifier.name,
@@ -204,15 +211,21 @@ class PhysicsPresentationProxy:
         self.proxy_mesh_names = (proxy_mesh.name,)
         self.merged = True
 
+        storage_collection = bpy.data.collections.new(self.storage_collection_name)
         for state in self.source_states:
             source = bpy.data.objects.get(state.name)
             if source is None:
                 continue
             source.hide_set(True)
+            source.hide_viewport = True
             source.hide_render = True
             for modifier in source.modifiers:
                 modifier.show_viewport = False
                 modifier.show_render = False
+            storage_collection.objects.link(source)
+            for source_collection in tuple(source.users_collection):
+                if source_collection != storage_collection:
+                    source_collection.objects.unlink(source)
         view_layer.update()
 
     def _join_copies(self, copies, view_layer):
@@ -293,10 +306,21 @@ class PhysicsPresentationProxy:
             bpy.data.collections.remove(collection)
 
         view_layer = bpy.context.view_layer
+        storage_collection = bpy.data.collections.get(self.storage_collection_name)
         for state in self.source_states:
             source = bpy.data.objects.get(state.name)
             if source is None:
                 continue
+            for collection_name in state.collection_names:
+                collection = bpy.data.collections.get(collection_name)
+                if collection is not None and source.name not in collection.objects:
+                    collection.objects.link(source)
+            if (
+                storage_collection is not None
+                and source.name in storage_collection.objects
+            ):
+                storage_collection.objects.unlink(source)
+            source.hide_viewport = state.hide_viewport
             if source.name in view_layer.objects:
                 source.hide_set(state.hidden)
             source.hide_render = state.hide_render
@@ -309,3 +333,5 @@ class PhysicsPresentationProxy:
                     modifier.show_viewport, modifier.show_render = visibility[
                         modifier.name
                     ]
+        if storage_collection is not None:
+            bpy.data.collections.remove(storage_collection)

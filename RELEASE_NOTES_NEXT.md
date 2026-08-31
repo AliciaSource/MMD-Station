@@ -19,4 +19,5 @@
   and mixed multi-material models, preserving the original rig, constraints,
   drivers, physics behavior, and near-merged dependency-graph performance. The
   proxy also rebuilds mmd_tools edge-preview materials, weights, and Solidify
-  settings against the final merged material layout.
+  settings against the final merged material layout, while temporarily removing
+  replaced source meshes from the active scene and dependency graph.

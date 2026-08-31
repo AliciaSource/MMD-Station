@@ -120,7 +120,9 @@ assert sum(len(obj.data.vertices) for obj in separated) == source_vertex_count
 source_states = {
     obj.name: (
         obj.hide_get(),
+        obj.hide_viewport,
         obj.hide_render,
+        tuple(collection.name for collection in obj.users_collection),
         tuple(
             (modifier.name, modifier.show_viewport, modifier.show_render)
             for modifier in obj.modifiers
@@ -152,8 +154,8 @@ try:
         for modifier in proxy_mesh.modifiers
         if modifier.type == "ARMATURE"
     ] == [armature]
-    assert all(obj.name in bpy.context.view_layer.objects for obj in separated)
-    assert all(obj.hide_get() and obj.hide_render for obj in separated)
+    assert all(obj.name not in bpy.context.view_layer.objects for obj in separated)
+    assert all(obj.hide_viewport and obj.hide_render for obj in separated)
     assert all(
         not modifier.show_viewport and not modifier.show_render
         for obj in separated
@@ -215,22 +217,28 @@ try:
 
     proxy_tick_ms = tick_median(preview)
     proxy_stages = stage_medians(preview)
-    assert proxy_tick_ms < baseline_tick_ms * 1.3, (
+    assert proxy_tick_ms < baseline_tick_ms * 1.2, (
         baseline_tick_ms,
         proxy_tick_ms,
         baseline_stages,
         proxy_stages,
     )
     proxy_ms = update_median(armature)
-    assert proxy_ms < baseline_ms * 1.5, (baseline_ms, proxy_ms)
+    assert proxy_ms < baseline_ms * 1.25, (baseline_ms, proxy_ms)
 finally:
     runtime.stop_preview(root)
 
 for obj in separated:
-    hidden, hide_render, modifier_states = source_states[obj.name]
+    hidden, hide_viewport, hide_render, collection_names, modifier_states = source_states[
+        obj.name
+    ]
     assert obj.name in bpy.context.view_layer.objects
     assert obj.hide_get() == hidden
+    assert obj.hide_viewport == hide_viewport
     assert obj.hide_render == hide_render
+    assert {collection.name for collection in obj.users_collection} == set(
+        collection_names
+    )
     expected = {
         name: (show_viewport, show_render)
         for name, show_viewport, show_render in modifier_states

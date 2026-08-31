@@ -41,7 +41,9 @@ sources = [
 source_states = {
     obj.name: (
         obj.hide_get(),
+        obj.hide_viewport,
         obj.hide_render,
+        tuple(collection.name for collection in obj.users_collection),
         tuple(
             (modifier.name, modifier.show_viewport, modifier.show_render)
             for modifier in obj.modifiers
@@ -82,8 +84,8 @@ proxied_sources = [bpy.data.objects[state.name] for state in proxy.source_states
 unproxied_sources = [obj for obj in sources if obj not in proxied_sources]
 assert len(proxied_sources) >= 2
 assert len(proxied_sources) < len(sources)
-assert all(obj.name in bpy.context.view_layer.objects for obj in proxied_sources)
-assert all(obj.hide_get() and obj.hide_render for obj in proxied_sources)
+assert all(obj.name not in bpy.context.view_layer.objects for obj in proxied_sources)
+assert all(obj.hide_viewport and obj.hide_render for obj in proxied_sources)
 assert all(
     not modifier.show_viewport and not modifier.show_render
     for obj in proxied_sources
@@ -127,10 +129,16 @@ proxy_names = tuple(obj.name for obj in proxy.meshes)
 runtime.stop_preview(root)
 assert all(bpy.data.objects.get(name) is None for name in proxy_names)
 for source in sources:
-    hidden, hide_render, visibility = source_states[source.name]
+    hidden, hide_viewport, hide_render, collection_names, visibility = source_states[
+        source.name
+    ]
     assert source.name in bpy.context.view_layer.objects
     assert source.hide_get() == hidden
+    assert source.hide_viewport == hide_viewport
     assert source.hide_render == hide_render
+    assert {collection.name for collection in source.users_collection} == set(
+        collection_names
+    )
     expected = {
         name: (show_viewport, show_render)
         for name, show_viewport, show_render in visibility

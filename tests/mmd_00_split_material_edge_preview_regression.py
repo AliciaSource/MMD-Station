@@ -86,7 +86,9 @@ assert edge_sources
 source_states = {
     obj.name: (
         obj.hide_get(),
+        obj.hide_viewport,
         obj.hide_render,
+        tuple(collection.name for collection in obj.users_collection),
         tuple(
             (modifier.name, modifier.show_viewport, modifier.show_render)
             for modifier in obj.modifiers
@@ -181,7 +183,8 @@ try:
         )
         assert abs(actual_weight - expected_weight) < 1.0e-6
 
-    assert all(obj.hide_get() and obj.hide_render for obj in separated)
+    assert all(obj.name not in bpy.context.view_layer.objects for obj in separated)
+    assert all(obj.hide_viewport and obj.hide_render for obj in separated)
     assert all(
         not modifier.show_viewport and not modifier.show_render
         for obj in separated
@@ -191,9 +194,16 @@ finally:
     runtime.stop_preview(root)
 
 for obj in separated:
-    hidden, hide_render, modifier_states = source_states[obj.name]
+    hidden, hide_viewport, hide_render, collection_names, modifier_states = source_states[
+        obj.name
+    ]
+    assert obj.name in bpy.context.view_layer.objects
     assert obj.hide_get() == hidden
+    assert obj.hide_viewport == hide_viewport
     assert obj.hide_render == hide_render
+    assert {collection.name for collection in obj.users_collection} == set(
+        collection_names
+    )
     expected = {
         name: (show_viewport, show_render)
         for name, show_viewport, show_render in modifier_states
