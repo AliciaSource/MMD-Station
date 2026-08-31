@@ -7,7 +7,7 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::ptr;
 use std::slice;
 
-const ABI_VERSION: u32 = 5;
+const ABI_VERSION: u32 = 6;
 const SNAPSHOT_MAGIC: &[u8; 4] = b"MSPS";
 const SNAPSHOT_VERSION: u32 = 1;
 const SNAPSHOT_HEADER_SIZE: usize = 20;
@@ -32,6 +32,15 @@ impl Vec3 {
 
     fn scaled_array(self, scale: f32) -> [f32; 3] {
         [self.x * scale, self.y * scale, self.z * scale]
+    }
+
+    fn lerp(self, other: Self, factor: f32) -> Self {
+        let inverse = 1.0 - factor;
+        Self {
+            x: self.x * inverse + other.x * factor,
+            y: self.y * inverse + other.y * factor,
+            z: self.z * inverse + other.z * factor,
+        }
     }
 
     fn add(self, other: Self) -> Self {
@@ -213,6 +222,13 @@ impl Transform {
             rotation: self.rotation.mmd_basis(),
         }
     }
+
+    fn lerp(self, other: Self, factor: f32) -> Self {
+        Self {
+            position: self.position.lerp(other.position, factor),
+            rotation: self.rotation.nlerp(other.rotation, factor),
+        }
+    }
 }
 
 #[repr(C)]
@@ -263,6 +279,8 @@ struct BodyBinding {
     initial_animation_bone: Transform,
     animation_bone: Transform,
     bone_rotation_overridden: bool,
+    last_body_target: Transform,
+    applied_body_target: Transform,
 }
 
 #[derive(Clone, Copy)]
@@ -341,6 +359,8 @@ impl Solver {
                 initial_animation_bone: bone_transform,
                 animation_bone: bone_transform,
                 bone_rotation_overridden: false,
+                last_body_target: transform,
+                applied_body_target: transform,
             });
         }
         let mut joints = Vec::with_capacity(joint_descs.len());
@@ -418,10 +438,6 @@ impl Solver {
         if binding.mode != 0 {
             return Ok(());
         }
-        let handle = *self
-            .bodies
-            .get(index)
-            .ok_or_else(|| format!("rigid body {} is out of range", index))?;
         let translation_only =
             target.rotation.array() == binding.initial_animation_bone.rotation.array();
         let body_target = if translation_only {
@@ -438,28 +454,9 @@ impl Solver {
         } else {
             target.compose(binding.body_from_bone)
         };
-        if translation_only && !binding.bone_rotation_overridden {
-            self.world
-                .set_rigidbody_position(handle, body_target.position.scaled_array(self.world_scale))
-                .map_err(|error| error.to_string())
-        } else {
-            self.world
-                .set_rigidbody_transform(
-                    handle,
-                    BulletTransform {
-                        position: body_target.position.scaled_array(self.world_scale),
-                        rotation_xyzw: [
-                            body_target.rotation.x,
-                            body_target.rotation.y,
-                            body_target.rotation.z,
-                            body_target.rotation.w,
-                        ],
-                    },
-                )
-                .map_err(|error| error.to_string())?;
-            binding.bone_rotation_overridden = !translation_only;
-            Ok(())
-        }
+        binding.last_body_target = body_target;
+        binding.bone_rotation_overridden = !translation_only;
+        Ok(())
     }
 
     fn apply_world_delta(
@@ -478,7 +475,13 @@ impl Solver {
                     rotation_xyzw: delta.rotation.array(),
                 },
             )
-            .map_err(|error| error.to_string())
+            .map_err(|error| error.to_string())?;
+        let end = first_index.saturating_add(count).min(self.bindings.len());
+        for binding in &mut self.bindings[first_index.min(end)..end] {
+            binding.last_body_target = delta.compose(binding.last_body_target);
+            binding.applied_body_target = delta.compose(binding.applied_body_target);
+        }
+        Ok(())
     }
 
     fn guide_body(&mut self, index: usize, target: Transform, strength: f32) -> Result<(), String> {
@@ -518,9 +521,40 @@ impl Solver {
             return Err("delta time must be positive and finite".to_owned());
         }
         let max_substeps = substeps.clamp(1, 32);
-        self.world
-            .step_with_fixed_substep(dt, max_substeps as i32, 1.0 / 60.0)
-            .map_err(|error| error.to_string())
+        let fixed_step = 1.0 / 60.0;
+        let simulated_dt = dt.min(fixed_step * max_substeps as f32);
+        let step_count = ((simulated_dt / fixed_step).ceil().max(1.0) as u32).min(max_substeps);
+        let step_seconds = simulated_dt / step_count as f32;
+        for step_index in 1..=step_count {
+            let factor = step_index as f32 / step_count as f32;
+            for body_index in 0..self.bindings.len() {
+                let binding = self.bindings[body_index];
+                if binding.mode != 0 || !binding.has_bone {
+                    continue;
+                }
+                let target = binding
+                    .applied_body_target
+                    .lerp(binding.last_body_target, factor);
+                self.world
+                    .set_rigidbody_transform(
+                        self.bodies[body_index],
+                        BulletTransform {
+                            position: target.position.scaled_array(self.world_scale),
+                            rotation_xyzw: target.rotation.array(),
+                        },
+                    )
+                    .map_err(|error| error.to_string())?;
+            }
+            self.world
+                .step_with_fixed_substep(step_seconds, 1, fixed_step)
+                .map_err(|error| error.to_string())?;
+        }
+        for binding in &mut self.bindings {
+            if binding.mode == 0 && binding.has_bone {
+                binding.applied_body_target = binding.last_body_target;
+            }
+        }
+        Ok(())
     }
 
     fn transforms(&self, output: &mut [Transform]) -> Result<(), String> {
@@ -691,6 +725,22 @@ impl Solver {
         {
             binding.animation_bone = animation_bone;
             binding.bone_rotation_overridden = rotation_overridden;
+            let body_target = if rotation_overridden {
+                animation_bone.compose(binding.body_from_bone)
+            } else {
+                Transform {
+                    position: animation_bone.position.add(
+                        binding
+                            .initial_animation_bone
+                            .position
+                            .neg()
+                            .add(binding.initial_body.position),
+                    ),
+                    rotation: binding.initial_body.rotation,
+                }
+            };
+            binding.last_body_target = body_target;
+            binding.applied_body_target = body_target;
         }
         Ok(())
     }
@@ -1206,6 +1256,81 @@ mod tests {
         solver_two.transforms(&mut output_two).unwrap();
         solver_ten.transforms(&mut output_ten).unwrap();
         assert!((output_two[0].position.z - output_ten[0].position.z).abs() < 1.0e-6);
+    }
+
+    #[test]
+    fn skipped_animation_frame_matches_intermediate_kinematic_targets() {
+        let anchor = BodyDesc {
+            mode: 0,
+            shape: 0,
+            has_bone: 1,
+            size: Vec3 {
+                x: 0.2,
+                y: 0.2,
+                z: 0.2,
+            },
+            collision_mask: u16::MAX as u32,
+            ..BodyDesc::default()
+        };
+        let dynamic = BodyDesc {
+            mode: 1,
+            shape: 0,
+            transform: Transform {
+                position: Vec3 {
+                    x: 0.0,
+                    y: 0.0,
+                    z: -1.0,
+                },
+                rotation: Quat::default(),
+            },
+            size: Vec3 {
+                x: 0.2,
+                y: 0.2,
+                z: 0.2,
+            },
+            mass: 1.0,
+            collision_mask: u16::MAX as u32,
+            ..BodyDesc::default()
+        };
+        let joint = JointDesc {
+            body_a: 0,
+            body_b: 1,
+            transform: Transform {
+                position: Vec3 {
+                    x: 0.0,
+                    y: 0.0,
+                    z: -0.5,
+                },
+                rotation: Quat::default(),
+            },
+            ..JointDesc::default()
+        };
+        let mut sequential = Solver::new(&[anchor, dynamic], &[joint]).unwrap();
+        let mut skipped = Solver::new(&[anchor, dynamic], &[joint]).unwrap();
+        let target = |x| Transform {
+            position: Vec3 { x, y: 0.0, z: 0.0 },
+            rotation: Quat::default(),
+        };
+
+        sequential.set_bone_target(0, target(1.0)).unwrap();
+        sequential.step(1.0 / 60.0, 10).unwrap();
+        sequential.set_bone_target(0, target(2.0)).unwrap();
+        sequential.step(1.0 / 60.0, 10).unwrap();
+        skipped.set_bone_target(0, target(2.0)).unwrap();
+        skipped.step(1.0 / 30.0, 10).unwrap();
+
+        let mut sequential_output = [Transform::default(); 2];
+        let mut skipped_output = [Transform::default(); 2];
+        sequential.transforms(&mut sequential_output).unwrap();
+        skipped.transforms(&mut skipped_output).unwrap();
+        for (sequential_value, skipped_value) in sequential_output[1]
+            .position
+            .array()
+            .into_iter()
+            .zip(skipped_output[1].position.array())
+        {
+            assert!((sequential_value - skipped_value).abs() < 1.0e-4);
+        }
     }
 
     #[test]

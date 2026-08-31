@@ -3,11 +3,11 @@ import pathlib
 import platform
 
 
-ABI_VERSION = 5
+ABI_VERSION = 6
 DEFAULT_SOLVER_TARGET = "MMD"
 SOLVER_FILENAMES = {
-    "MMD": "mmd_physics_solver_mmd_abi5.dll",
-    "PMX": "mmd_physics_solver_abi5.dll",
+    "MMD": "mmd_physics_solver_mmd_abi6.dll",
+    "PMX": "mmd_physics_solver_abi6.dll",
 }
 
 

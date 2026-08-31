@@ -1,6 +1,6 @@
 # MMD 9.32 x64 Physics Solver DLL
 
-这是独立的 MMD 本体对齐分支，输出 `mmd_physics_solver_mmd_abi5.dll`。它不覆盖
+这是独立的 MMD 本体对齐分支，输出 `mmd_physics_solver_mmd_abi6.dll`。它不覆盖
 `native/mmd_physics_solver/` 或 PMX Editor 对齐 DLL。
 
 ## 已确认的 MMD 9.32 x64 native 路径
@@ -53,7 +53,7 @@ MMD 每次播放产生的宿主层差异算作 native core parity。
 可分别通过 `MMD_VC10_SP1_ROOT`、`MMD_VC10_ROOT`、`MMD_WINSDK71_ROOT`、
 `MMD_VSDEVCMD` 覆盖路径。输出复制到：
 
-`mmd_station\physics_preview\bin\win_amd64\mmd_physics_solver_mmd_abi5.dll`
+`mmd_station\physics_preview\bin\win_amd64\mmd_physics_solver_mmd_abi6.dll`
 
 PMX Editor 版本继续由 `native/mmd_physics_solver/` 构建并输出
-`mmd_physics_solver_abi5.dll`。
+`mmd_physics_solver_abi6.dll`。

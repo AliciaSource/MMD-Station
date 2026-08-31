@@ -1,5 +1,12 @@
 # Development Log
 
+## 2026-08-31 - V1.0.1-dev 动作跳帧物理爆炸与穿模修复
+
+- 用真实 `New Folder/00.blend` 导入 `TOMBOY.vmd`，执行“更新刚体 / Joint 到当前姿态”后建立跳帧播放探针。严格逐帧时 MMD DLL 的动态刚体单步位移峰值为 `3.6921`、Joint 两端分离峰值为 `3.2726`；模拟 GUI 每次跳 2 帧后分别放大到 `17.1097` 与 `13.8382`。同条件 PMX DLL 未爆炸但直接传送骨骼追踪刚体，缺少中间碰撞姿态，符合用户观察到的穿模。
+- 根因在两个 Rust/Bullet 求解器的运动目标推进，而不是 IK、动作导入、姿态对齐或展示代理。之前一帧只提交骨骼追踪刚体终点，再让 Bullet 一次执行多个 fixed substep；MMD 分支由 motion state 推导出的跨帧角速度会向 Joint 链注入过大冲量，PMX 分支则把完整 transform 直接传送。现在两套 DLL 都缓存上次已应用目标与本次目标，在每个 Bullet 子步前对位置和 quaternion 做插值；Root world delta、snapshot restore 与 MMD 精确目标写入同步维护该缓存。
+- Native ABI 升至 v6，运行时改用 `mmd_physics_solver_abi6.dll` / `mmd_physics_solver_mmd_abi6.dll`，避免旧进程误载 ABI v5。新增两套 Rust 回归，要求跳过一帧的一次 `1/30` 推进与两个连续 `1/60` 运动目标得到一致的 Joint 链结果。
+- 真实动作回归：MMD DLL 跳 2 帧后的位移/Joint 峰值降至 `3.2321` / `2.5173`；极端跳 5 帧播放至 650 帧时 MMD 为 `6.0014` / `2.5662`，PMX 为 `5.3590` / `2.6575`，均未爆炸。Rust 两分支各 `14 passed`；`MMD_TIME_DRIVER_UNIT_OK`、Python `13 passed`、`MMD_STATION_SMOKE_OK`、`MMD_00_IK_PHYSICS_ISOLATION_OK`、`MMD_PHYSICS_POSE_ALIGNMENT_OK`、`MMD_PHYSICS_BAKE_REGRESSION_OK` 以及 PMX/MMD 双分支 `PHYSICS_ROOT_OFFSET_REGRESSION_OK` 通过。当前机器缺少项目正式构建要求的 VS2013 RTM `cl.exe 18.00.21005.1`，因此本轮 ABI v6 DLL 是供开发 Junction 验证的当前 MSVC release build，未冒充正式兼容构建；发布前必须在具备固定工具链的环境重建。未制作 ZIP、未 tag、未 push。
+
 ## 2026-08-31 - V1.0.1-dev ??????? depsgraph ????
 
 - ?????? `New Folder/00.blend` ? `01.blend` ?????????????? 294632 ???452226 polygons?98 ????????????? 162 ? ShapeKey?solver?Pose prepare?????? ShapeKey ???????????????? depsgraph ?????? Mesh ? `11.0 ms`?98 ???????? `17.4 ms`?????????????????? modifier??????? Scene/View Layer??????? depsgraph ? UI Outliner/draw-manager ???

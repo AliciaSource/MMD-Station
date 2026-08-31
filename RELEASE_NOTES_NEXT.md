@@ -21,3 +21,6 @@
   proxy also rebuilds mmd_tools edge-preview materials, weights, and Solidify
   settings against the final merged material layout, while temporarily removing
   replaced source meshes from the active scene and dependency graph.
+- Interpolated bone-tracking rigid-body targets across Bullet substeps in both
+  physics backends, preventing MMD-chain explosions during skipped playback
+  frames and reducing PMX collision tunneling during fast animated motion.

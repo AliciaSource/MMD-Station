@@ -637,8 +637,8 @@ bpy.context.view_layer.update()
 unrelated_matrix = unrelated_rigid.matrix_world.copy()
 preview_library = SolverLibrary(target="MMD")
 pmx_preview_library = SolverLibrary(target="PMX")
-assert library_path("MMD").name == "mmd_physics_solver_mmd_abi5.dll"
-assert library_path("PMX").name == "mmd_physics_solver_abi5.dll"
+assert library_path("MMD").name == "mmd_physics_solver_mmd_abi6.dll"
+assert library_path("PMX").name == "mmd_physics_solver_abi6.dll"
 assert preview_library.dll.mmd_solver_abi_version() == ABI_VERSION
 assert pmx_preview_library.dll.mmd_solver_abi_version() == ABI_VERSION
 settings.preview_frequency = 60
