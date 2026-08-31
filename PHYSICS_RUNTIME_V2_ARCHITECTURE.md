@@ -303,6 +303,6 @@ IK+Physics RUNNING
 -> Physics RUNNING (same world / solver / generation)
 ```
 
-当前合同更严格：MMD IK 只拥有自己的 IK dependency closure；physics 只从 canonical Armature 读取输入，并把动态输出写到临时 presentation Armature。type-0 始终追踪 canonical bone，type-1/type-2 始终按 solver 结果驱动 presentation bone；两条管线不存在反馈边。开关兼容只改变 IK Session，不调用 `stop_preview()`、不暂停 commit、不重启 world，也不恢复 physics-owned pose。
+当前合同更严格：MMD IK 只拥有自己的 IK dependency closure；physics 从 canonical Armature 读取输入，并把动态输出写回同一原生 Armature 中由 physics 拥有的骨骼。type-0 始终追踪 canonical bone，type-1/type-2 始终按 solver 结果驱动物理骨；两条管线不存在 adapter 或 feedback 边。开关兼容只改变 IK Session，不调用 `stop_preview()`、不暂停 commit、不重启 world，也不恢复 physics-owned pose。MODEL 性能代理只合并兼容 Mesh，不复制或简化 Armature，因此原有 constraint/driver/RGBA 辅助链仍由 Blender 正常求值。
 
 2026-08-25 的 Clear/F9 候选继续把 Undo/Redo 从隐式矩阵猜测收敛为 `UndoRedoPoseTransaction`：pre 阶段冻结 authored input、完整 presentation 和 selection，post 阶段只有在 native output closure 确认回到冻结 presentation 时，才把冻结的已清空 authored input 重新提交给 selected input controls。该 transaction 解决 input-only IK control 与 native output 在不同 depsgraph 时刻落定造成的混合帧；它仍不等同于完整 worker epoch 化，后者继续保留为后续 Phase 3 工作。

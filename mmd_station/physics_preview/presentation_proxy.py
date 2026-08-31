@@ -12,6 +12,7 @@ class SourceMeshState:
     name: str
     hidden: bool
     modifier_visibility: tuple
+    collection_names: tuple
 
 
 def _eligible_meshes(meshes, armature, view_layer):
@@ -28,43 +29,54 @@ def _eligible_meshes(meshes, armature, view_layer):
             for modifier in obj.modifiers
             if modifier.type == "ARMATURE" and modifier.object == armature
         ]
-        if (
-            len(armature_modifiers) != 1
-            or any(
-                modifier.type not in {"ARMATURE", "UV_WARP"}
-                or modifier.type == "ARMATURE"
-                and modifier.object not in {None, armature}
-                for modifier in obj.modifiers
-            )
-        ):
+        if len(armature_modifiers) != 1:
             continue
         eligible.append(obj)
     return eligible
 
 
-def _redirect_modifiers(obj, armature, proxy_armature):
-    for modifier in obj.modifiers:
-        if modifier.type == "ARMATURE" and modifier.object == armature:
-            modifier.object = proxy_armature
-        elif modifier.type == "UV_WARP":
-            if modifier.object_from == armature:
-                modifier.object_from = proxy_armature
-            if modifier.object_to == armature:
-                modifier.object_to = proxy_armature
+def _merge_safe(sources, armature):
+    for source in sources:
+        if source.animation_data is not None or source.constraints:
+            return False
+        for modifier in source.modifiers:
+            if modifier.type != "ARMATURE" or modifier.object != armature:
+                return False
+    return True
+
+
+def _shape_signature(source):
+    shape_keys = source.data.shape_keys
+    if shape_keys is None:
+        return ()
+    return tuple(
+        (key_block.name, float(key_block.value))
+        for key_block in shape_keys.key_blocks
+    )
+
+
+def _find_layer_collection(layer_collection, name):
+    if layer_collection.collection.name == name:
+        return layer_collection
+    for child in layer_collection.children:
+        found = _find_layer_collection(child, name)
+        if found is not None:
+            return found
+    return None
 
 
 class PhysicsPresentationProxy:
-    def __init__(self, scene, root, armature, meshes, driver_names):
+    def __init__(self, scene, root, armature, meshes, _driver_names):
         self.scene = scene
         self.root_name = root.name
         self.armature_name = armature.name
-        self.driver_names = frozenset(driver_names)
         self.source_states = ()
         self.shape_bindings = ()
+        self.shape_binding_refs = ()
         self.proxy_mesh_names = ()
         identity = hashlib.blake2b(root.name.encode("utf-8"), digest_size=6).hexdigest()
         self.collection_name = f"{_COLLECTION_PREFIX}{identity}"
-        self.proxy_armature_name = f"{self.collection_name}_Armature"
+        self.source_collection_name = f"{self.collection_name}_Sources"
         self.proxy_mesh_name = f"{self.collection_name}_Mesh"
         self.merged = False
         try:
@@ -75,7 +87,7 @@ class PhysicsPresentationProxy:
 
     @property
     def armature(self):
-        return bpy.data.objects.get(self.proxy_armature_name)
+        return bpy.data.objects.get(self.armature_name)
 
     @property
     def meshes(self):
@@ -93,107 +105,91 @@ class PhysicsPresentationProxy:
 
     def _build(self, armature, meshes):
         view_layer = bpy.context.view_layer
-        sources = _eligible_meshes(meshes, armature, view_layer)
-        if len(sources) < 2:
+        candidates = [
+            source
+            for source in _eligible_meshes(meshes, armature, view_layer)
+            if _merge_safe((source,), armature)
+        ]
+        groups = {}
+        for source in candidates:
+            groups.setdefault(_shape_signature(source), []).append(source)
+        merge_groups = [sources for sources in groups.values() if len(sources) >= 2]
+        if not merge_groups:
             raise RuntimeError("The model has no compatible split meshes for preview optimization")
 
         collection = bpy.data.collections.new(self.collection_name)
         self.scene.collection.children.link(collection)
-        proxy_armature = armature.copy()
-        proxy_armature.data = armature.data.copy()
-        proxy_armature.name = self.proxy_armature_name
-        proxy_armature.data.name = f"{self.proxy_armature_name}_Data"
-        collection.objects.link(proxy_armature)
-        proxy_armature.animation_data_clear()
-        proxy_armature.matrix_world = armature.matrix_world.copy()
-        for pose_bone in proxy_armature.pose.bones:
-            for constraint in tuple(pose_bone.constraints):
-                pose_bone.constraints.remove(constraint)
-        proxy_armature.hide_render = True
-        proxy_armature.hide_set(True)
-
         source_states = []
-        copies = []
-        source_by_copy = {}
-        for index, source in enumerate(sources):
-            source_states.append(
-                SourceMeshState(
-                    source.name,
-                    source.hide_get(),
-                    tuple(
-                        (modifier.name, bool(modifier.show_viewport))
-                        for modifier in source.modifiers
-                    ),
+        shape_bindings = []
+        proxy_meshes = []
+        for group_index, sources in enumerate(merge_groups):
+            copies = []
+            for source_index, source in enumerate(sources):
+                source_states.append(
+                    SourceMeshState(
+                        source.name,
+                        source.hide_get(),
+                        tuple(
+                            (modifier.name, bool(modifier.show_viewport))
+                            for modifier in source.modifiers
+                        ),
+                        tuple(collection.name for collection in source.users_collection),
+                    )
                 )
-            )
-            copy = source.copy()
-            copy.data = source.data.copy()
-            copy.name = f"{self.collection_name}_{index:03d}_{source.name}"
-            for target_collection in tuple(copy.users_collection):
-                target_collection.objects.unlink(copy)
-            collection.objects.link(copy)
-            _redirect_modifiers(copy, armature, proxy_armature)
-            copies.append(copy)
-            source_by_copy[copy.name] = source.name
-
-        self.source_states = tuple(source_states)
-        merge_safe = not any(
-            source.animation_data is not None
-            or source.constraints
-            or any(modifier.type == "UV_WARP" for modifier in source.modifiers)
-            for source in sources
-        )
-        if merge_safe:
-            proxy_meshes = (self._join_copies(copies, view_layer),)
-            proxy_meshes[0].name = self.proxy_mesh_name
-            proxy_meshes[0].data.name = f"{self.proxy_mesh_name}_Data"
-            self.merged = True
-            shape_sources = {}
-            for source in sources:
-                shape_keys = source.data.shape_keys
-                if shape_keys is None:
-                    continue
-                for key_block in shape_keys.key_blocks:
-                    shape_sources.setdefault(key_block.name, source.name)
-            self.shape_bindings = tuple(
-                (proxy_meshes[0].name, key_name, source_name)
-                for key_name, source_name in shape_sources.items()
-            )
-        else:
-            proxy_meshes = tuple(copies)
-            first_name = proxy_meshes[0].name
-            proxy_meshes[0].name = self.proxy_mesh_name
-            source_by_copy[proxy_meshes[0].name] = source_by_copy.pop(
-                first_name,
-                sources[0].name,
-            )
-            bindings = []
-            for proxy_mesh in proxy_meshes:
-                source_name = source_by_copy[proxy_mesh.name]
-                source = bpy.data.objects.get(source_name)
-                shape_keys = source.data.shape_keys if source is not None else None
-                if shape_keys is None:
-                    continue
-                bindings.extend(
-                    (proxy_mesh.name, key_block.name, source_name)
-                    for key_block in shape_keys.key_blocks
+                copy = source.copy()
+                copy.data = source.data.copy()
+                copy.name = (
+                    f"{self.collection_name}_{group_index:03d}_"
+                    f"{source_index:03d}_{source.name}"
                 )
-            self.shape_bindings = tuple(bindings)
-
-        self.proxy_mesh_names = tuple(obj.name for obj in proxy_meshes)
-        for proxy_mesh in proxy_meshes:
+                for target_collection in tuple(copy.users_collection):
+                    target_collection.objects.unlink(copy)
+                collection.objects.link(copy)
+                copies.append(copy)
+            proxy_mesh = self._join_copies(copies, view_layer)
+            proxy_mesh.name = (
+                self.proxy_mesh_name
+                if len(merge_groups) == 1
+                else f"{self.proxy_mesh_name}_{group_index:03d}"
+            )
+            proxy_mesh.data.name = f"{proxy_mesh.name}_Data"
+            proxy_meshes.append(proxy_mesh)
             shape_keys = proxy_mesh.data.shape_keys
             if shape_keys is not None:
-                shape_keys.animation_data_clear()
-        for source in sources:
-            source.hide_set(True)
-            for modifier in source.modifiers:
-                modifier.show_viewport = False
-        self.sync_from_canonical(armature, force=True)
+                shape_bindings.extend(
+                    (proxy_mesh.name, key_block.name, sources[0].name)
+                    for key_block in shape_keys.key_blocks
+                )
+
+        self.source_states = tuple(source_states)
+        self.shape_bindings = tuple(shape_bindings)
+        self._refresh_shape_binding_refs()
+        self.proxy_mesh_names = tuple(proxy_mesh.name for proxy_mesh in proxy_meshes)
+        self.merged = True
+
+        source_stash = bpy.data.collections.new(self.source_collection_name)
+        self.scene.collection.children.link(source_stash)
+        for state in self.source_states:
+            source = bpy.data.objects.get(state.name)
+            if source is None:
+                continue
+            source_stash.objects.link(source)
+            for current_collection in tuple(source.users_collection):
+                if current_collection.name != self.source_collection_name:
+                    current_collection.objects.unlink(source)
+        layer_collection = _find_layer_collection(
+            view_layer.layer_collection,
+            self.source_collection_name,
+        )
+        if layer_collection is None:
+            raise RuntimeError("Unable to isolate source meshes from the preview View Layer")
+        layer_collection.exclude = True
+        view_layer.update()
 
     def _join_copies(self, copies, view_layer):
-        selected = tuple(bpy.context.selected_objects)
+        selected_names = tuple(obj.name for obj in bpy.context.selected_objects)
         active = view_layer.objects.active
+        active_name = active.name if active is not None else ""
         mode = active.mode if active is not None else "OBJECT"
         if active is not None and mode != "OBJECT":
             bpy.ops.object.mode_set(mode="OBJECT")
@@ -210,31 +206,18 @@ class PhysicsPresentationProxy:
         finally:
             for obj in tuple(bpy.context.selected_objects):
                 obj.select_set(False)
-            for obj in selected:
-                if obj.name in view_layer.objects:
+            for name in selected_names:
+                obj = bpy.data.objects.get(name)
+                if obj is not None and obj.name in view_layer.objects:
                     obj.select_set(True)
+            active = bpy.data.objects.get(active_name)
             if active is not None and active.name in view_layer.objects:
                 view_layer.objects.active = active
                 if mode != "OBJECT":
                     bpy.ops.object.mode_set(mode=mode)
 
-    def sync_from_canonical(self, armature, force=False):
-        proxy_armature = self.armature
-        if proxy_armature is None or not self.meshes:
-            return False
-        changed = force or proxy_armature.matrix_world != armature.matrix_world
-        proxy_armature.matrix_world = armature.matrix_world.copy()
-        for pose_bone in sorted(
-            proxy_armature.pose.bones,
-            key=lambda bone: len(bone.parent_recursive),
-        ):
-            if pose_bone.name in self.driver_names:
-                continue
-            source = armature.pose.bones.get(pose_bone.name)
-            if source is None or not force and pose_bone.matrix == source.matrix:
-                continue
-            pose_bone.matrix = source.matrix.copy()
-            changed = True
+    def _refresh_shape_binding_refs(self):
+        refs = []
         for proxy_name, key_name, source_name in self.shape_bindings:
             proxy_object = bpy.data.objects.get(proxy_name)
             source_object = bpy.data.objects.get(source_name)
@@ -250,17 +233,50 @@ class PhysicsPresentationProxy:
             )
             target = proxy_keys.key_blocks.get(key_name) if proxy_keys else None
             source = source_keys.key_blocks.get(key_name) if source_keys else None
-            if target is None or source is None or target.value == source.value:
-                continue
-            target.value = source.value
-            changed = True
+            if target is not None and source is not None:
+                refs.append((target, source))
+        self.shape_binding_refs = tuple(refs)
+
+    def sync_from_canonical(self, _armature, force=False):
+        changed = False
+        try:
+            for target, source in self.shape_binding_refs:
+                if not force and target.value == source.value:
+                    continue
+                target.value = source.value
+                changed = True
+        except ReferenceError:
+            self._refresh_shape_binding_refs()
+            return self.sync_from_canonical(_armature, force=force)
         if changed:
-            proxy_armature.update_tag(refresh={"OBJECT"})
             for proxy_mesh in self.meshes:
                 proxy_mesh.update_tag(refresh={"OBJECT"})
         return changed
 
     def close(self):
+        source_collection = bpy.data.collections.get(self.source_collection_name)
+        for state in self.source_states:
+            source = bpy.data.objects.get(state.name)
+            if source is None:
+                continue
+            for collection_name in state.collection_names:
+                target_collection = bpy.data.collections.get(collection_name)
+                if target_collection is not None and source.name not in target_collection.objects:
+                    target_collection.objects.link(source)
+            if source_collection is not None and source.name in source_collection.objects:
+                source_collection.objects.unlink(source)
+        if source_collection is not None:
+            bpy.data.collections.remove(source_collection)
+
+        collection = bpy.data.collections.get(self.collection_name)
+        if collection is not None:
+            for obj in tuple(collection.objects):
+                data = getattr(obj, "data", None)
+                bpy.data.objects.remove(obj, do_unlink=True)
+                if data is not None and data.users == 0:
+                    bpy.data.meshes.remove(data)
+            bpy.data.collections.remove(collection)
+
         view_layer = bpy.context.view_layer
         for state in self.source_states:
             source = bpy.data.objects.get(state.name)
@@ -272,15 +288,3 @@ class PhysicsPresentationProxy:
             for modifier in source.modifiers:
                 if modifier.name in visibility:
                     modifier.show_viewport = visibility[modifier.name]
-        collection = bpy.data.collections.get(self.collection_name)
-        if collection is not None:
-            for obj in tuple(collection.objects):
-                data = getattr(obj, "data", None)
-                object_type = obj.type
-                bpy.data.objects.remove(obj, do_unlink=True)
-                if data is not None and data.users == 0:
-                    if object_type == "MESH":
-                        bpy.data.meshes.remove(data)
-                    elif object_type == "ARMATURE":
-                        bpy.data.armatures.remove(data)
-            bpy.data.collections.remove(collection)

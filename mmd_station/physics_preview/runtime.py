@@ -1201,7 +1201,7 @@ class PreviewSession:
             _apply_source_joint_values(self.joint_descs, source_joint_items)
 
     def _broad_pose_reset_detected(self):
-        if self.offline_bake or self.presentation_proxy is not None:
+        if self.offline_bake or self.output_armature is not self.armature:
             return False
         driver_names = self.driver_pose_bones
         current_frame = (self.scene.frame_current, self.scene.frame_subframe)
@@ -1285,7 +1285,7 @@ class PreviewSession:
                 if self.presentation_proxy is not None:
                     self.presentation_proxy.sync_from_canonical(self.armature)
                 return
-        if self.presentation_proxy is None:
+        if self.output_armature is self.armature:
             for name, matrix_basis in self.saved_basis.items():
                 pose_bone = self.driver_pose_bones.get(name)
                 if pose_bone is not None:

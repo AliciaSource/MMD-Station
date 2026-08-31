@@ -15,6 +15,6 @@
   the last clean pose at the start of the repair range before manual adjustment.
 - Fully isolated MMD IK compatibility from physics preview ownership, so IK can
   be toggled without rebuilding or feeding back into the active physics world.
-- Added a temporary clean presentation rig for MODEL physics preview, reducing
-  dependency-graph overhead from heavily split character meshes without changing
-  the authored model.
+- Added a temporary mesh-only presentation proxy for compatible material-split
+  models, preserving the original rig, constraints, drivers, physics behavior,
+  and near-merged dependency-graph performance.

@@ -5,7 +5,7 @@
 - `ffi.py`：稳定 C ABI 和 DLL 生命周期；
 - `runtime.py`：从 Blender 当前 MMD 模型提取刚体/Joint，按 MMD 时间语义驱动固定子步求解并非破坏性地回写 Pose Bone；
 - `pose_pipeline.py`：隔离 authored Pose 输入、physics output、dirty state 与 Blender depsgraph 投影；
-- `presentation_proxy.py`：为复杂拆分模型建立临时轻量展示骨架，并按 modifier 兼容性选择合并或逐对象显示代理；
+- `presentation_proxy.py`：把可证明兼容的拆分 Mesh 临时合并为绑定原生 Armature 的显示代理；
 - `time_driver.py`：把 Blender timeline 或暂停交互的单调时钟转换为 Bullet `frameSeconds`，并以 cooperative deadline 调度 GUI timer；
 - `ui.py`：启动、停止、重置和少量运行参数；
 - `bin/win_amd64/mmd_physics_solver_abi5.dll` 与 `mmd_physics_solver_mmd_abi5.dll`：Rust `cdylib`，内部静态链接 Bullet，并提供持久化物理快照与修复引导 ABI；
@@ -18,7 +18,7 @@ PMX/MMD DLL 的单 Session、未启用 MMD IK 路径统一使用双缓冲热路�
 
 基础物理路径每个 solver tick 都提交 Bone output，但交互 timer 不同步阻塞 `view_layer.update()`；它标记 VIEW_3D redraw，让 Blender 把物理输出与下一次自然 depsgraph evaluation 合并。不存在 30 FPS presentation cap，也不跳过 physics tick。启用“显示刚体运动”时，Rigid/Joint 调试对象也随每个 solver tick 写入，避免可见刚体落后物理解算；该写入同样不强制 evaluation，关闭显示则完全省去对象回写成本。MMD IK 兼容与物理预览没有 Session adapter、刚体 feedback 或 after-physics bone evaluation：IK 只更新 canonical authored Pose，0 型刚体读取当前骨骼目标，1/2 型刚体只按自身模式输出物理结果。开关 IK 不重建或切换 physics Session、world、solver 与速度状态。
 
-`MODEL` 预览会为两个及以上兼容 Mesh 建立不保存到工程的 presentation proxy。临时 Armature 保留骨骼层级与 Rest Pose，但没有原骨架的 constraint、driver 或 Action；canonical Armature 只负责 authored/IK 输入，physics output 只写临时 Armature。没有逐对象 `UV_WARP`、对象动画或约束时，Mesh 合并成单对象；否则保持拆分对象，以保留 ShapeKey、UV Morph 和对象级行为。停止预览后删除全部临时数据并逐项恢复原 Mesh 的可见性和 modifier 状态。
+`MODEL` 预览不会复制 Armature。MMD IK、原有 constraint/driver 链和 physics output 始终作用于同一原生 Armature，但通过各自的 bone ownership 隔离。两个及以上只有同一 Armature modifier、没有对象动画/约束且 ShapeKey 结构相同的拆分 Mesh，会按兼容组临时合并为绑定原生 Armature 的 presentation proxy；源 Mesh 在预览期间移入当前 View Layer 排除的临时集合，避免隐藏对象仍参与 depsgraph。含 `UV_WARP`、额外 modifier 或不同 ShapeKey 结构的对象保持原样，不为了性能破坏其变形语义。停止预览后删除临时 Mesh，并按原 Collection、可见性和 modifier 状态恢复全部源对象。
 
 启动预览会在修改连接状态和创建 solver 之前建立唯一的启动快照：整个 MMD Armature 的全部 Pose Bone、模型全部刚体对象矩阵和全部 Joint 对象矩阵。对象身份以 Blender 数据名称保存，矩阵是与 RNA 生命周期无关的普通副本；停止时还会恢复动态骨骼连接状态。
 
