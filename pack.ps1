@@ -9,9 +9,19 @@ $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $packageDirectory = Join-Path $root 'mmd_station'
 $initFile = Join-Path $packageDirectory '__init__.py'
 $versionFile = Join-Path $packageDirectory '_version.py'
+$securityScanner = Join-Path $root 'tools\security_scan.py'
 
 if (-not (Test-Path $packageDirectory)) { throw "Package directory not found: $packageDirectory" }
 if (-not (Test-Path $initFile)) { throw "__init__.py not found: $initFile" }
+if (-not (Test-Path $securityScanner)) { throw "Security scanner not found: $securityScanner" }
+
+function Invoke-SecurityScan {
+    param([string[]]$ScanArguments)
+    & python $securityScanner @ScanArguments
+    if ($LASTEXITCODE -ne 0) {
+        throw 'Security scan blocked packaging'
+    }
+}
 
 $content = [System.IO.File]::ReadAllText($initFile, [System.Text.Encoding]::UTF8)
 $match = [regex]::Match($content, '"version"\s*:\s*\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*\)')
@@ -55,6 +65,7 @@ try {
 }
 
 if ($useGit) {
+    Invoke-SecurityScan -ScanArguments @('--ref', $Ref)
     Push-Location $root
     try {
         & git archive --format=zip --prefix=mmd_station/ -o $outputZip "${Ref}:mmd_station"
@@ -64,6 +75,7 @@ if ($useGit) {
     }
     Write-Host "Packed via git archive ($Ref): $outputZip"
 } else {
+    Invoke-SecurityScan -ScanArguments @('--path', $packageDirectory)
     Add-Type -AssemblyName System.IO.Compression
     Add-Type -AssemblyName System.IO.Compression.FileSystem
     $archive = [System.IO.Compression.ZipFile]::Open(
@@ -90,6 +102,13 @@ if ($useGit) {
         $archive.Dispose()
     }
     Write-Host "Packed from working tree: $outputZip"
+}
+
+try {
+    Invoke-SecurityScan -ScanArguments @('--archive', $outputZip)
+} catch {
+    if (Test-Path $outputZip) { Remove-Item -LiteralPath $outputZip -Force }
+    throw
 }
 
 Write-Host "Version: $version"
