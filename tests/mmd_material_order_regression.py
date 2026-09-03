@@ -165,6 +165,31 @@ settings = bpy.context.scene.surface_proxy_creator
 settings.mmd_root = root
 settings.browser_kind = "MATERIAL"
 assert abs(settings.material_split_shapekey_cleanup_threshold - 1e-4) < 1e-9
+
+# A plain Mesh split from a larger aggregate can retain many unused material
+# slots even though all of its faces use only one material. The split operator
+# must remain available without an MMD Root and let mmd_tools clean those slots.
+standalone_mesh_data = bpy.data.meshes.new("StandaloneResidualSlots")
+standalone_mesh_data.from_pydata(
+    ((0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (0.0, 1.0, 0.0)),
+    [],
+    ((0, 1, 2),),
+)
+for material in (material_a, material_b, material_c):
+    standalone_mesh_data.materials.append(material)
+standalone_mesh = bpy.data.objects.new("StandaloneResidualSlots", standalone_mesh_data)
+bpy.context.collection.objects.link(standalone_mesh)
+settings.mmd_root = None
+bpy.ops.object.select_all(action="DESELECT")
+standalone_mesh.select_set(True)
+bpy.context.view_layer.objects.active = standalone_mesh
+assert bpy.ops.surface_proxy.separate_active_mesh_by_materials() == {"FINISHED"}
+assert list(standalone_mesh.data.materials) == [material_a]
+bpy.data.objects.remove(standalone_mesh, do_unlink=True)
+if standalone_mesh_data.users == 0:
+    bpy.data.meshes.remove(standalone_mesh_data)
+settings.mmd_root = root
+
 controls_probe = MaterialControlsLayoutProbe()
 draw_name_sync(controls_probe, settings)
 controls_row = controls_probe.children[0]

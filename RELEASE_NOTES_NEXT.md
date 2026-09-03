@@ -4,6 +4,9 @@
 
 ### Fixed
 
+- Made material separation work on ordinary Mesh objects without an MMD model,
+  including cleanup of residual unused material slots on meshes whose faces use
+  only one material.
 - Preserved each ShapeKey's existing slider range during Morph runtime setup,
   expanding only affected keys to the exact out-of-range value entered in the
   Morph editor.

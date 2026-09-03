@@ -345,7 +345,7 @@ ENGLISH = {
     '使用 MMD Station 导出入口导出 VMD 运动': 'Export VMD motion using MMD Station export portal',
     '使用 MMD Station 导出入口导出 VPD 姿态': 'Export VPD posture using MMD Station export portal',
     '使用 Rust DLL 预览 MMD 物理': 'Preview MMD physics using Rust DLL',
-    '使用 mmd_tools 同款拆分逻辑处理活动 Mesh，并只把拆出的物体放入其材质顺序对应的预留编号': 'Use the same split logic of mmd_tools to process the active Mesh, and only put the removed objects into the reserved numbers corresponding to their material order',
+    '使用 mmd_tools 同款逻辑拆分活动 Mesh 并清理残余材质槽；属于 MMD 模型时再按材质顺序校对编号': 'Use the same logic as mmd_tools to split the active Mesh and clean residual material slots; if it belongs to an MMD model, also calibrate its number from the material order',
     '使用 mmd_tools 导入 PMD/PMX 模型': 'Use mmd_tools to import PMD/PMX models',
     '使用 mmd_tools 导入 VMD 运动': 'Import VMD motion using mmd_tools',
     '使用 mmd_tools 导入 VPD 姿态': 'Import VPD posture using mmd_tools',

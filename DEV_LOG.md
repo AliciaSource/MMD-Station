@@ -1,5 +1,11 @@
 # Development Log
 
+## 2026-09-03 - V1.0.1-dev 按材质拆分解除 MMD Root 与多实用材质限制
+
+- 修正对 `mmd_tools` 原版功能的过度限制：“按材质拆分（保留法向）”现在只要求活动对象是 Mesh，不再要求 MMD 查看器已选择模型、活动 Mesh 属于该模型，也不再预判至少有两个被面实际使用的材质。普通 Mesh 直接进入 `mmd_tools` 同款拆分路径；若来自 P 分离且仅一种材质被面引用、材质槽仍残留多项，该路径会继续清除未使用槽而不是提前取消。
+- 只有活动 Mesh 实际属于某个 MMD Root 时，才执行 Morph unbind、临时材质/UV 预览清理、PMX 材质顺序编号、UV Morph 空组清理和 Material Morph 关联刷新；无 MMD Root 时安全跳过这些模型专属后处理，ShapeKey 清理与保留法向拆分仍正常执行。若查看器选择了其它模型，也以活动 Mesh 自身的实际 Root 为准，不再形成无关耦合。
+- `tests/mmd_material_order_regression.py` 新增无 MMD Root、一个实际使用材质、三个残余材质槽的真实 Operator 回归：修复前稳定报“活动 Mesh 不属于当前 MMD 模型”，修复后返回 `FINISHED` 且材质槽收敛为唯一被面使用的材质。Blender 4.4.3 输出 `MMD_MATERIAL_ORDER_REGRESSION_OK`，完整 `tests/headless_smoke.py` 输出 `MMD_STATION_SMOKE_OK`；`tests/test_i18n_catalog.py` 为 `5 passed`，`compileall` 与 `git diff --check` 通过。开发 Junction 已生效；未制作 ZIP、未 tag、未 push。
+
 ## 2026-09-03 - V1.0.1-dev Morph ShapeKey 范围按需扩展
 
 - Morph Runtime 建立前保存模型内各 ShapeKey 的现有 `slider_min` / `slider_max`，并在 `mmd_tools` 完成轻量绑定后原值恢复，避免其 `bind()` 将所有匹配 Vertex Morph 的 ShapeKey 统一永久改成 `-10～10`。既有自定义范围同样保留，不强制覆盖成默认值。

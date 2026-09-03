@@ -585,7 +585,7 @@ class SPX_OT_CalibrateMaterialOrder(Operator):
 class SPX_OT_SeparateActiveMeshByMaterials(Operator):
     bl_idname = "surface_proxy.separate_active_mesh_by_materials"
     bl_label = "按材质拆分（保留法向）"
-    bl_description = "使用 mmd_tools 同款拆分逻辑处理活动 Mesh，并只把拆出的物体放入其材质顺序对应的预留编号"
+    bl_description = "使用 mmd_tools 同款逻辑拆分活动 Mesh 并清理残余材质槽；属于 MMD 模型时再按材质顺序校对编号"
     bl_options = {"REGISTER", "UNDO"}
 
     @classmethod
@@ -595,7 +595,6 @@ class SPX_OT_SeparateActiveMeshByMaterials(Operator):
 
     def execute(self, context):
         settings = context.scene.surface_proxy_creator
-        requested_root = settings.mmd_root
         target = context.active_object
         try:
             model_module = importlib.import_module(
@@ -619,48 +618,47 @@ class SPX_OT_SeparateActiveMeshByMaterials(Operator):
         FnMorph = morph_module.FnMorph
         MoveObject = misc_module.MoveObject
         root = FnModel.find_root_object(target)
-        if root is None or root != FnModel.find_root_object(requested_root):
-            report(self, {"ERROR"}, "活动 Mesh 不属于当前 MMD 模型")
-            return {"CANCELLED"}
-        source_materials = _used_materials(target)
-        if len(source_materials) < 2:
-            report(self, {"WARNING"}, "活动 Mesh 没有至少两个实际使用的材质")
-            return {"CANCELLED"}
+        order_by_material = {}
+        rig = None
+        if root is not None:
+            materials = ordered_materials(root, FnModel)
+            order_by_material = {
+                material: index for index, material in enumerate(materials)
+            }
+            rig = Model(root)
+            rig.morph_slider.unbind()
+            bpy.ops.mmd_tools.clear_temp_materials()
+            bpy.ops.mmd_tools.clear_uv_morph_view()
 
-        materials = ordered_materials(root, FnModel)
-        order_by_material = {
-            material: index for index, material in enumerate(materials)
-        }
-        before = set(FnModel.iterate_mesh_objects(root))
-        rig = Model(root)
-        rig.morph_slider.unbind()
-        bpy.ops.mmd_tools.clear_temp_materials()
-        bpy.ops.mmd_tools.clear_uv_morph_view()
+        before = set(bpy.data.objects)
         utils_module.separateByMaterials(target, keep_normals=True)
         bpy.ops.mmd_tools.clean_shape_keys()
 
-        after = set(FnModel.iterate_mesh_objects(root))
-        results = [
+        results = [target]
+        results.extend(
             mesh_object
-            for mesh_object in after
-            if mesh_object is target or mesh_object not in before
-        ]
+            for mesh_object in bpy.data.objects
+            if mesh_object not in before and mesh_object.type == "MESH"
+        )
         renamed = 0
         cleaned_shape_keys = 0
         for mesh_object in results:
             used = _used_materials(mesh_object)
-            if len(used) == 1 and used[0] in order_by_material:
+            if root is not None and len(used) == 1 and used[0] in order_by_material:
                 MoveObject.set_index(mesh_object, order_by_material[used[0]])
                 renamed += 1
             cleaned_shape_keys += _clean_near_zero_shape_keys(
                 mesh_object,
                 settings.material_split_shapekey_cleanup_threshold,
             )
-            FnMorph.clean_uv_morph_vertex_groups(mesh_object)
-        for morph in root.mmd_root.material_morphs:
-            FnMorph(morph, rig).update_mat_related_mesh()
+            if root is not None:
+                FnMorph.clean_uv_morph_vertex_groups(mesh_object)
+        if root is not None:
+            for morph in root.mmd_root.material_morphs:
+                FnMorph(morph, rig).update_mat_related_mesh()
         utils_module.clearUnusedMeshes()
-        bpy.ops.surface_proxy.refresh_mmd_browser()
+        if root is not None and settings.mmd_root == root:
+            bpy.ops.surface_proxy.refresh_mmd_browser()
         report(self,
             {"INFO"},
             f"已按材质拆分为 {len(results)} 个物体，并校对其中 {renamed} 个编号、清理 {cleaned_shape_keys} 个近零形态键；其它物体名称未改",
