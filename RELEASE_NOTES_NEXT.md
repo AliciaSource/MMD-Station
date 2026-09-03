@@ -12,6 +12,10 @@
 
 ### Fixed
 
+- Fixed MMD mesh joining when model children are outside the active View Layer,
+  including canonical meshes temporarily detached by physics presentation
+  preview, while still restoring arbitrary pre-joined material-slot layouts to
+  the stored PMX order before joining.
 - Made material separation work on ordinary Mesh objects without an MMD model,
   including cleanup of residual unused material slots on meshes whose faces use
   only one material.

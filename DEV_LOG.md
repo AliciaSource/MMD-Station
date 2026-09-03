@@ -1,5 +1,11 @@
 # Development Log
 
+## 2026-09-03 - V1.0.1-dev 合并网格跨 View Layer 修复与乱序预合并回归
+
+- 复现用户截图中的原始异常：MMD Root 层级仍包含 Mesh、但对象已脱离当前 View Layer 时，`mmd_tools.join_meshes` 会在 `FnContext.select_objects` 内对该对象执行 `select_set(True)`，并抛出“can't be selected because it is not in View Layer”。修复后，若当前模型正在运行物理 presentation proxy，先正常停止该模型预览并恢复被临时移出的源 Mesh；随后把仍不在当前 View Layer 的模型 Mesh 补链到 MMD Root 所在的可见 Collection，再委托原版 Join，不跳过任何模型部件。
+- 强化 `tests/mmd_material_order_regression.py`：首个 Mesh 模拟已经手动合并的多材质部件，其实际槽位/面顺序为 `C, A`，其它对象提供 `B, D`，其中 `D` 对象主动从全部 Collection unlink 以稳定复现截图报错；MMD Station 保存顺序设为 `B, A, D, C`。修复前得到相同 View Layer traceback，修复后合并为一个 Mesh，材质槽严格重排成 `B, A, D, C`，四种面材质映射完整，预览临时材质仍被清除。
+- Blender 4.4.3 focused regression 输出 `MMD_MATERIAL_ORDER_REGRESSION_OK`，完整 `tests/headless_smoke.py` 输出 `MMD_STATION_SMOKE_OK`；`tests/test_i18n_catalog.py` 为 `5 passed`，`compileall` 与 `git diff --check` 通过。开发 Junction 已生效；未制作 ZIP、未 tag、未 push。
+
 ## 2026-09-03 - V1.0.1-dev 材质工具四等分布局
 
 - 把同一行的“校对材质 ID 与物体编号”“按材质拆分（保留法向）”“合并”“形态键清理阈值”改为严格四等分；自动同步图标固定紧跟校对按钮，两者合计占第一组 `1/4`，不再夹在拆分与合并之间。

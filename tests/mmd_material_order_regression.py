@@ -582,6 +582,7 @@ join_armature = join_model.armature()
 join_material_a = make_material("Join_A", "Join_A", "Join_A")
 join_material_b = make_material("Join_B", "Join_B", "Join_B")
 join_material_c = make_material("Join_C", "Join_C", "Join_C")
+join_material_d = make_material("Join_D", "Join_D", "Join_D")
 join_temp_material = make_material(
     "Join_A_temp_material_morphs",
     "Join_A_temp_material_morphs",
@@ -590,9 +591,17 @@ join_temp_material = make_material(
 join_mesh_a = make_mesh(
     "A_JoinMesh",
     join_armature,
-    ((join_temp_material, 0.0), (join_material_c, 10.0)),
+    ((join_material_c, 0.0), (join_temp_material, 10.0)),
 )
 join_mesh_a.data.materials.append(join_material_a)
+join_mesh_hidden = make_mesh(
+    "M_JoinMeshOutsideViewLayer",
+    join_armature,
+    ((join_material_d, 15.0),),
+)
+for collection in tuple(join_mesh_hidden.users_collection):
+    collection.objects.unlink(join_mesh_hidden)
+assert join_mesh_hidden.name not in bpy.context.view_layer.objects
 join_mesh_z = make_mesh(
     "Z_JoinMesh",
     join_armature,
@@ -600,7 +609,7 @@ join_mesh_z = make_mesh(
 )
 set_material_order(
     join_root,
-    (join_material_b, join_material_a, join_material_c),
+    (join_material_b, join_material_a, join_material_d, join_material_c),
 )
 settings.mmd_root = join_root
 bpy.ops.object.select_all(action="DESELECT")
@@ -611,15 +620,16 @@ assert bpy.ops.surface_proxy.join_mmd_meshes(sort_shape_keys=True) == {"FINISHED
 joined_meshes = list(FnModel.iterate_mesh_objects(join_root))
 assert len(joined_meshes) == 1
 joined_mesh = joined_meshes[0]
-assert list(joined_mesh.data.materials)[:3] == [
+assert list(joined_mesh.data.materials)[:4] == [
     join_material_b,
     join_material_a,
+    join_material_d,
     join_material_c,
 ]
 assert all("_temp" not in material.name for material in joined_mesh.data.materials)
 assert {
     joined_mesh.data.materials[polygon.material_index]
     for polygon in joined_mesh.data.polygons
-} == {join_material_a, join_material_b, join_material_c}
+} == {join_material_a, join_material_b, join_material_c, join_material_d}
 
 print("MMD_MATERIAL_ORDER_REGRESSION_OK")

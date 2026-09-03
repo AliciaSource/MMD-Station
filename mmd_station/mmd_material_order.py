@@ -144,6 +144,44 @@ def _preload_mesh_material_order(mesh_object, materials):
         polygon.material_index = old_to_new.get(old_index, 0)
 
 
+def _visible_collections(view_layer):
+    def walk(layer_collection):
+        if layer_collection.exclude or layer_collection.hide_viewport:
+            return
+        yield layer_collection.collection
+        for child in layer_collection.children:
+            yield from walk(child)
+
+    return tuple(walk(view_layer.layer_collection))
+
+
+def _link_model_meshes_to_view_layer(context, root, meshes):
+    missing = [
+        mesh_object
+        for mesh_object in meshes
+        if mesh_object.name not in context.view_layer.objects
+    ]
+    if not missing:
+        return 0
+
+    visible_collections = {
+        collection.as_pointer()
+        for collection in _visible_collections(context.view_layer)
+    }
+    target_collection = next(
+        (
+            collection
+            for collection in root.users_collection
+            if collection.as_pointer() in visible_collections
+        ),
+        context.scene.collection,
+    )
+    for mesh_object in missing:
+        target_collection.objects.link(mesh_object)
+    context.view_layer.update()
+    return len(missing)
+
+
 def _used_materials(mesh_object):
     mesh = mesh_object.data
     used_indices = sorted({polygon.material_index for polygon in mesh.polygons})
@@ -734,12 +772,18 @@ class SPX_OT_JoinMMDMeshes(Operator):
         Model = model_module.Model
         context.view_layer.objects.active = root
 
+        from .physics_preview import runtime as preview_runtime
+
+        if preview_runtime.is_running(root):
+            preview_runtime.stop_preview(root=root, restore=True)
+
         # Use the official cleanup before reading the real material list. The
         # delegated Join operator repeats these idempotent calls and retains all
         # other upstream behavior, including ShapeKey and Material Morph repair.
         bpy.ops.mmd_tools.clear_temp_materials()
         bpy.ops.mmd_tools.clear_uv_morph_view()
         meshes = sorted(Model(root).meshes(), key=lambda obj: obj.name)
+        _link_model_meshes_to_view_layer(context, root, meshes)
         if meshes:
             _preload_mesh_material_order(
                 meshes[0],
