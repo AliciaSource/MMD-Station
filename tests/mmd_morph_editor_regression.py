@@ -1323,7 +1323,10 @@ group_slider = model.morph_slider.get("GroupHide")
 assert group_slider is None or abs(group_slider.value) < 1.0e-6
 assert abs(model.morph_slider.get("Smile").value) < 1.0e-6
 for mesh_object in (mesh_a, mesh_b, custom_mesh, hidden_mesh):
-    assert abs(mesh_object.data.shape_keys.key_blocks["Smile"].value - 0.875) < 1.0e-6
+    smile = mesh_object.data.shape_keys.key_blocks["Smile"]
+    assert abs(smile.value - 0.875) < 1.0e-6
+    assert abs(smile.slider_min) < 1.0e-6
+    assert abs(smile.slider_max - 1.0) < 1.0e-6
 assert abs(model.morph_slider.get("BoneMove").value - 2.7) < 1.0e-6
 assert model.morph_slider.get("BoneMove").slider_max >= 2.7
 assert not any(
@@ -1351,12 +1354,14 @@ states["Smile"].value = -2.5
 for mesh_object in (mesh_a, mesh_b, custom_mesh, hidden_mesh):
     smile = mesh_object.data.shape_keys.key_blocks["Smile"]
     assert abs(smile.value + 2.5) < 1.0e-6
-    assert smile.slider_min <= -3.0
+    assert abs(smile.slider_min + 2.5) < 1.0e-6
+    assert abs(smile.slider_max - 1.0) < 1.0e-6
 states["Smile"].value = 3.25
 for mesh_object in (mesh_a, mesh_b, custom_mesh, hidden_mesh):
     smile = mesh_object.data.shape_keys.key_blocks["Smile"]
     assert abs(smile.value - 3.25) < 1.0e-6
-    assert smile.slider_max >= 4.0
+    assert abs(smile.slider_min + 2.5) < 1.0e-6
+    assert abs(smile.slider_max - 3.25) < 1.0e-6
 states["Smile"].value = 0.0
 
 # A negative ADD weight reverses the RGB contribution instead of being clamped

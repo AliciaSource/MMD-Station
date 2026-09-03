@@ -1,5 +1,11 @@
 # Development Log
 
+## 2026-09-03 - V1.0.1-dev Morph ShapeKey 范围按需扩展
+
+- Morph Runtime 建立前保存模型内各 ShapeKey 的现有 `slider_min` / `slider_max`，并在 `mmd_tools` 完成轻量绑定后原值恢复，避免其 `bind()` 将所有匹配 Vertex Morph 的 ShapeKey 统一永久改成 `-10～10`。既有自定义范围同样保留，不强制覆盖成默认值。
+- Morph 面板继续使用 `0～1` 软范围，点击数值仍可输入任意有符号值；只有实际计算值越过某个相关 ShapeKey 当前边界时才把该边界精确扩展到输入/展开后的值，且累计保留另一侧历史边界，例如 `0～1 → -2.5～1 → -2.5～3.25`。未涉及的 ShapeKey 不变，不触及 Morph 权重计算、MMD I/O、材质、物理或 IK。
+- `tests/mmd_morph_editor_regression.py` 增加 Runtime 初始化后仍保持 `0～1`、负向与正向精确累计扩展的断言，Blender 4.4.3 输出 `MMD_MORPH_EDITOR_REGRESSION_OK`；完整 `tests/headless_smoke.py` 输出 `MMD_STATION_SMOKE_OK`，`compileall` 与 `git diff --check` 通过。开发 Junction 已生效；未制作 ZIP、未 tag、未 push。
+
 ## 2026-08-31 - V1.0.1-dev 动作跳帧物理爆炸与穿模修复
 
 - 用真实 `New Folder/00.blend` 导入 `TOMBOY.vmd`，执行“更新刚体 / Joint 到当前姿态”后建立跳帧播放探针。严格逐帧时 MMD DLL 的动态刚体单步位移峰值为 `3.6921`、Joint 两端分离峰值为 `3.2726`；模拟 GUI 每次跳 2 帧后分别放大到 `17.1097` 与 `13.8382`。同条件 PMX DLL 未爆炸但直接传送骨骼追踪刚体，缺少中间碰撞姿态，符合用户观察到的穿模。

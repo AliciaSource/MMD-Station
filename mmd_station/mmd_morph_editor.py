@@ -451,6 +451,32 @@ def _remove_invalid_drivers(id_data):
             animation_data.drivers.remove(curve)
 
 
+def _snapshot_shape_key_slider_ranges(root):
+    FnModel, _Model = _mmd_api()
+    ranges = []
+    for mesh_object in FnModel.iterate_mesh_objects(root):
+        shape_keys = getattr(mesh_object.data, "shape_keys", None)
+        for key_block in getattr(shape_keys, "key_blocks", ()):
+            ranges.append(
+                (
+                    mesh_object,
+                    key_block.name,
+                    float(key_block.slider_min),
+                    float(key_block.slider_max),
+                )
+            )
+    return ranges
+
+
+def _restore_shape_key_slider_ranges(ranges):
+    for mesh_object, key_name, slider_min, slider_max in ranges:
+        shape_keys = getattr(getattr(mesh_object, "data", None), "shape_keys", None)
+        key_block = shape_keys.key_blocks.get(key_name) if shape_keys else None
+        if key_block is not None:
+            key_block.slider_min = slider_min
+            key_block.slider_max = slider_max
+
+
 def _ensure_lightweight_bind(root, required_morph=None, force_rebind=False):
     _FnModel, Model = _mmd_api()
     slider = Model(root).morph_slider
@@ -485,10 +511,12 @@ def _ensure_lightweight_bind(root, required_morph=None, force_rebind=False):
 
     shader_module._MaterialMorph.setup_morph_nodes = classmethod(skip_material_nodes)
     root[VERTEX_BINDINGS_CLEAN_PROPERTY] = False
+    shape_key_slider_ranges = _snapshot_shape_key_slider_ranges(root)
     try:
         slider.bind()
     finally:
         shader_module._MaterialMorph.setup_morph_nodes = descriptor
+        _restore_shape_key_slider_ranges(shape_key_slider_ranges)
     if force_rebind:
         dummy_armature = slider.dummy_armature
         if dummy_armature is not None:
@@ -552,9 +580,9 @@ def _apply_vertex_values(root, weights, morph_lookup, state_uids=None):
             ):
                 continue
             if value < key_block.slider_min:
-                key_block.slider_min = math.floor(value)
+                key_block.slider_min = value
             if value > key_block.slider_max:
-                key_block.slider_max = math.ceil(value)
+                key_block.slider_max = value
             if abs(key_block.value - value) > 1.0e-8:
                 key_block.value = value
 

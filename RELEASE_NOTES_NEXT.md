@@ -4,6 +4,9 @@
 
 ### Fixed
 
+- Preserved each ShapeKey's existing slider range during Morph runtime setup,
+  expanding only affected keys to the exact out-of-range value entered in the
+  Morph editor.
 - Fixed the Morph AI settings dialog by consolidating its fields into the
   add-on's single updater-backed Preferences host.
 - Fixed physics-bake initialization so scene evaluation, solver startup, and
