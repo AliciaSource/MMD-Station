@@ -1,5 +1,11 @@
 # Development Log
 
+## 2026-09-03 - V1.0.1-dev 移植 mmd_tools 合并网格并保持 PMX 材质顺序
+
+- 在材质工具行加入“合并”按钮；该入口只要求 MMD 查看器选择一个 MMD 模型，不增加活动 Mesh、选中数量、材质数量等额外拦截。`sort_shape_keys` 继续暴露为 Operator 重做属性，实际合并仍委托官方 `mmd_tools.join_meshes`，保留其 ShapeKey 排序、Material Morph 关联刷新和无用 Mesh 数据清理。
+- 材质顺序在合并发生前处理：先调用官方 `clear_temp_materials` / `clear_uv_morph_view` 清除材质与 UV Morph 预览临时数据，再把官方将选作合并目标的首个 Mesh 材质槽预置为 MMD Station 保存的 PMX 顺序，同时同步原面片材质索引；随后让原版 Join 完成唯一一次网格合并。合并后不再重排材质槽，避免二次改写 `polygon.material_index`。
+- `tests/mmd_material_order_regression.py` 新增真实 Operator 回归，构造与 Mesh 名称顺序不同的 `B, A, C` PMX 材质顺序和 `_temp_material_morphs` 预览材质，断言合并后只剩一个 Mesh、材质槽为 `B, A, C`、三种面材质映射完整且临时材质已由 mmd_tools 清除；同时覆盖新按钮布局。Blender 4.4.3 输出 `MMD_MATERIAL_ORDER_REGRESSION_OK`，完整 `tests/headless_smoke.py` 输出 `MMD_STATION_SMOKE_OK`；`tests/test_i18n_catalog.py` 为 `5 passed`，`compileall` 与 `git diff --check` 通过。开发 Junction 已生效；未制作 ZIP、未 tag、未 push。
+
 ## 2026-09-03 - V1.0.1-dev 按材质拆分解除 MMD Root 与多实用材质限制
 
 - 修正对 `mmd_tools` 原版功能的过度限制：“按材质拆分（保留法向）”现在只要求活动对象是 Mesh，不再要求 MMD 查看器已选择模型、活动 Mesh 属于该模型，也不再预判至少有两个被面实际使用的材质。普通 Mesh 直接进入 `mmd_tools` 同款拆分路径；若来自 P 分离且仅一种材质被面引用、材质槽仍残留多项，该路径会继续清除未使用槽而不是提前取消。

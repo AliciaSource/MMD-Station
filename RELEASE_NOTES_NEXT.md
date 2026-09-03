@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Added
+
+- Added an MMD mesh-join control that delegates to mmd_tools, retains its
+  temporary material and UV Morph preview cleanup, and preloads the destination
+  Mesh in the stored PMX material order before Blender performs the join.
+
 ### Fixed
 
 - Made material separation work on ordinary Mesh objects without an MMD model,

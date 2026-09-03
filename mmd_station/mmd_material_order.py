@@ -5,7 +5,7 @@ import uuid
 
 import bpy
 import numpy as np
-from bpy.props import EnumProperty
+from bpy.props import BoolProperty, EnumProperty
 from bpy.types import Operator
 
 
@@ -104,6 +104,44 @@ def set_material_order(root, materials):
         ensure_ascii=True,
         separators=(",", ":"),
     )
+
+
+def _preload_mesh_material_order(mesh_object, materials):
+    slots = mesh_object.data.materials
+    old_materials = list(slots)
+    old_polygon_indices = [polygon.material_index for polygon in mesh_object.data.polygons]
+    unused_old_indices = set(range(len(old_materials)))
+    ordered_slots = []
+
+    for material in materials:
+        old_index = next(
+            (
+                index
+                for index in unused_old_indices
+                if old_materials[index] is material
+            ),
+            None,
+        )
+        if old_index is not None:
+            unused_old_indices.remove(old_index)
+        ordered_slots.append((material, old_index))
+
+    ordered_slots.extend(
+        (material, index)
+        for index, material in enumerate(old_materials)
+        if index in unused_old_indices
+    )
+    old_to_new = {
+        old_index: new_index
+        for new_index, (_material, old_index) in enumerate(ordered_slots)
+        if old_index is not None
+    }
+
+    slots.clear()
+    for material, _old_index in ordered_slots:
+        slots.append(material)
+    for polygon, old_index in zip(mesh_object.data.polygons, old_polygon_indices):
+        polygon.material_index = old_to_new.get(old_index, 0)
 
 
 def _used_materials(mesh_object):
@@ -666,6 +704,58 @@ class SPX_OT_SeparateActiveMeshByMaterials(Operator):
         return {"FINISHED"}
 
 
+class SPX_OT_JoinMMDMeshes(Operator):
+    bl_idname = "surface_proxy.join_mmd_meshes"
+    bl_label = "合并模型网格"
+    bl_description = "使用 mmd_tools 合并所选 MMD 模型的全部 Mesh，并保持 PMX 材质顺序"
+    bl_options = {"REGISTER", "UNDO"}
+
+    sort_shape_keys: BoolProperty(
+        name="排列 ShapeKey",
+        description="按 Vertex Morph 顺序排列 ShapeKey",
+        default=True,
+    )
+
+    def execute(self, context):
+        settings = context.scene.surface_proxy_creator
+        root = settings.mmd_root
+        if root is None:
+            report(self, {"ERROR"}, "请先选择 MMD 模型")
+            return {"CANCELLED"}
+        try:
+            model_module = importlib.import_module(
+                "bl_ext.blender_org.mmd_tools.core.model"
+            )
+        except ImportError:
+            report(self, {"ERROR"}, "需要先启用官方 mmd_tools 插件")
+            return {"CANCELLED"}
+
+        FnModel = model_module.FnModel
+        Model = model_module.Model
+        context.view_layer.objects.active = root
+
+        # Use the official cleanup before reading the real material list. The
+        # delegated Join operator repeats these idempotent calls and retains all
+        # other upstream behavior, including ShapeKey and Material Morph repair.
+        bpy.ops.mmd_tools.clear_temp_materials()
+        bpy.ops.mmd_tools.clear_uv_morph_view()
+        meshes = sorted(Model(root).meshes(), key=lambda obj: obj.name)
+        if meshes:
+            _preload_mesh_material_order(
+                meshes[0],
+                ordered_materials(root, FnModel),
+            )
+
+        result = bpy.ops.mmd_tools.join_meshes(
+            sort_shape_keys=self.sort_shape_keys,
+        )
+        if result != {"FINISHED"}:
+            return result
+        bpy.ops.surface_proxy.refresh_mmd_browser()
+        report(self, {"INFO"}, "已合并 MMD 模型网格，材质槽保持 PMX 顺序")
+        return {"FINISHED"}
+
+
 def draw_name_sync(layout, settings):
     row = layout.row(align=True)
     thirds = row.split(factor=1.0 / 3.0, align=True)
@@ -680,6 +770,11 @@ def draw_name_sync(layout, settings):
         SPX_OT_SeparateActiveMeshByMaterials.bl_idname,
         text="按材质拆分（保留法向）",
         icon="MOD_EXPLODE",
+    )
+    split_controls.operator(
+        SPX_OT_JoinMMDMeshes.bl_idname,
+        text="合并",
+        icon="MESH_CUBE",
     )
     split_controls.prop(
         settings,
@@ -726,4 +821,5 @@ CLASSES = (
     SPX_OT_TranslateSelectedMaterialNamesWithAI,
     SPX_OT_CalibrateMaterialOrder,
     SPX_OT_SeparateActiveMeshByMaterials,
+    SPX_OT_JoinMMDMeshes,
 )

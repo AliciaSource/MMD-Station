@@ -17,6 +17,7 @@ from mmd_station.mmd_material_order import (
     draw_name_sync,
     material_identity,
     ordered_materials,
+    set_material_order,
 )
 from mmd_station.mmd_physics import (
     SPX_UL_MMDItems,
@@ -204,7 +205,10 @@ assert split_controls.node_type == "row"
 assert split_controls.children[0].kwargs["operator_id"] == (
     "surface_proxy.separate_active_mesh_by_materials"
 )
-auto_sync = split_controls.children[1]
+assert split_controls.children[1].kwargs["operator_id"] == (
+    "surface_proxy.join_mmd_meshes"
+)
+auto_sync = split_controls.children[2]
 assert auto_sync.kwargs["property_name"] == "material_order_auto_sync"
 assert auto_sync.kwargs["text"] == ""
 threshold_control = remaining_thirds.children[1]
@@ -562,5 +566,54 @@ with tempfile.TemporaryDirectory(prefix="mmd-material-order-") as directory:
         material.mmd_material.name_j
         for material in ordered_materials(imported_root)
     ] == ["PMX_B", "PMX_C", "PMX_A"]
+
+# MMD Station preloads the upstream-selected active Mesh in stored PMX order,
+# then delegates the complete operation to mmd_tools. This also retains the
+# upstream cleanup of temporary material-preview slots.
+join_model = Model.create("JoinRegression", add_root_bone=True)
+join_root = join_model.rootObject()
+join_armature = join_model.armature()
+join_material_a = make_material("Join_A", "Join_A", "Join_A")
+join_material_b = make_material("Join_B", "Join_B", "Join_B")
+join_material_c = make_material("Join_C", "Join_C", "Join_C")
+join_temp_material = make_material(
+    "Join_A_temp_material_morphs",
+    "Join_A_temp_material_morphs",
+    "Join_A_temp_material_morphs",
+)
+join_mesh_a = make_mesh(
+    "A_JoinMesh",
+    join_armature,
+    ((join_temp_material, 0.0), (join_material_c, 10.0)),
+)
+join_mesh_a.data.materials.append(join_material_a)
+join_mesh_z = make_mesh(
+    "Z_JoinMesh",
+    join_armature,
+    ((join_material_b, 20.0),),
+)
+set_material_order(
+    join_root,
+    (join_material_b, join_material_a, join_material_c),
+)
+settings.mmd_root = join_root
+bpy.ops.object.select_all(action="DESELECT")
+join_root.hide_set(False)
+join_root.select_set(True)
+bpy.context.view_layer.objects.active = join_root
+assert bpy.ops.surface_proxy.join_mmd_meshes(sort_shape_keys=True) == {"FINISHED"}
+joined_meshes = list(FnModel.iterate_mesh_objects(join_root))
+assert len(joined_meshes) == 1
+joined_mesh = joined_meshes[0]
+assert list(joined_mesh.data.materials)[:3] == [
+    join_material_b,
+    join_material_a,
+    join_material_c,
+]
+assert all("_temp" not in material.name for material in joined_mesh.data.materials)
+assert {
+    joined_mesh.data.materials[polygon.material_index]
+    for polygon in joined_mesh.data.polygons
+} == {join_material_a, join_material_b, join_material_c}
 
 print("MMD_MATERIAL_ORDER_REGRESSION_OK")

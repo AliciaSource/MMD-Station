@@ -1,6 +1,12 @@
 """Generated English catalog for the existing Chinese MMD Station msgids."""
 
 ENGLISH = {
+    '合并': 'Join',
+    '合并模型网格': 'Join Model Meshes',
+    '使用 mmd_tools 合并所选 MMD 模型的全部 Mesh，并保持 PMX 材质顺序': 'Use mmd_tools to join all Meshes of the selected MMD model while preserving PMX material order',
+    '排列 ShapeKey': 'Sort Shape Keys',
+    '按 Vertex Morph 顺序排列 ShapeKey': 'Sort Shape Keys in Vertex Morph order',
+    '已合并 MMD 模型网格，材质槽保持 PMX 顺序': 'Joined the MMD model meshes while preserving PMX material-slot order',
     '恢复所选到安全姿态': 'Restore Selected to Safe Pose',
     '应用修复并衔接': 'Apply Repair and Blend',
     '物理修复范围不能跨越两个独立烘焙状态': 'A physics repair range cannot cross two independent bake states',
