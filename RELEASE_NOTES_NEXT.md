@@ -6,7 +6,9 @@
 
 - Added an MMD mesh-join control that delegates to mmd_tools, retains its
   temporary material and UV Morph preview cleanup, and preloads the destination
-  Mesh in the stored PMX material order before Blender performs the join.
+  Mesh in the stored PMX material order before Blender performs the join. The
+  four material controls now use equal-width quarters, with automatic sync
+  fixed beside material-ID calibration inside the first quarter.
 
 ### Fixed
 

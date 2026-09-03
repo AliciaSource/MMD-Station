@@ -1,5 +1,10 @@
 # Development Log
 
+## 2026-09-03 - V1.0.1-dev 材质工具四等分布局
+
+- 把同一行的“校对材质 ID 与物体编号”“按材质拆分（保留法向）”“合并”“形态键清理阈值”改为严格四等分；自动同步图标固定紧跟校对按钮，两者合计占第一组 `1/4`，不再夹在拆分与合并之间。
+- 更新 `tests/mmd_material_order_regression.py` 的布局树契约，逐层断言 `1/4 → 剩余区域 1/3 → 剩余区域 1/2` 的四等分结构，并确认同步属性位于校对按钮右侧。Blender 4.4.3 focused regression 输出 `MMD_MATERIAL_ORDER_REGRESSION_OK`；`tests/test_i18n_catalog.py` 为 `5 passed`，`compileall` 与 `git diff --check` 通过。开发 Junction 已生效；未制作 ZIP、未 tag、未 push。
+
 ## 2026-09-03 - V1.0.1-dev 移植 mmd_tools 合并网格并保持 PMX 材质顺序
 
 - 在材质工具行加入“合并”按钮；该入口只要求 MMD 查看器选择一个 MMD 模型，不增加活动 Mesh、选中数量、材质数量等额外拦截。`sort_shape_keys` 继续暴露为 Operator 重做属性，实际合并仍委托官方 `mmd_tools.join_meshes`，保留其 ShapeKey 排序、Material Morph 关联刷新和无用 Mesh 数据清理。

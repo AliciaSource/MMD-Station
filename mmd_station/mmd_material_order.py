@@ -758,32 +758,33 @@ class SPX_OT_JoinMMDMeshes(Operator):
 
 def draw_name_sync(layout, settings):
     row = layout.row(align=True)
-    thirds = row.split(factor=1.0 / 3.0, align=True)
-    thirds.operator(
+    quarters = row.split(factor=0.25, align=True)
+    calibrate_controls = quarters.row(align=True)
+    calibrate_controls.operator(
         SPX_OT_CalibrateMaterialOrder.bl_idname,
         text="校对材质 ID 与物体编号",
         icon="CHECKMARK",
     )
-    remaining = thirds.split(factor=0.5, align=True)
-    split_controls = remaining.row(align=True)
-    split_controls.operator(
-        SPX_OT_SeparateActiveMeshByMaterials.bl_idname,
-        text="按材质拆分（保留法向）",
-        icon="MOD_EXPLODE",
-    )
-    split_controls.operator(
-        SPX_OT_JoinMMDMeshes.bl_idname,
-        text="合并",
-        icon="MESH_CUBE",
-    )
-    split_controls.prop(
+    calibrate_controls.prop(
         settings,
         "material_order_auto_sync",
         text="",
         toggle=True,
         icon="FILE_REFRESH",
     )
-    remaining.prop(
+    remaining_three = quarters.split(factor=1.0 / 3.0, align=True)
+    remaining_three.operator(
+        SPX_OT_SeparateActiveMeshByMaterials.bl_idname,
+        text="按材质拆分（保留法向）",
+        icon="MOD_EXPLODE",
+    )
+    remaining_two = remaining_three.split(factor=0.5, align=True)
+    remaining_two.operator(
+        SPX_OT_JoinMMDMeshes.bl_idname,
+        text="合并",
+        icon="MESH_CUBE",
+    )
+    remaining_two.prop(
         settings,
         "material_split_shapekey_cleanup_threshold",
         text="形态键清理阈值",

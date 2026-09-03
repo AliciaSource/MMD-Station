@@ -194,24 +194,30 @@ settings.mmd_root = root
 controls_probe = MaterialControlsLayoutProbe()
 draw_name_sync(controls_probe, settings)
 controls_row = controls_probe.children[0]
-first_third = controls_row.children[0]
-assert first_third.node_type == "split"
-assert abs(first_third.kwargs["factor"] - (1.0 / 3.0)) < 1e-9
-remaining_thirds = first_third.children[1]
-assert remaining_thirds.node_type == "split"
-assert remaining_thirds.kwargs["factor"] == 0.5
-split_controls = remaining_thirds.children[0]
-assert split_controls.node_type == "row"
-assert split_controls.children[0].kwargs["operator_id"] == (
-    "surface_proxy.separate_active_mesh_by_materials"
+quarters = controls_row.children[0]
+assert quarters.node_type == "split"
+assert quarters.kwargs["factor"] == 0.25
+calibrate_controls = quarters.children[0]
+assert calibrate_controls.node_type == "row"
+assert calibrate_controls.children[0].kwargs["operator_id"] == (
+    "surface_proxy.calibrate_material_order"
 )
-assert split_controls.children[1].kwargs["operator_id"] == (
-    "surface_proxy.join_mmd_meshes"
-)
-auto_sync = split_controls.children[2]
+auto_sync = calibrate_controls.children[1]
 assert auto_sync.kwargs["property_name"] == "material_order_auto_sync"
 assert auto_sync.kwargs["text"] == ""
-threshold_control = remaining_thirds.children[1]
+remaining_three = quarters.children[1]
+assert remaining_three.node_type == "split"
+assert abs(remaining_three.kwargs["factor"] - (1.0 / 3.0)) < 1e-9
+assert remaining_three.children[0].kwargs["operator_id"] == (
+    "surface_proxy.separate_active_mesh_by_materials"
+)
+remaining_two = remaining_three.children[1]
+assert remaining_two.node_type == "split"
+assert remaining_two.kwargs["factor"] == 0.5
+assert remaining_two.children[0].kwargs["operator_id"] == (
+    "surface_proxy.join_mmd_meshes"
+)
+threshold_control = remaining_two.children[1]
 assert threshold_control.kwargs["property_name"] == (
     "material_split_shapekey_cleanup_threshold"
 )
