@@ -1,5 +1,11 @@
 # Development Log
 
+## 2026-09-07 - v1.0.1 真实 Blender 正式版安装
+
+- 用户要求本地 Blender 使用正式版而非 dev：移除真实 Blender 4.4 addons/mmd_station 的 Junction，仅删除链接本身，随后安装已发布的 mmd_station-1.0.1.zip；仓库源码与既存 ABI5 改动保持不变。
+- ZIP SHA256 与已发布 asset digest 一致，安装文件逐字节匹配 ZIP；真实用户环境 headless 验证加载路径为独立 addons 安装目录、v1.0.1/PRERELEASE=None、插件已启用、面板注册及 MMD/PMX ABI6 加载成功，输出 MMD_STATION_STABLE_INSTALL_OK。
+- 未关闭用户正在运行的 Blender、未修改其它插件或保存偏好；当前 GUI 进程须保存工程后重启才能加载正式版。仓库仍保留 v1.0.2-dev，但已不桥接到 Blender；未 push、未重发 Release。
+
 ## 2026-09-07 - v1.0.2-dev 发布完成并重启开发桥接
 
 - AliciaSource 已发布正式 v1.0.1，main/tag 指向 fab2d7b；Release 非 draft、非 prerelease，安装资产 mmd_station-1.0.1.zip，SHA256 cea7127b45512e4a791ba9e70ebf4d81585f3dd251bc0b3dbf56336343d34ce2，与 GitHub asset digest 一致。
