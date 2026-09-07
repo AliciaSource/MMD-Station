@@ -52,6 +52,7 @@ def maybe_check(prefs):
         days=prefs.updater_interval_days,
         hours=prefs.updater_interval_hours,
         minutes=prefs.updater_interval_minutes)
+    addon_updater_ops.snapshot_update_preferences()
     updater.check_for_update_async(addon_updater_ops.ui_refresh)
     _ran_notify_check = True
 

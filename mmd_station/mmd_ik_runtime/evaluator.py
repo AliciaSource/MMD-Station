@@ -1,3 +1,4 @@
+from ..execution_guard import scene_access_allowed
 from dataclasses import dataclass, field
 from pathlib import Path
 import tempfile
@@ -1105,6 +1106,8 @@ def resume_live(root):
 
 @persistent
 def _frame_change_pre(scene, _depsgraph=None):
+    if not scene_access_allowed():
+        return
     stale = []
     for root_name, session in tuple(_SESSIONS.items()):
         root = bpy.data.objects.get(root_name)
@@ -1127,6 +1130,8 @@ def _frame_change_pre(scene, _depsgraph=None):
 
 @persistent
 def _frame_change_post(scene, _depsgraph=None):
+    if not scene_access_allowed():
+        return
     for root_name, session in tuple(_SESSIONS.items()):
         if not session.live or session.updating or session.suspended:
             continue
@@ -1140,6 +1145,8 @@ def _frame_change_post(scene, _depsgraph=None):
 
 @persistent
 def _depsgraph_update_post(scene, _depsgraph=None):
+    if not scene_access_allowed():
+        return
     stale = []
     for root_name, session in tuple(_SESSIONS.items()):
         if not session.live or session.updating or session.suspended:

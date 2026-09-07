@@ -1,3 +1,4 @@
+from .execution_guard import scene_access_allowed
 from .i18n import iface, report
 import importlib
 import math
@@ -2221,6 +2222,8 @@ def _refresh_mmd_browser_from_changes():
 
 
 def _run_mmd_browser_auto_refresh():
+    if not scene_access_allowed():
+        return 0.1
     now = time.monotonic()
     if now < _BROWSER_AUTO_REFRESH_DEADLINE:
         return max(_BROWSER_AUTO_REFRESH_DEADLINE - now, 0.01)
@@ -2273,6 +2276,8 @@ def _depsgraph_update_affects_mmd_root(update, root):
 
 @persistent
 def _mmd_browser_depsgraph_update(scene, depsgraph):
+    if not scene_access_allowed():
+        return
     global _BROWSER_AUTO_REFRESH_DIRTY
     if _BROWSER_AUTO_REFRESH_IN_PROGRESS or scene is not getattr(
         bpy.context, "scene", None

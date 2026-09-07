@@ -1,3 +1,4 @@
+from ..execution_guard import scene_access_allowed
 import bpy
 from bpy.app.handlers import persistent
 
@@ -47,6 +48,8 @@ def _save_post_fail(_filepath):
 
 
 def _rebuild_timer():
+    if not scene_access_allowed():
+        return 0.1
     global _REBUILD_TIMER_PENDING
     _REBUILD_TIMER_PENDING = False
     try:
@@ -65,6 +68,8 @@ def schedule_rebuild():
 
 
 def _resume_undo_redo_timer():
+    if not scene_access_allowed():
+        return 0.1
     global _UNDO_REDO_RESUME_PENDING
     _UNDO_REDO_RESUME_PENDING = False
     from ..physics_preview import runtime as preview_runtime

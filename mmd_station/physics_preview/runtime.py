@@ -1,3 +1,4 @@
+from ..execution_guard import scene_access_allowed
 import concurrent.futures
 import ctypes
 import math
@@ -1588,15 +1589,17 @@ class PreviewWorld:
         self.pending_step_seconds = None
         self.generation += 1
 
-    def step(self):
-        settings = self.sessions[0].settings
+    def step(self, substeps=None):
+        # Parallel workers receive only the already-sampled primitive value.
+        if substeps is None:
+            substeps = self.sessions[0].settings.preview_substeps
         step_seconds = self.pending_step_seconds
         self.pending_step_seconds = None
         if step_seconds is None:
             step_seconds = 1.0 / 60.0
         if step_seconds <= 0.0:
             return False
-        self.solver.step(step_seconds, settings.preview_substeps)
+        self.solver.step(step_seconds, substeps)
         return True
 
     def sample_time(self, wall_seconds):
@@ -1786,6 +1789,8 @@ def _ensure_preview_model_ids_after_load(_dummy):
 
 @persistent
 def _ensure_preview_model_ids_after_update(scene, _depsgraph):
+    if not scene_access_allowed():
+        return
     if is_running():
         if _VIEW_LAYER_UPDATE_DEPTH:
             return
@@ -1815,6 +1820,8 @@ def _ensure_preview_model_ids_after_update(scene, _depsgraph):
 
 
 def _ensure_preview_model_ids_deferred():
+    if not scene_access_allowed():
+        return 0.1
     try:
         scenes = tuple(bpy.data.scenes)
     except AttributeError:
@@ -1982,7 +1989,19 @@ def reset_all_previews():
     return tuple(_ACTIVE_SESSIONS.values())
 
 
+_JOB_PAUSED = False
+
+
 def _timer_tick(_wall_seconds=None):
+    global _JOB_PAUSED
+    if not scene_access_allowed():
+        _JOB_PAUSED = True
+        return 0.1
+    if _JOB_PAUSED:
+        _JOB_PAUSED = False
+        _TIMER_DEADLINE.reset()
+        for world in _ACTIVE_WORLDS.values():
+            world.time_driver.reset()
     if not _ACTIVE_SESSIONS:
         _TIMER_DEADLINE.reset()
         return None
@@ -2076,7 +2095,9 @@ def _timer_tick_parallel(sessions, wall_seconds):
             return min(intervals.values())
     worlds = tuple(dict.fromkeys(session.world for session in prepared))
     futures = {
-        _step_executor().submit(world.step): world
+        _step_executor().submit(
+            world.step, int(world.sessions[0].settings.preview_substeps)
+        ): world
         for world in worlds
     }
     stepped_worlds = []

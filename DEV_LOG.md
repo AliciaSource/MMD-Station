@@ -1,5 +1,14 @@
 # Development Log
 
+## 2026-09-07 - v1.0.2-dev 原生烘焙隔离与 DLL 按需加载
+
+- 取消 register 阶段的双后端 DLL preload/预热；仅在实际启动对应 MMD/PMX 求解时加载该后端，普通插件启用和 mmd_tools 原生刚体烘焙均不加载自带求解 DLL。未改任何 DLL 或 ABI；既存未提交 ABI5 改动保持原样。
+- 新增 execution_guard：先检查 Python 主线程，再读取 WindowManager.is_interface_locked。原生后台烘焙锁定期间，物理预览、IK frame/depsgraph 回调、代理同步、Morph 迁移/刷新/UV 预览、模型 ID 初始化等避免访问或写回场景；预览保留 session，恢复时重置时间采样基准而非把烘焙耗时补进模拟。自身 modal bake 在外部锁定期间暂停，骨骼 Action 与网格 Point Cache 仍分开、顺序执行。
+- Morph frame handler 只使用已准备的绑定/材质桥，首次结构初始化排到安全 timer；Shadow 缓存遇到不安全回调只作 Python 缓存失效。更新检查回调经队列回到主线程，pre-release 偏好预先采样为 bool；多模型求解线程同样只接收主线程采样的 substeps，不读取 RNA。
+- 新增 native_bake_isolation_blender.py：同一 MMD 模型、带 Armature modifier 和完整顶点权重的 Cloth/Soft Body 网格，覆盖 MMD/PMX 两后端、实时预览开启与骨骼烘焙后再烘焙网格两种顺序。8 组 headless 与 8 组真实 GUI INVOKE_DEFAULT 后台烘焙通过；GUI 每组 preview 均观察到 2-4 次 locked timer，锁定时零 preview tick，之后恢复；断言 cache.is_baked、Action 曲线不变、Modifier 不变、停止预览不清除网格缓存。另用 mmd_tools.ptcache_rigid_body_bake 真实 GUI 入口验证原生刚体缓存通过且 DLL 加载列表为空。
+- 21 项离线回归通过；真实 Blender 4.4.3 的 headless_smoke、mmd_morph_editor_regression、physics_bake_regression、updater_blender_smoke、i18n_blender_smoke 均通过。测试最初的 factory-startup Morph 用例依赖中文 locale，随后在真实用户偏好进程重跑通过，未保存偏好或关闭用户窗口。临时 JSON/场景与本轮 sidecar 已清理。
+- 真实 Blender 4.4 安装改为 v1.0.2-dev Junction，原 v1.0.1 独立安装已由 dev_link 备份。源码测试不等于覆盖所有第三方自定义烘焙或原反馈工程；未自动发布、未 tag、未 push、未打新 ZIP。用户保存工程并重启 Blender 后加载本次修复。
+
 ## 2026-09-07 - v1.0.1 真实 Blender 正式版安装
 
 - 用户要求本地 Blender 使用正式版而非 dev：移除真实 Blender 4.4 addons/mmd_station 的 Junction，仅删除链接本身，随后安装已发布的 mmd_station-1.0.1.zip；仓库源码与既存 ABI5 改动保持不变。

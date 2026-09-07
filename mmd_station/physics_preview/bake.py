@@ -1147,6 +1147,10 @@ class SPX_OT_BakeMMDPhysics(Operator):
     bl_label = "烘焙 MMD 物理"
     bl_options = {"REGISTER"}
 
+    @classmethod
+    def poll(cls, _context):
+        return runtime.scene_access_allowed()
+
     mode: EnumProperty(
         items=(
             ("FAST", "快速烘焙", "在临时复制体上求解，本体保持原姿势且不播放时间轴"),
@@ -1188,6 +1192,8 @@ class SPX_OT_BakeMMDPhysics(Operator):
 
     def modal(self, context, event):
         global _ACTIVE_JOB
+        if not runtime.scene_access_allowed():
+            return {"PASS_THROUGH"}
         job = _ACTIVE_JOB
         if job is None:
             return {"CANCELLED"}

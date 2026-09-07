@@ -1,3 +1,4 @@
+from .execution_guard import scene_access_allowed
 from .i18n import iface, report
 import importlib
 import json
@@ -57,12 +58,30 @@ GROUP_FACTOR_PROXY_PROPERTY = "spx_morph_factor_live"
 
 _MUTATING = False
 _EVALUATING = False
+_STRUCTURE_ALLOWED = True
+_PENDING_RUNTIME_ROOTS = set()
 _PENDING_STATE_REFRESHES = set()
 _ORIGINAL_IMPORT_VMD_EXECUTE = None
 _IMPORT_VMD_CLASS = None
 _ORIGINAL_EXPORT_VMD_EXECUTE = None
 _EXPORT_VMD_CLASS = None
 _DETAIL_SELECTION_REGISTRATIONS = ()
+
+
+class _DeferredMorphSetup(Exception):
+    """Retry structural setup from an idle main-thread timer, not a frame handler."""
+
+
+def _prepare_pending_morphs():
+    if not scene_access_allowed():
+        return 0.1
+    names = tuple(_PENDING_RUNTIME_ROOTS)
+    _PENDING_RUNTIME_ROOTS.clear()
+    for name in names:
+        root = bpy.data.objects.get(name)
+        if root is not None:
+            evaluate_morph_root(root)
+    return 0.1
 
 
 def _draw_morph_ai_settings(layout, settings):
@@ -258,6 +277,8 @@ def _schedule_morph_state_refresh(root):
     _PENDING_STATE_REFRESHES.add(key)
 
     def refresh():
+        if not scene_access_allowed():
+            return 0.1
         try:
             if root.name in bpy.data.objects and hasattr(root, "spx_morph_states"):
                 if _morph_state_structure_is_current(root):
@@ -361,6 +382,8 @@ def _bound_placeholder(root):
 def _remove_official_material_bindings(root):
     if bool(root.get(MATERIAL_BINDINGS_CLEAN_PROPERTY, False)):
         return
+    if not _STRUCTURE_ALLOWED:
+        raise _DeferredMorphSetup()
     try:
         _FnModel, Model = _mmd_api()
         shader_module = importlib.import_module(
@@ -408,6 +431,8 @@ def _shape_key_driver_uses_object(key_block, target_object):
 def _remove_official_vertex_bindings(root):
     if bool(root.get(VERTEX_BINDINGS_CLEAN_PROPERTY, False)):
         return
+    if not _STRUCTURE_ALLOWED:
+        raise _DeferredMorphSetup()
     placeholder = _bound_placeholder(root)
     if placeholder is None:
         root[VERTEX_BINDINGS_CLEAN_PROPERTY] = True
@@ -489,6 +514,8 @@ def _ensure_lightweight_bind(root, required_morph=None, force_rebind=False):
     ):
         _remove_official_vertex_bindings(root)
         return
+    if not _STRUCTURE_ALLOWED:
+        raise _DeferredMorphSetup()
     missing_sliders = False
     if placeholder is not None:
         missing_sliders = any(
@@ -686,6 +713,11 @@ def _output_group():
 
 
 def _ensure_output_bridges(material):
+    if not _STRUCTURE_ALLOWED:
+        bridges = _existing_output_bridges(material)
+        if not bridges:
+            raise _DeferredMorphSetup()
+        return bridges
     material.use_nodes = True
     node_tree = material.node_tree
     if node_tree is None:
@@ -945,13 +977,17 @@ def _apply_material_values(root, weights, morph_lookup):
                 )
 
 
-def evaluate_morph_root(root, changed_type=None, changed_uid=None):
-    global _EVALUATING
-    if _EVALUATING or root is None:
+def evaluate_morph_root(root, changed_type=None, changed_uid=None, *, allow_structure=True):
+    global _EVALUATING, _STRUCTURE_ALLOWED
+    if not scene_access_allowed() or _EVALUATING or root is None:
         return
     _EVALUATING = True
+    previous_structure_allowed = _STRUCTURE_ALLOWED
+    _STRUCTURE_ALLOWED = allow_structure
     try:
         if changed_type is None and not _morph_states_are_current(root):
+            if not _STRUCTURE_ALLOWED:
+                raise _DeferredMorphSetup()
             ensure_morph_states(root)
         morph_lookup = _morph_lookup(root)
         changed_state = next(
@@ -1022,14 +1058,17 @@ def evaluate_morph_root(root, changed_type=None, changed_uid=None):
             _apply_material_values(root, weights, morph_lookup)
         if RUNTIME_ERROR_PROPERTY in root:
             del root[RUNTIME_ERROR_PROPERTY]
+    except _DeferredMorphSetup:
+        _PENDING_RUNTIME_ROOTS.add(root.name)
     except Exception as error:
         root[RUNTIME_ERROR_PROPERTY] = str(error)
     finally:
+        _STRUCTURE_ALLOWED = previous_structure_allowed
         _EVALUATING = False
 
 
 def _morph_value_updated(state, _context):
-    if _MUTATING:
+    if not scene_access_allowed() or _MUTATING:
         return
     root = state.id_data
     if root is not None and getattr(root, "mmd_type", "") == "ROOT":
@@ -1505,6 +1544,8 @@ def _migrate_existing_vmd_morph_animations():
 
 
 def _migrate_existing_vmd_morph_animations_timer():
+    if not scene_access_allowed():
+        return 0.1
     _migrate_existing_vmd_morph_animations()
     return None
 
@@ -1664,6 +1705,8 @@ def _export_vmd_execute(operator, context):
 
 
 def _install_vmd_io_hooks():
+    if not scene_access_allowed():
+        return 0.1
     global _ORIGINAL_IMPORT_VMD_EXECUTE, _IMPORT_VMD_CLASS
     global _ORIGINAL_EXPORT_VMD_EXECUTE, _EXPORT_VMD_CLASS
     try:
@@ -3486,6 +3529,8 @@ class SPX_OT_ViewUVMorph(Operator):
         morph_uid = str(morph.get(MORPH_UID_PROPERTY, ""))
 
         def update_preview():
+            if not scene_access_allowed():
+                return 0.1
             current_root = bpy.data.objects.get(root_name)
             current_mesh = bpy.data.objects.get(mesh_name)
             if current_root is None or current_mesh is None:
@@ -3519,6 +3564,8 @@ class SPX_OT_ClearUVMorphPreview(Operator):
         root_name = root.name
 
         def clear_preview():
+            if not scene_access_allowed():
+                return 0.1
             current_root = bpy.data.objects.get(root_name)
             if current_root is not None:
                 try:
@@ -4086,13 +4133,15 @@ def register_settings(settings_cls):
 
 @persistent
 def _morph_frame_change(_scene, _depsgraph=None):
+    if not scene_access_allowed():
+        return
     for root in bpy.data.objects:
         if getattr(root, "mmd_type", "") != "ROOT" or not hasattr(
             root, "spx_morph_states"
         ):
             continue
         if root.spx_morph_states:
-            evaluate_morph_root(root)
+            evaluate_morph_root(root, allow_structure=False)
 
 
 def _get_group_morph_factor(offset):
@@ -4178,6 +4227,8 @@ def _unregister_detail_selection_properties():
 
 
 def register_services():
+    if not bpy.app.timers.is_registered(_prepare_pending_morphs):
+        bpy.app.timers.register(_prepare_pending_morphs, first_interval=0.1, persistent=True)
     _register_detail_selection_properties()
     _register_group_morph_factor_proxy()
     bpy.types.Object.spx_morph_states = bpy.props.CollectionProperty(
@@ -4217,6 +4268,9 @@ def register_services():
 
 
 def unregister_services():
+    if bpy.app.timers.is_registered(_prepare_pending_morphs):
+        bpy.app.timers.unregister(_prepare_pending_morphs)
+    _PENDING_RUNTIME_ROOTS.clear()
     _unregister_group_morph_factor_proxy()
     if bpy.app.timers.is_registered(_install_vmd_io_hooks):
         bpy.app.timers.unregister(_install_vmd_io_hooks)

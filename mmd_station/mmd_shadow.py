@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import bpy
+from .execution_guard import scene_access_allowed
 from bpy.app.handlers import persistent
 
 
@@ -561,6 +562,10 @@ def _clear_on_load(_unused):
 
 @persistent
 def _track_depsgraph_updates(_scene, depsgraph):
+    if not scene_access_allowed():
+        # Conservatively invalidate Python-only cache state without reading RNA.
+        _shadows.clear()
+        return
     if _tracking_suspended or not _shadows:
         return
     updated = {

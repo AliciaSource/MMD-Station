@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 import sys
+import threading
 import types
 from pathlib import Path
 
@@ -16,6 +17,7 @@ MANAGED_MODULES = (
     "bpy.app.handlers",
     "addon_utils",
     "mmd_station",
+    "mmd_station.execution_guard",
     "mmd_station.updater",
     "mmd_station.updater.addon_updater",
     "mmd_station.updater.addon_updater_ops",
@@ -100,6 +102,35 @@ def _load_ops():
 OPS = _load_ops()
 
 
+def test_async_check_defers_blender_ui_until_main_thread(monkeypatch):
+    touched = []
+
+    class Data:
+        @property
+        def window_managers(self):
+            touched.append(threading.current_thread() is threading.main_thread())
+            return []
+
+    monkeypatch.setattr(OPS.bpy, "data", Data(), raising=False)
+    monkeypatch.setattr(OPS, "_ui_callbacks_enabled", True)
+    monkeypatch.setattr(OPS.updater, "check_for_update", lambda **kwargs: None)
+    worker = threading.Thread(
+        target=OPS.updater.async_check_update,
+        kwargs={"now": False, "callback": OPS.ui_refresh},
+    )
+    worker.start()
+    worker.join()
+    assert touched == []
+    assert not OPS._ui_callbacks.empty()
+    manager = types.SimpleNamespace(is_interface_locked=True)
+    monkeypatch.setattr(OPS.bpy.context, "window_manager", manager, raising=False)
+    OPS._poll_ui_callbacks()
+    assert touched == []
+    manager.is_interface_locked = False
+    OPS._poll_ui_callbacks()
+    assert touched == [True]
+
+
 def _set_preferences(receive_prereleases):
     preferences = types.SimpleNamespace(
         receive_prereleases=receive_prereleases,
@@ -139,6 +170,18 @@ def test_prerelease_filter_requires_opt_in():
     assert OPS.skip_tag_function(OPS.updater, tag) is True
     _set_preferences(True)
     assert OPS.skip_tag_function(OPS.updater, tag) is False
+
+
+def test_prerelease_filter_uses_snapshot_in_worker(monkeypatch):
+    _set_preferences(True)
+    OPS.snapshot_update_preferences()
+    monkeypatch.setattr(OPS, "get_user_preferences", lambda *a: (_ for _ in ()).throw(AssertionError("RNA access")))
+    results = []
+    worker = threading.Thread(target=lambda: results.append(OPS.skip_tag_function(
+        OPS.updater, {"name": "v1.0.2-beta.1", "prerelease": True})))
+    worker.start()
+    worker.join()
+    assert results == [False]
 
 
 def test_release_asset_selector_requires_zip():

@@ -1,3 +1,4 @@
+from ..execution_guard import scene_access_allowed
 import hashlib
 import json
 import pathlib
@@ -260,6 +261,8 @@ def _load_cache_sidecars(_dummy):
 
 
 def _initialize_cache_sidecars():
+    if not scene_access_allowed():
+        return 0.1
     try:
         _load_cache_sidecars(None)
     except AttributeError as error:

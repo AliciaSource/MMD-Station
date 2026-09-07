@@ -80,6 +80,7 @@ def register():
         bpy.utils.register_class(cls)
     bpy.utils.register_class(MMD_STATION_AddonUpdaterPreferences)
     addon_updater_ops.register()
+    addon_updater_ops.register_ui_callbacks()
     if not getattr(addon_updater_ops.updater, "invalid_updater", False):
         addon_updater_ops.updater.show_popups = False
     for cls in notify.classes:
@@ -87,6 +88,7 @@ def register():
 
 
 def unregister():
+    addon_updater_ops.unregister_ui_callbacks()
     for cls in reversed(notify.classes):
         bpy.utils.unregister_class(cls)
     notify.reset_state()

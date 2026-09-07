@@ -1323,10 +1323,10 @@ original_parallel_steps = {
 
 
 def parallel_step(original):
-    def run():
+    def run(substeps):
         parallel_threads.add(threading.current_thread().name)
         parallel_barrier.wait(timeout=5.0)
-        original()
+        original(substeps)
 
     return run
 

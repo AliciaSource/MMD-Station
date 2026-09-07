@@ -1,3 +1,4 @@
+from .execution_guard import scene_access_allowed
 from .i18n import report
 import hashlib
 import re
@@ -817,6 +818,8 @@ def _draw_proxy_bones():
 
 
 def _run_pending_sync():
+    if not scene_access_allowed():
+        return 0.1
     global _TIMER_PENDING
     for name in list(_DIRTY_PHYSICS_PROXIES):
         proxy_object = bpy.data.objects.get(name)
@@ -854,6 +857,8 @@ def _schedule_pending_sync():
 
 
 def _sync_on_proxy_mode_exit():
+    if not scene_access_allowed():
+        return 0.1
     scene = getattr(bpy.context, "scene", None)
     settings = getattr(scene, "surface_proxy_creator", None)
     live_names = set()
@@ -888,6 +893,8 @@ def _sync_on_proxy_mode_exit():
 
 @persistent
 def _depsgraph_proxy_update(_scene, depsgraph):
+    if not scene_access_allowed():
+        return
     global _TIMER_PENDING
     settings = getattr(bpy.context.scene, "surface_proxy_creator", None)
     if settings is not None and getattr(settings, "preview_running", False):
@@ -935,6 +942,8 @@ def _load_proxy_identity(_unused):
 
 
 def _initialize_proxy_services():
+    if not scene_access_allowed():
+        return 0.1
     try:
         _load_proxy_identity(None)
     except AttributeError as error:

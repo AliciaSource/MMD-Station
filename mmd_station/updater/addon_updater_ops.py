@@ -23,6 +23,7 @@ Implements draw calls, popups, and operators that use the addon_updater.
 from ..i18n import iface, report
 
 import os
+import queue
 import threading
 import traceback
 import bpy
@@ -30,6 +31,7 @@ from bpy.app.handlers import persistent
 # MMD Station host-level copy: pull bl_info from the top-level mmd_station package
 # (this file lives under mmd_station/updater/), not from this subpackage.
 from .. import bl_info
+from ..execution_guard import scene_access_allowed
 
 # Safely import the updater.
 # Prevents popups for users with invalid python installs e.g. missing libraries
@@ -96,10 +98,52 @@ if not getattr(updater, "invalid_updater", False):
 
 
 _update_job = None
+_ui_callbacks = queue.SimpleQueue()
+_ui_callbacks_enabled = False
+_receive_prereleases = False
+
+
+def snapshot_update_preferences():
+    global _receive_prereleases
+    if scene_access_allowed():
+        prefs = get_user_preferences()
+        _receive_prereleases = bool(prefs and getattr(prefs, "receive_prereleases", False))
+
+
+def _poll_ui_callbacks():
+    if not _ui_callbacks_enabled:
+        return None
+    if not scene_access_allowed():
+        return 0.2
+    for _ in range(32):
+        try:
+            callback, value = _ui_callbacks.get_nowait()
+        except queue.Empty:
+            break
+        callback(value)
+    return 0.2
+
+
+def register_ui_callbacks():
+    global _ui_callbacks_enabled, _ui_callbacks
+    _ui_callbacks = queue.SimpleQueue()
+    _ui_callbacks_enabled = True
+    if not bpy.app.timers.is_registered(_poll_ui_callbacks):
+        bpy.app.timers.register(_poll_ui_callbacks, first_interval=0.2, persistent=True)
+
+
+def unregister_ui_callbacks():
+    global _ui_callbacks_enabled, _ui_callbacks
+    _ui_callbacks_enabled = False
+    if bpy.app.timers.is_registered(_poll_ui_callbacks):
+        bpy.app.timers.unregister(_poll_ui_callbacks)
+    _ui_callbacks = queue.SimpleQueue()
 
 
 def _poll_update_job():
     """Finish an update job on Blender's main thread after file work completes."""
+    if not scene_access_allowed():
+        return 0.2
     global _update_job
     job = _update_job
     if job is None:
@@ -384,6 +428,7 @@ class AddonUpdaterCheckNow(bpy.types.Operator):
 
         # Input is an optional callback function. This function should take a
         # bool input. If true: update ready, if false: no update ready.
+        snapshot_update_preferences()
         updater.check_for_update_now(ui_refresh)
 
         return {'FINISHED'}
@@ -806,6 +851,10 @@ def updater_run_install_popup_handler(scene):
 
 def background_update_callback(update_ready):
     """Passed into the updater, background thread updater"""
+    if not scene_access_allowed():
+        if _ui_callbacks_enabled:
+            _ui_callbacks.put((background_update_callback, update_ready))
+        return
     global ran_auto_check_install_popup
     updater.print_verbose("Running background update callback")
 
@@ -873,6 +922,10 @@ def post_update_callback(module_name, res=None):
 
 def ui_refresh(update_status):
     """Redraw the ui once an async thread has completed"""
+    if not scene_access_allowed():
+        if _ui_callbacks_enabled:
+            _ui_callbacks.put((ui_refresh, update_status))
+        return
     for windowManager in bpy.data.window_managers:
         for window in windowManager.windows:
             for area in window.screen.areas:
@@ -908,6 +961,7 @@ def check_for_update_background():
 
     # Input is an optional callback function. This function should take a bool
     # input, if true: update ready, if false: no update ready.
+    snapshot_update_preferences()
     updater.check_for_update_async(background_update_callback)
     ran_background_check = True
 
@@ -1374,8 +1428,9 @@ def skip_tag_function(self, tag):
     # tag is a release dict carrying a "prerelease" flag; only show pre-releases
     # when the user opted in via the "receive_prereleases" preference.
     if isinstance(tag, dict) and tag.get("prerelease"):
-        prefs = get_user_preferences(bpy.context)
-        if not (prefs and getattr(prefs, "receive_prereleases", False)):
+        if threading.current_thread() is threading.main_thread():
+            snapshot_update_preferences()
+        if not _receive_prereleases:
             return True
     # ---- end MMD Station custom filter ---- #
 
