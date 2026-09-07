@@ -1,5 +1,11 @@
 # Development Log
 
+## 2026-09-07 - v1.0.2-dev 发布完成并重启开发桥接
+
+- AliciaSource 已发布正式 v1.0.1，main/tag 指向 fab2d7b；Release 非 draft、非 prerelease，安装资产 mmd_station-1.0.1.zip，SHA256 cea7127b45512e4a791ba9e70ebf4d81585f3dd251bc0b3dbf56336343d34ce2，与 GitHub asset digest 一致。
+- 精确 tag ZIP 已逐文件核对（文本允许 Git archive 的 CRLF 转换，二进制逐字节一致），并在独立解包路径断言真实加载位置、stable 版本及 ABI6；headless、updater、i18n 三项均通过。测试临时目录已清理；未执行 GUI 手动测试、未修改真实用户偏好。
+- 按既有规则自动切换 v1.0.2-dev、重置 Unreleased 简报、恢复真实 Blender 4.4 源码 Junction。开发迭代仅本地 commit，不追加推送；既存 ABI5 DLL 未提交改动保持原样。
+
 ## 2026-09-07 - v1.0.1 正式发布准备
 
 - 按用户授权发布到 AliciaSource/MMD-Station；版本设为 1.0.1 stable，保留英文与简体中文手册，更新器 smoke 改为根据版本元数据验证，避免硬编码 dev 版本。
