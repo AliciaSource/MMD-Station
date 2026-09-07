@@ -1,6 +1,6 @@
 # MMD Station Release Notes
 
-## Unreleased
+## v1.0.1
 
 ### Added
 

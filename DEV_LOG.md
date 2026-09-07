@@ -1,5 +1,11 @@
 # Development Log
 
+## 2026-09-07 - v1.0.1 正式发布准备
+
+- 按用户授权发布到 AliciaSource/MMD-Station；版本设为 1.0.1 stable，保留英文与简体中文手册，更新器 smoke 改为根据版本元数据验证，避免硬编码 dev 版本。
+- 发布前 13 项 catalog/updater/security 单测、安全扫描及 Blender 4.4.3 headless、updater、i18n、材质顺序回归通过。真实用户环境已启用插件，手工 register 型测试须先在当前测试进程 disable，未保存或修改用户偏好。未执行 GUI 手工验收。
+- 既存未提交 mmd_physics_solver_mmd_abi5.dll 原样保留且不纳入发布；当前运行路径使用已提交 ABI6。从精确 v1.0.1 tag 打包，发布前验证隔离安装与 ZIP 安全扫描。
+
 ## 2026-09-03 - V1.0.1-dev 合并网格跨 View Layer 修复与乱序预合并回归
 
 - 复现用户截图中的原始异常：MMD Root 层级仍包含 Mesh、但对象已脱离当前 View Layer 时，`mmd_tools.join_meshes` 会在 `FnContext.select_objects` 内对该对象执行 `select_set(True)`，并抛出“can't be selected because it is not in View Layer”。修复后，若当前模型正在运行物理 presentation proxy，先正常停止该模型预览并恢复被临时移出的源 Mesh；随后把仍不在当前 View Layer 的模型 Mesh 补链到 MMD Root 所在的可见 Collection，再委托原版 Join，不跳过任何模型部件。
