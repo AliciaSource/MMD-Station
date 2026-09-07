@@ -1,5 +1,11 @@
 # Development Log
 
+## 2026-09-07 - v1.0.2 正式版发布
+
+- 按用户当前授权向 AliciaSource/MMD-Station 推送并发布正式 v1.0.2；将 PRERELEASE 设为 None，保留 1.0.2 版本及现有双语手册，英文 Release notes 描述按需 DLL、原生后台烘焙隔离、Morph 延迟结构初始化与线程 RNA 隔离，并明确第三方覆盖边界。
+- 发布前重新通过 21 项离线回归与 HEAD 安全扫描。实现轮的 16 组预览/顺序网格烘焙及 mmd_tools 原生刚体 GUI 入口已通过；正式 tag 打包后另作安装与烘焙验证。
+- 从精确 v1.0.2 tag 打包并上传 Release ZIP；本地真实 Blender 4.4 安装切换为独立正式版目录，不在发布完成后自动开启下一版 dev，不改其它插件或用户工程。既存未提交 ABI5 DLL 改动仍留仓库、不纳入 Release。
+
 ## 2026-09-07 - v1.0.2-dev 原生烘焙隔离与 DLL 按需加载
 
 - 取消 register 阶段的双后端 DLL preload/预热；仅在实际启动对应 MMD/PMX 求解时加载该后端，普通插件启用和 mmd_tools 原生刚体烘焙均不加载自带求解 DLL。未改任何 DLL 或 ABI；既存未提交 ABI5 改动保持原样。
