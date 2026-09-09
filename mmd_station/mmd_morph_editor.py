@@ -1056,6 +1056,9 @@ def evaluate_morph_root(root, changed_type=None, changed_uid=None, *, allow_stru
                 _sync_placeholder_weights(root, weights, morph_lookup)
             _apply_vertex_values(root, weights, morph_lookup)
             _apply_material_values(root, weights, morph_lookup)
+        from .mmd_bone_morph_scale import sync_scale_constraints
+        if hasattr(bpy.types.Object, "spx_morph_states"):
+            sync_scale_constraints(root, weights, _STRUCTURE_ALLOWED)
         if RUNTIME_ERROR_PROPERTY in root:
             del root[RUNTIME_ERROR_PROPERTY]
     except _DeferredMorphSetup:
@@ -3028,6 +3031,8 @@ class SPX_OT_AddMorphOffset(Operator):
         root = _find_root(context, settings) if settings is not None else None
         if root is not None and root.mmd_root.active_morph_type == "material_morphs":
             return iface("将当前 MMD 模型内已选 Mesh 的材质按真实 PMX 顺序插入活动详情项下方")
+        if root is not None and root.mmd_root.active_morph_type == "bone_morphs":
+            return iface("新增或更新活动骨骼详情项，读取位移、旋转和缩放")
         return iface("新增一个空 Morph 详情项")
 
     def _add_selected_materials(self, context, root, morph):
@@ -3093,8 +3098,20 @@ class SPX_OT_AddMorphOffset(Operator):
             return {"CANCELLED"}
         if root.mmd_root.active_morph_type == "material_morphs":
             return self._add_selected_materials(context, root, morph)
-        morph.data.add()
-        morph.active_data = len(morph.data) - 1
+        bone = context.active_pose_bone if root.mmd_root.active_morph_type == "bone_morphs" else None
+        if bone is not None and _mmd_api()[1](root).armature() != context.object:
+            bone = None
+        existing = next((i for i, d in enumerate(morph.data) if bone is not None and d.bone == bone.name), None)
+        if existing is None:
+            data = morph.data.add()
+            morph.active_data = len(morph.data) - 1
+        else:
+            data = morph.data[existing]
+            morph.active_data = existing
+        if bone is not None:
+            from .mmd_bone_morph_scale import store_pose, refresh_bindings
+            store_pose(data, bone)
+            refresh_bindings(root)
         evaluate_morph_root(root)
         return {"FINISHED"}
 
@@ -3121,6 +3138,9 @@ class SPX_OT_RemoveMorphOffset(Operator):
         for index in reversed(remove_indices):
             morph.data.remove(index)
         morph.active_data = min(next_active_index, max(0, len(morph.data) - 1))
+        if root.mmd_root.active_morph_type == "bone_morphs":
+            from .mmd_bone_morph_scale import refresh_bindings
+            refresh_bindings(root)
         evaluate_morph_root(root)
         report(self, {"INFO"}, f"已删除 {len(remove_indices)} 个 Morph 详情项")
         return {"FINISHED"}
@@ -3901,6 +3921,15 @@ def _draw_bone_details(layout, root, morph):
         icon="LINENUMBERS_ON",
     )
 
+    layout.operator("surface_proxy.save_bone_morph_pose", text="将当前活动姿势保存", icon="POSE_HLT")
+    layout.operator("surface_proxy.import_bone_morph_scale", text="导入骨骼 Morph 缩放", icon="FILE_FOLDER")
+    if root.get("spx_scale_import_status"):
+        if root["spx_scale_import_status"] == "OK":
+            status = iface("已导入 {imported} 项缩放；跳过 {skipped} 项").format(
+                imported=root.get("spx_scale_imported", 0), skipped=root.get("spx_scale_skipped", 0))
+        else:
+            status = root["spx_scale_import_status"]
+        layout.label(text=iface(status), icon="INFO")
     _draw_offset_list(layout, morph, "SPX_UL_BoneMorphOffsets")
     if not morph.data:
         return
@@ -3914,6 +3943,7 @@ def _draw_bone_details(layout, root, morph):
     row = layout.row()
     row.column(align=True).prop(data, "location")
     row.column(align=True).prop(data, "rotation")
+    row.column(align=True).prop(data, "spx_scale", text="缩放")
 
 
 def _draw_active_details(layout, context, root):

@@ -1,6 +1,16 @@
 """Generated English catalog for the existing Chinese MMD Station msgids."""
 
 ENGLISH = {
+    "新增或更新活动骨骼详情项，读取位移、旋转和缩放": "Add or update the active bone offset, capturing location, rotation and scale",
+    '缩放': 'Scale',
+    '将当前活动姿势保存': 'Save Current Pose',
+    '按父子层级将当前局部姿态变化保存到活动骨骼 Morph，包含缩放': 'Save local pose changes, including scale, to the active bone Morph in hierarchy order',
+    '已保存 {count} 根骨骼的姿态': 'Saved pose for {count} bones',
+    '导入骨骼 Morph 缩放': 'Import Bone Morph Scale',
+    '选择任意文件名的 Morph JSON，为当前模型补入骨骼表情缩放': 'Select a Morph JSON with any filename to restore bone Morph scales to the current model',
+    '缩放 JSON 读取失败：{error}': 'Failed to read scale JSON: {error}',
+    '已导入 {imported} 项缩放；跳过 {skipped} 项': 'Imported {imported} scale entries; skipped {skipped}',
+
     '合并': 'Join',
     '合并模型网格': 'Join Model Meshes',
     '使用 mmd_tools 合并所选 MMD 模型的全部 Mesh，并保持 PMX 材质顺序': 'Use mmd_tools to join all Meshes of the selected MMD model while preserving PMX material order',

@@ -560,3 +560,12 @@ Change it under **Edit > Preferences > Interface > Translation > Language**.
 - Make sure interface translation is enabled in Blender Preferences.
 - Restart Blender or reload scripts after changing the installed add-on files.
 
+
+## Bone Morph scale and portable sidecars
+
+- **Save Current Pose** captures changed local bone transforms in parent-first order into the active bone Morph. Existing bone entries are updated; other entries remain. It records current local pose differences, not edit history or constraint-only motion.
+- The bone details expose **Scale XYZ**, defaulting to `(1, 1, 1)`. The plus button captures the active pose bone's location, rotation and scale (or updates its existing entry). View, Edit, Update and Apply also support scale; Clear resets the pose. Scale is retained in `.blend` files.
+- Each Morph interpolates scale as `1 + weight * (scale - 1)`; multiple scale Morphs combine multiplicatively, including effective Group Morph weights. Authored Pose scale and Action curves are not overwritten by preview.
+- Exporting `Body.pmx` writes `Body.Morph.json` only when an exported bone Morph contains non-unit scale. Repeat exports replace that one JSON. Removing all scale removes the previous valid sidecar after a successful PMX export. Standard PMX data and model comments are unchanged; MMD and PMX Editor only receive normal translation/rotation.
+- PMX import automatically reads its same-folder, same-stem sidecar. Copy both files when distributing the model, and rename both together: `NewName.pmx` + `NewName.Morph.json`.
+- If the sidecar was missed, use **Import Bone Morph Scale** in the bone tab and select a JSON with any filename. Only uniquely matching Morph/bone name pairs are updated; unmatched or ambiguous entries are skipped and reported. Unmentioned entries and translation/rotation stay unchanged. A sidecar cannot recover bones or Morphs that were deleted or renamed without an unambiguous match.

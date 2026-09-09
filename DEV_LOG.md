@@ -1,5 +1,15 @@
 # Development Log
 
+## 2026-09-09 - v1.0.3-dev 骨骼 Morph 姿态与缩放附属文件
+
+- 新增宿主模块 `mmd_bone_morph_scale.py` 与独立 JSON 协议模块 `morph_sidecar.py`；不改 mmd_tools 源码、PMX 骨骼二进制布局或模型注释，不修改任何 DLL。保留工作树原有未提交 ABI5 DLL，绝不纳入本轮提交。
+- 骨骼 Tab 新增“将当前活动姿势保存”、缩放 XYZ 与“导入骨骼 Morph 缩放”。一键收集非默认局部位移/旋转/缩放，父级优先，同名更新；不抓取操作历史或仅由父级/constraint 产生的求值变化。普通加号捕获活动骨骼全部变换并更新已有同名条目，无活动骨骼仍可加空项；更新、编辑、查看、应用与清除配套支持缩放。RNA 扩展保存于 `.blend`，旧条目默认为 `(1,1,1)`。
+- 缩放预览使用独立 TRANSFORM constraint，单 Morph 为 `1 + weight * (scale - 1)`，多 Morph 按乘法组合；复用现有 bind 目标，但不改原 bind bone 的缩放，不写用户 Pose scale/Action。群组有效权重接入原有求值路径，帧回调仅更新已存在约束；结构增删遵守安全 timer 门禁，卸载删除自有约束并恢复 hooks。已有 runtime 下新增/删除骨骼条目会重建绑定，操作后恢复原活动对象、骨骼及 Pose 模式。
+- PMX 成功导出后按最终序列化的 Morph/骨骼身份生成 `<文件主名>.Morph.json`，仅保存非单位缩放。完整与 Shadow 快速导出均支持，覆盖写入采用同目录临时文件+原子替换；无扩展时删除已有本协议 JSON，拒绝误删其它格式文件。PMX 写入失败不更新 JSON；JSON 更新失败明确报出 PMX 已保存。
+- 导入 PMX 自动查找同名 JSON；手动补导入允许任意名字/路径。按日文名及英文名共同唯一匹配 Morph/骨骼，索引仅留作导出证据，不依赖索引猜测重排后的对象；重复/缺失匹配跳过，非法 JSON 整体拒绝但自动导入不阻断标准模型。未涉及的缩放、位移/旋转和模型说明不改动。骨骼 Tab 展示自动补导入结果。
+- 验证：21 项 sidecar/catalog/updater pytest 通过；Blender 4.4.3 新增 `bone_morph_scale_blender.py` 覆盖层级/去重、Euler 保存、加号/更新/编辑/查看/清除、半权重/负权重/负缩放/群组、Pose 通道无污染、完整与实际 fast Shadow 导出、JSON 覆盖/清理、同步改名自动回读、任意名重复补导入/错误匹配/非法格式、标准位移旋转和注释不变、blend 重开持久化及卸载/重注册。既有 Morph regression、headless smoke、i18n smoke、updater smoke 全部通过；未进行 MMD/PMX Editor GUI 实机测试。测试生成文件由 TemporaryDirectory 清理。
+- 发布/安装：版本从正式 1.0.2 切换为 1.0.3-dev，真实 Blender 4.4 恢复源码 Junction，保留之前正式安装备份；重启/Reload Scripts 后生效。同步英文简报和双语手册，本轮仅本地提交，不打 ZIP、不 tag、不 push、不发布。
+
 ## 2026-09-07 - v1.0.2 正式版发布
 
 - 按用户当前授权向 AliciaSource/MMD-Station 推送并发布正式 v1.0.2；将 PRERELEASE 设为 None，保留 1.0.2 版本及现有双语手册，英文 Release notes 描述按需 DLL、原生后台烘焙隔离、Morph 延迟结构初始化与线程 RNA 隔离，并明确第三方覆盖边界。

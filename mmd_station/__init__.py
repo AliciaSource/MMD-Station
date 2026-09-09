@@ -1,13 +1,15 @@
 bl_info = {
     "name": "MMD Station",
     "author": "MMD Station contributors",
-    "version": (1, 0, 2),
+    "version": (1, 0, 3),
     "blender": (4, 4, 0),
     "location": "View3D > Sidebar > MMD Station",
     "description": "Create and edit MMD models, Morphs, physics, and IK workflows",
     "doc_url": "https://github.com/AliciaSource/MMD-Station",
     "category": "Rigging",
 }
+
+from . import mmd_bone_morph_scale
 
 import bmesh
 import bpy
@@ -1174,6 +1176,7 @@ CLASSES = (
     *MMD_ORDERING_CLASSES,
     *MMD_BONE_SUBDIVISION_CLASSES,
     *MMD_MORPH_EDITOR_CLASSES,
+    *mmd_bone_morph_scale.CLASSES,
     *MMD_DISPLAY_FRAME_CLASSES,
     *MMD_IO_CLASSES,
     *PHYSICS_PREVIEW_CLASSES,
@@ -1209,12 +1212,14 @@ def register():
     register_vertex_group_menu()
     register_mmd_ik_runtime_services()
     register_morph_editor_services()
+    mmd_bone_morph_scale.register_services()
     register_display_frame_services()
     updater.register()
 
 
 def unregister():
     updater.unregister()
+    mmd_bone_morph_scale.unregister_services()
     unregister_shadow_services()
     unregister_export_profile_hook()
     unregister_morph_order_export_hook()
