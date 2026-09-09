@@ -2497,6 +2497,8 @@ class SPX_OT_RefreshMMDBrowser(Operator):
                 for row in range(count - 1)
             }
         if settings.browser_kind == "MATERIAL":
+            from .mmd_morph_editor import repair_material_references
+            repair_material_references(root)
             for order_index, material in enumerate(ordered_materials(root, FnModel)):
                 item = settings.browser_items.add()
                 item.kind = "MATERIAL"

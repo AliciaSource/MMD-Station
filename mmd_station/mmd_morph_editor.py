@@ -829,6 +829,8 @@ def _model_materials(root):
     result = []
     seen = set()
     for mesh_object in FnModel.iterate_mesh_objects(root):
+        if not set(mesh_object.users_scene).intersection(root.users_scene):
+            continue
         for slot in mesh_object.material_slots:
             material = slot.material
             if material is None or material in seen:
@@ -847,9 +849,38 @@ def _material_targets(materials, offset):
     if material is not None and material in materials:
         return (material,)
     name = str(getattr(offset, "material", ""))
-    if not name:
+    mmd_name = material.mmd_material.name_j if material is not None else ""
+    if not name and not mmd_name and material is None:
+        if getattr(offset, "material_id", -1) >= 0:
+            return ()
         return tuple(materials)
-    return tuple(material for material in materials if material.name == name)
+    matches = tuple(candidate for candidate in materials if
+                    (name and candidate.name == name) or
+                    (candidate.mmd_material.name_j and candidate.mmd_material.name_j in {name, mmd_name}))
+    return matches if len(matches) == 1 else ()
+
+
+def repair_material_references(root):
+    """Repair stale off-model references without guessing between namesakes."""
+    materials = _model_materials(root)
+    FnModel, _Model = _mmd_api()
+    meshes = [obj for obj in FnModel.iterate_mesh_objects(root)
+              if set(obj.users_scene).intersection(root.users_scene)]
+    repaired = 0
+    for morph in root.mmd_root.material_morphs:
+        for offset in morph.data:
+            if offset.material_data in materials or (offset.material_data is None and not offset.material):
+                continue
+            targets = _material_targets(materials, offset)
+            if len(targets) != 1:
+                continue
+            material = targets[0]
+            offset.material = material.name
+            owners = sorted((obj for obj in meshes if material in list(obj.data.materials)), key=lambda obj: obj.name)
+            if owners:
+                offset.related_mesh = owners[0].data.name
+            repaired += 1
+    return repaired
 
 
 def _neutral_accumulator():
@@ -2057,6 +2088,7 @@ class SPX_OT_RefreshMorphEditor(Operator):
             return {"CANCELLED"}
         settings.morph_editor_root = root
         restored = _restore_missing_vertex_morphs(root)
+        repair_material_references(root)
         ensure_morph_states(root)
         rebound = _bound_placeholder(root) is not None
         if rebound:
@@ -3793,8 +3825,13 @@ def _draw_material_details(layout, morph):
         "material",
         related_mesh or bpy.data,
         "materials",
-        text="材质",
+        text="Blender 材质名",
     )
+    targets = _material_targets(_model_materials(morph.id_data), data)
+    if len(targets) == 1:
+        material_column.prop(targets[0].mmd_material, "name_j", text="MMD 材质名")
+    else:
+        material_column.label(text="MMD 材质名：全部材质或未唯一匹配", icon="INFO")
     presets = layout.row(align=True)
     operator = presets.operator(
         SPX_OT_ApplyMaterialMorphPreset.bl_idname,

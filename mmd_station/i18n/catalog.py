@@ -1,6 +1,8 @@
 """Generated English catalog for the existing Chinese MMD Station msgids."""
 
 ENGLISH = {
+    "MMD 材质名": "MMD Material Name",
+    "MMD 材质名：全部材质或未唯一匹配": "MMD Material Name: all materials or no unique match",
     "新增或更新活动骨骼详情项，读取位移、旋转和缩放": "Add or update the active bone offset, capturing location, rotation and scale",
     '缩放': 'Scale',
     '将当前活动姿势保存': 'Save Current Pose',

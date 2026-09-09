@@ -1,5 +1,14 @@
 # Development Log
 
+## 2026-09-09 - v1.0.3-dev 材质列表孤立对象、强制名称同步与 Morph 引用恢复
+
+- 真实工程不保存复现：刷新前后均为 45 项、103 个材质 datablock，额外项来自仍 parent 到模型骨架但已不属于任何 Scene 的旧 Mesh，并非刷新新建材质。旧材质占据 MMD 原名，现用材质直接改名被 Blender 追加后缀；多个材质 Morph 仍指向旧材质与旧 Mesh，现有运行时只按模型内 pointer/Blender 名匹配而失效。
+- `mmd_material_order.py` 与 Morph 的模型材质收集排除不属于模型所在 Scene 的 Mesh；正常隐藏、渲染关闭和其它 View Layer 内仍链接到 Scene 的对象不因可见性被排除。只修正收集边界，不删除孤立 Mesh、旧材质或用户其它资产。
+- MMD → Blender 名称同步使用 Blender 4.4 `ID.rename(mode="ALWAYS")`，现用目标材质优先取得完整 MMD 日文名；原占名材质保留并由 Blender 改为可用后缀名。多个同步目标请求同名时只有首项能使用完整名，不能违反 Blender 全局唯一名称约束。同步前先恢复本模型 Morph 引用，不让占名者改名破坏旧引用线索。
+- `mmd_morph_editor.py` 优先保持模型内有效材质 pointer；失效引用按 Blender 名或旧材质 MMD 日文名在本模型内唯一匹配。多义匹配不猜测，明确的未解析材质 ID 不降级为“全部材质”。查看器刷新、Morph 编辑器刷新及名称同步修复 pointer、material ID 和相关 Mesh，运行时匹配也支持此规则。材质 Morph 详情新增 MMD 材质名行，可查看/修改目标材质的 MMD 名；原 Blender 材质选择行保留。
+- 新增 `tests/material_identity_blender.py` 覆盖孤立对象过滤、连续刷新零材质新增、旧引用恢复、Alpha 1/0 实际输出桥切换、强制占名及保留旧材质、再次改名保持 pointer、MMD 名兜底、歧义不绑定、全部材质哨兵和正常隐藏对象保留。真实工程回归刷新稳定 44 项，所有非空 Morph 材质引用唯一恢复，44 个材质同步后均使用完整 MMD 名；对应显示 Morph 的输出桥 Opacity 从 `[0,0]` 变为 `[1,1]`。原工程未保存。
+- 本地化 5 项通过，Blender 4.4.3 新增材质 identity 回归、既有材质顺序及 Morph 编辑器回归通过；i18n 与骨骼缩放回归亦通过。未进行 GUI 点击验收；临时探针删除命令被运行环境拒绝，已集中留在 `_temporary_cleanup/material-diagnosis/`，永久合成回归保留。继续使用真实 Blender 4.4 的 1.0.3-dev Junction；不打包、不 push、不发布，既存 ABI5 DLL 修改原样排除。
+
 ## 2026-09-09 - v1.0.3-dev 骨骼 Morph 姿态与缩放附属文件
 
 - 新增宿主模块 `mmd_bone_morph_scale.py` 与独立 JSON 协议模块 `morph_sidecar.py`；不改 mmd_tools 源码、PMX 骨骼二进制布局或模型注释，不修改任何 DLL。保留工作树原有未提交 ABI5 DLL，绝不纳入本轮提交。

@@ -32,6 +32,8 @@ def _model_materials_in_native_export_order(root, FnModel=None):
     seen = set()
     mesh_objects = sorted(FnModel.iterate_mesh_objects(root), key=lambda obj: obj.name)
     for mesh_object in mesh_objects:
+        if not set(mesh_object.users_scene).intersection(root.users_scene):
+            continue
         mesh = mesh_object.data
         used_indices = sorted({polygon.material_index for polygon in mesh.polygons})
         for index in used_indices:
@@ -560,6 +562,9 @@ class SPX_OT_SyncMaterialNames(Operator):
         if not materials:
             report(self, {"WARNING"}, "没有可同步的活动材质")
             return {"CANCELLED"}
+        from .mmd_morph_editor import repair_material_references
+        repair_material_references(root)
+        claimed = set()
         for material in materials:
             if self.direction == "BLENDER_TO_MMD":
                 material.mmd_material.name_j = material.name
@@ -567,7 +572,11 @@ class SPX_OT_SyncMaterialNames(Operator):
             else:
                 name = material.mmd_material.name_j.strip()
                 if name:
-                    material.name = name
+                    if name not in claimed:
+                        material.rename(name, mode="ALWAYS")
+                        claimed.add(name)
+                    else:
+                        material.name = name
         bpy.ops.surface_proxy.refresh_mmd_browser()
         report(self, {"INFO"}, f"已同步 {len(materials)} 个材质名称")
         return {"FINISHED"}
