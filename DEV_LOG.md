@@ -1,5 +1,14 @@
 # Development Log
 
+## 2026-09-09 - v1.0.3-dev 骨骼转顶点表情隔离
+
+- 修复 Bone Morph 转 Vertex Morph 依赖当前场景求值导致的串入，以及调用 mmd_tools 嵌套 BIND/UNBIND 时活动对象丢失触发 AssertionError。合成 Blender 4.4 回归先失败：期望 `(0, 2, 2)`，旧路径为 `(0, 1, 9)`，复现姿势/驱动污染和缩放遗漏；原用户截图的上下文条件未直接复现，改为完全不调用这条嵌套 operator 链。
+- 新增 `mmd_bone_conversion.py`：临时复制骨架与网格，清除副本动画、驱动、约束、ShapeKey 混合和非目标骨架修改器，重置骨骼局部姿势，仅施加指定 Morph 的位移/旋转/缩放，以原 Basis 采样；保留骨骼层级和权重。当前手工姿态、其他骨骼/顶点/组合表情及 IK/外部约束不进入结果；不修改原姿势、约束、动画、表情值、模式和活动对象。不新增物理或 IK 烘焙能力。
+- `mmd_morph_editor.py` 单个/批量转换共用隔离路径，保留受影响骨骼及子孙权重过滤，排除已移出模型所在 Scene 的孤立网格；继续创建/更新 Vertex Morph、沿用源名加 B 和显示框行为，保留英文名及分类。删除本轮替代后无调用的旧顶点裁剪 helper，不修改 mmd_tools 上游。
+- 所有网格先完成采样才写 ShapeKey；副本在 finally 清理，ShapeKey 写入异常恢复已更新坐标/relative_key 并撤销新增 ShapeKey。原工程未打开、未保存；不存在本轮临时 blend/导出文件。
+- 新增永久 `tests/bone_conversion_isolation_blender.py`，覆盖非零其他 ShapeKey、Pose/driver/constraint、宿主骨骼/顶点/组合 Morph 同时开启（实际顶点值 1.5）、目标旋转+缩放+位移、无权重顶点、重复转换、Pose 模式、无活动对象、异常清理与写回回滚；Blender 4.4.3 通过。既有 Morph 编辑器及骨骼缩放回归通过，本地化 5 项通过。未做用户工程 GUI 点击验收；真实 Blender 用户环境的既有无关 addon 退出异常不计为本功能验收。
+- 继续 v1.0.3-dev，已核实真实 Blender 4.4 addon Junction 指向仓库，重启生效；仅本地提交、不 push/tag/打包，既存 ABI5 DLL 修改保留且排除提交。
+
 ## 2026-09-09 - v1.0.3-dev 材质列表孤立对象、强制名称同步与 Morph 引用恢复
 
 - 真实工程不保存复现：刷新前后均为 45 项、103 个材质 datablock，额外项来自仍 parent 到模型骨架但已不属于任何 Scene 的旧 Mesh，并非刷新新建材质。旧材质占据 MMD 原名，现用材质直接改名被 Blender 追加后缀；多个材质 Morph 仍指向旧材质与旧 Mesh，现有运行时只按模型内 pointer/Blender 名匹配而失效。

@@ -2888,6 +2888,8 @@ def _bone_morph_weighted_vertices(root, bone_morph):
 
     result = {}
     for mesh_object in FnModel.iterate_mesh_objects(root):
+        if not set(mesh_object.users_scene).intersection(root.users_scene):
+            continue
         if not any(
             modifier.type == "ARMATURE" and modifier.object == armature
             for modifier in mesh_object.modifiers
@@ -2913,26 +2915,6 @@ def _bone_morph_weighted_vertices(root, bone_morph):
     return result
 
 
-def _limit_shape_key_to_vertices(mesh_object, shape_key_name, vertex_indices):
-    shape_keys = mesh_object.data.shape_keys
-    if shape_keys is None:
-        return
-    shape_key = shape_keys.key_blocks.get(shape_key_name)
-    if shape_key is None or shape_key.relative_key is None:
-        return
-    point_count = len(shape_key.data)
-    basis_coordinates = array("f", [0.0]) * (point_count * 3)
-    shape_coordinates = array("f", [0.0]) * (point_count * 3)
-    shape_key.relative_key.data.foreach_get("co", basis_coordinates)
-    shape_key.data.foreach_get("co", shape_coordinates)
-    for vertex_index in vertex_indices:
-        coordinate_index = vertex_index * 3
-        basis_coordinates[coordinate_index : coordinate_index + 3] = (
-            shape_coordinates[coordinate_index : coordinate_index + 3]
-        )
-    shape_key.data.foreach_set("co", basis_coordinates)
-
-
 def _run_filtered_bone_morph_conversion(context, root, bone_morph):
     FnModel, _Model = _mmd_api()
     weighted_vertices = _bone_morph_weighted_vertices(root, bone_morph)
@@ -2943,34 +2925,31 @@ def _run_filtered_bone_morph_conversion(context, root, bone_morph):
     all_mesh_count = len(tuple(FnModel.iterate_mesh_objects(root)))
     original_name = bone_morph.name
     target_name = original_name[:-1] if original_name.endswith("B") else original_name
-    original_iterator = FnModel.__dict__["iterate_mesh_objects"]
-    original_function = original_iterator.__func__
-    target_root_pointer = root.as_pointer()
-
-    def filtered_iterator(candidate_root):
-        if (
-            candidate_root is not None
-            and candidate_root.as_pointer() == target_root_pointer
-        ):
-            return iter(target_meshes)
-        return original_function(candidate_root)
-
-    previous_active = context.view_layer.objects.active
-    try:
-        context.view_layer.objects.active = root
-        FnModel.iterate_mesh_objects = staticmethod(filtered_iterator)
-        result = bpy.ops.mmd_tools.convert_bone_morph_to_vertex_morph()
-        if result == {"FINISHED"}:
-            for mesh_object, vertex_indices in weighted_vertices.items():
-                _limit_shape_key_to_vertices(
-                    mesh_object,
-                    target_name,
-                    vertex_indices,
-                )
-    finally:
-        FnModel.iterate_mesh_objects = original_iterator
-        if previous_active is not None and previous_active.name in context.view_layer.objects:
-            context.view_layer.objects.active = previous_active
+    from .mmd_bone_conversion import sample, write_shape_keys
+    armature = FnModel.find_armature_object(root)
+    results = sample(context, armature, bone_morph, weighted_vertices)
+    write_shape_keys(results, target_name)
+    mmd_root = root.mmd_root
+    vertex_morph = mmd_root.vertex_morphs.get(target_name)
+    if vertex_morph is None:
+        vertex_morph = mmd_root.vertex_morphs.add()
+        vertex_morph.name = target_name
+        vertex_morph.name_e = bone_morph.name_e
+        vertex_morph.category = bone_morph.category
+    if not original_name.endswith("B"):
+        bone_morph.name = original_name + "B"
+    for frame in mmd_root.display_item_frames:
+        if frame.name == "表情":
+            if not any(item.type == "MORPH" and item.morph_type == "vertex_morphs"
+                       and item.name == target_name for item in frame.data):
+                item = frame.data.add()
+                item.type = "MORPH"
+                item.morph_type = "vertex_morphs"
+                item.name = target_name
+            break
+    mmd_root.active_morph_type = "vertex_morphs"
+    mmd_root.active_morph = mmd_root.vertex_morphs.find(target_name)
+    result = {"FINISHED"}
     return result, len(target_meshes), all_mesh_count
 
 
