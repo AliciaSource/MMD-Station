@@ -12,6 +12,8 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 bpy.ops.preferences.addon_enable(module="bl_ext.blender_org.mmd_tools")
 
+from mmd_station.blender_compat import action_fcurves
+
 import mmd_station
 from mmd_station import mmd_morph_editor as morph_editor_module
 from mmd_station import mmd_physics as mmd_physics_module
@@ -189,9 +191,9 @@ custom_material = make_custom_group_material("CustomBody")
 hidden_material = make_material("InitiallyHidden", "ShaderNodeBsdfPrincipled")
 hidden_material.mmd_material.alpha = 0.0
 hidden_shader = next(
-    node
+    node.inputs["Surface"].links[0].from_node
     for node in hidden_material.node_tree.nodes
-    if node.inputs.get("Alpha") is not None
+    if node.bl_idname == "ShaderNodeOutputMaterial" and node.inputs["Surface"].is_linked
 )
 hidden_shader.inputs["Alpha"].default_value = 0.0
 mesh_a = make_mesh("Face", armature, material, 0.0)
@@ -456,7 +458,7 @@ states = {state.morph_name: state for state in root.spx_morph_states}
 states["Hide"].keyframe_insert(data_path="value", frame=1)
 hide_path = states["Hide"].path_from_id("value")
 assert any(
-    curve.data_path == hide_path for curve in root.animation_data.action.fcurves
+    curve.data_path == hide_path for curve in action_fcurves(root.animation_data.action)
 )
 settings = bpy.context.scene.surface_proxy_creator
 settings.morph_editor_root = root
@@ -681,6 +683,10 @@ for state in material_states:
 material_states[0].selected = True
 assert bpy.ops.surface_proxy.select_morph_interval() == {"CANCELLED"}
 material_states[0].selected = False
+# Collection removal can invalidate RNA references, even when names survive.
+hide_morph = root.mmd_root.material_morphs["Hide"]
+show_morph = root.mmd_root.material_morphs["ShowHidden"]
+states = {state.morph_name: state for state in root.spx_morph_states}
 hide_morph.name_e = "OldHideEnglish"
 show_morph.name_e = "OldShowEnglish"
 states["Hide"].selected = True
@@ -1380,13 +1386,13 @@ source_action = bpy.data.actions.new("SyntheticVmd_facial")
 placeholder_keys.animation_data_create().action = source_action
 for name in ("Smile", "Hide", "BoneMove", "UVShift", "GroupHide"):
     key_block = placeholder_keys.key_blocks[name]
-    curve = source_action.fcurves.new(key_block.path_from_id("value"))
+    curve = action_fcurves(source_action).new(key_block.path_from_id("value"))
     curve.keyframe_points.insert(10.0, 0.0)
     curve.keyframe_points.insert(20.0, 1.0)
 
 mesh_action = bpy.data.actions.new("SyntheticVmd_mesh")
 mesh_a.data.shape_keys.animation_data_create().action = mesh_action
-mesh_curve = mesh_action.fcurves.new(
+mesh_curve = action_fcurves(mesh_action).new(
     mesh_a.data.shape_keys.key_blocks["Smile"].path_from_id("value")
 )
 mesh_curve.keyframe_points.insert(10.0, 0.0)
@@ -1398,28 +1404,28 @@ assert imported_uids == {
     states[name].uid
     for name in ("Smile", "Hide", "BoneMove", "UVShift", "GroupHide")
 }
-destination_paths = {curve.data_path for curve in root.animation_data.action.fcurves}
+destination_paths = {curve.data_path for curve in action_fcurves(root.animation_data.action)}
 assert {
     _morph_state_data_path(states[name])
     for name in ("Smile", "Hide", "BoneMove", "UVShift", "GroupHide")
 }.issubset(destination_paths)
-assert not source_action.fcurves
-assert not mesh_action.fcurves
+assert not action_fcurves(source_action)
+assert not action_fcurves(mesh_action)
 
 # Existing builds stored imported curves under stable UID paths, while an
 # interactive I press created Blender's index path. Reload migration merges
 # both into the single UI-native path and keeps the interactive frame value.
 hide_path = _morph_state_data_path(states["Hide"])
-legacy_hide_curve = root.animation_data.action.fcurves.find(hide_path)
+legacy_hide_curve = action_fcurves(root.animation_data.action).find(hide_path)
 legacy_hide_curve.data_path = (
     f'spx_morph_states["{states["Hide"].uid}"].value'
 )
-manual_hide_curve = root.animation_data.action.fcurves.new(hide_path)
+manual_hide_curve = action_fcurves(root.animation_data.action).new(hide_path)
 manual_hide_curve.keyframe_points.insert(15.0, 0.75)
 assert ensure_morph_states(root)
 hide_curves = [
     curve
-    for curve in root.animation_data.action.fcurves
+    for curve in action_fcurves(root.animation_data.action)
     if curve.data_path == _morph_state_data_path(states["Hide"])
 ]
 assert len(hide_curves) == 1
@@ -1431,7 +1437,7 @@ assert any(
 # The central property now has Blender's three native animation states:
 # keyed frame (yellow), animated non-keyed frame (green), and an overridden
 # value that differs from the F-Curve evaluation (orange).
-smile_curve = root.animation_data.action.fcurves.find(
+smile_curve = action_fcurves(root.animation_data.action).find(
     _morph_state_data_path(states["Smile"])
 )
 assert smile_curve is not None
@@ -1492,7 +1498,7 @@ with tempfile.TemporaryDirectory(prefix="mmd-station-vmd-") as directory:
         margin=0,
         create_new_action=True,
     ) == {"FINISHED"}
-    imported_paths = {curve.data_path for curve in root.animation_data.action.fcurves}
+    imported_paths = {curve.data_path for curve in action_fcurves(root.animation_data.action)}
     assert {
         _morph_state_data_path(states[name])
         for name in ("Smile", "Hide", "BoneMove", "UVShift", "GroupHide")
@@ -1649,7 +1655,7 @@ states = {state.morph_name: state for state in root.spx_morph_states}
 root.animation_data_clear()
 placeholder_keys.animation_data_clear()
 nla_source = bpy.data.actions.new("SyntheticVmdNla_facial")
-nla_curve = nla_source.fcurves.new(
+nla_curve = action_fcurves(nla_source).new(
     placeholder_keys.key_blocks["Smile"].path_from_id("value")
 )
 nla_curve.keyframe_points.insert(1.0, 0.0)
@@ -1666,10 +1672,10 @@ destination_strip = root.animation_data.nla_tracks[0].strips[0]
 assert abs(destination_strip.frame_start - source_strip.frame_start) < 1.0e-6
 assert destination_strip.blend_type == source_strip.blend_type
 assert {
-    curve.data_path for curve in destination_strip.action.fcurves
+    curve.data_path for curve in action_fcurves(destination_strip.action)
 } == {_morph_state_data_path(states["Smile"])}
 _remove_imported_shape_key_curves(root)
-assert not nla_source.fcurves
+assert not action_fcurves(nla_source)
 
 # Cleanup is scoped to checked Morphs in the current tab and preserves every
 # checked Morph that still has visible detail content.
@@ -1693,6 +1699,8 @@ for morph_type, morph_name in empty_morph_names.items():
 cleanup_vertex_keep = root.mmd_root.vertex_morphs.add()
 cleanup_vertex_keep.name = nonempty_morph_names["vertex_morphs"]
 cleanup_vertex_key = mesh_a.shape_key_add(name=cleanup_vertex_keep.name)
+# Blender 5.0 defaults new shape keys to 1.0 instead of 0.0.
+cleanup_vertex_key.value = 0.0
 cleanup_vertex_key.data[0].co.x += 1.0e-3
 cleanup_uv_keep = root.mmd_root.uv_morphs.add()
 cleanup_uv_keep.name = nonempty_morph_names["uv_morphs"]
@@ -1747,14 +1755,17 @@ threshold_partial = root.mmd_root.vertex_morphs.add()
 threshold_partial.name = "ThresholdPartial"
 threshold_partial_name = threshold_partial.name
 partial_small = mesh_a.shape_key_add(name=threshold_partial.name)
+partial_small.value = 0.0
 partial_small.data[0].co.x += 5.0e-5
 partial_large = mesh_b.shape_key_add(name=threshold_partial.name)
+partial_large.value = 0.0
 partial_large.data[0].co.x += 2.0e-4
 threshold_empty = root.mmd_root.vertex_morphs.add()
 threshold_empty.name = "ThresholdEmpty"
 threshold_empty_name = threshold_empty.name
 for mesh_object in (mesh_a, mesh_b):
     key_block = mesh_object.shape_key_add(name=threshold_empty.name)
+    key_block.value = 0.0
     key_block.data[0].co.x += 5.0e-5
 ensure_morph_states(root)
 settings.morph_editor_type = "vertex_morphs"

@@ -1,8 +1,9 @@
 import hashlib
-import importlib
 from pathlib import Path
 
 import bpy
+
+from ..blender_compat import import_optional_module
 
 
 SOURCE_VMD_KEY = "spx_mmd_ik_source_vmd"
@@ -17,9 +18,8 @@ def _modules():
         "bl_ext.blender_org.mmd_tools.core.vmd.importer",
         "mmd_tools.core.vmd.importer",
     ):
-        try:
-            module = importlib.import_module(name)
-        except ImportError:
+        module = import_optional_module(name)
+        if module is None:
             continue
         if all(module.VMDImporter is not existing.VMDImporter for existing in result):
             result.append(module)

@@ -92,6 +92,7 @@ def write_shape_keys(results, name):
                 raise ValueError("Cannot overwrite the reference shape key")
             if key is None:
                 key = obj.shape_key_add(name=name, from_mix=False)
+                key.value = 0.0
                 created.append((obj, key))
             else:
                 backups.append((key, [v.co.copy() for v in key.data], key.relative_key))

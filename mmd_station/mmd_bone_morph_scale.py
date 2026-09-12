@@ -1,7 +1,7 @@
 """Host-owned bone scale editing and PMX sidecars; upstream PMX stays standard."""
 
-import importlib
 import logging
+from functools import wraps
 
 import bpy
 from bpy.props import FloatVectorProperty, StringProperty
@@ -9,6 +9,7 @@ from bpy.types import Operator
 from bpy_extras.io_utils import ImportHelper
 
 from .execution_guard import scene_access_allowed
+from .blender_compat import import_optional_module
 from .i18n import iface, report
 from .morph_sidecar import non_unit, read_payload, sidecar_path, write_payload
 
@@ -302,11 +303,17 @@ def patch(target, name, replacement):
 
 def register_services():
     global _DATA_CLASS
-    module = importlib.import_module("bl_ext.blender_org.mmd_tools.properties.morph")
+    if _DATA_CLASS is not None:
+        return
+    modules = [import_optional_module("bl_ext.blender_org.mmd_tools." + suffix)
+               for suffix in ("properties.morph", "operators.morph",
+                              "core.pmx.exporter", "core.pmx.importer")]
+    if any(module is None for module in modules):
+        return
+    module, ops, exporter, importer = modules
     _DATA_CLASS = module.BoneMorphData
     _DATA_CLASS.spx_scale = FloatVectorProperty(name="缩放", size=3, default=(1, 1, 1),
                                                min=-1.0e6, max=1.0e6, update=_scale_updated)
-    ops = importlib.import_module("bl_ext.blender_org.mmd_tools.operators.morph")
     for class_name in ("ViewBoneMorph", "EditBoneOffset", "ApplyBoneOffset", "ApplyBoneMorph", "AddMorphOffset"):
         cls = getattr(ops, class_name)
         original = cls.execute
@@ -346,9 +353,9 @@ def register_services():
             return execute
         patch(cls, "execute", make_execute(original, class_name))
 
-    exporter = importlib.import_module("bl_ext.blender_org.mmd_tools.core.pmx.exporter")
     original_export = exporter.export
 
+    @wraps(original_export)
     def export(filepath, **kwargs):
         captured = []
         original_save = exporter.pmx.save
@@ -371,9 +378,9 @@ def register_services():
         return result
     patch(exporter, "export", export)
 
-    importer = importlib.import_module("bl_ext.blender_org.mmd_tools.core.pmx.importer")
     original_import = importer.PMXImporter.execute
 
+    @wraps(original_import)
     def execute_import(instance, **kwargs):
         result = original_import(instance, **kwargs)
         path = kwargs.get("filepath")

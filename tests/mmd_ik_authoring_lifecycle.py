@@ -19,6 +19,8 @@ import mmd_tools
 
 mmd_tools.register()
 
+from mmd_station.blender_compat import action_fcurves
+
 import mmd_station
 
 mmd_station.register()
@@ -31,6 +33,7 @@ from mmd_station.mmd_ik_runtime.evaluator import (
     _depsgraph_update_post,
     is_active,
 )
+from mmd_station.blender_compat import select_bone
 from mmd_station.mmd_ik_runtime.runtime import runtime_state
 
 
@@ -57,7 +60,7 @@ bpy.ops.object.mode_set(mode="POSE")
 pose_bone = armature.pose.bones.get("全ての親") or next(iter(armature.pose.bones))
 pose_bone_name = pose_bone.name
 armature.data.bones.active = pose_bone.bone
-pose_bone.bone.select = True
+select_bone(armature, pose_bone_name)
 
 assert bpy.ops.surface_proxy.create_mmd_ik_runtime() == {"FINISHED"}
 assert is_active(root)
@@ -73,7 +76,7 @@ assert bpy.ops.surface_proxy.mmd_ik_insert_keyframe(keying_set="LocRotScale") ==
 assert session.action_input and runtime_state(root)["action_input"]
 action = armature.animation_data.action
 data_path = f'pose.bones["{pose_bone.name}"].location'
-location_curves = [curve for curve in action.fcurves if curve.data_path == data_path]
+location_curves = [curve for curve in action_fcurves(action) if curve.data_path == data_path]
 assert len(location_curves) == 3
 for curve in location_curves:
     point = next(

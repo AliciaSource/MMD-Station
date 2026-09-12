@@ -2111,6 +2111,8 @@ assert {
     "use_deform",
 } <= bone_detail_properties
 
+# Edit-mode round trips invalidate previously held Bone RNA references.
+anchor_bone = model_armature.data.bones[anchor_rigid.mmd_rigid.bone]
 diagnostic_unanchored = FnRigidBody.new_rigid_body_objects(
     bpy.context,
     anchor_group,
@@ -3100,6 +3102,10 @@ assert line_proxy.mode == "SCULPT"
 assert bpy.ops.object.mode_set(mode="OBJECT") == {"FINISHED"}
 line_proxy.data.vertices[line_vertex_map[line_middle_row]].co.x += 0.1
 assert bpy.ops.surface_proxy.sync_proxy_bones() == {"FINISHED"}
+# Synchronization crosses Edit Mode and invalidates the previous Bone RNA.
+line_middle_bone = model_armature.data.bones[
+    f"LineProxy_C01_R{line_middle_row + 1:02d}"
+]
 assert (line_middle_bone.head_local - line_middle_head).length > 0.09
 
 line_middle_bone = model_armature.data.bones[
@@ -3162,6 +3168,7 @@ recovered_middle_bone = model_armature.data.bones[
 recovered_middle_head = recovered_middle_bone.head_local.copy()
 line_proxy.data.vertices[line_vertex_map[line_middle_row]].co.x += 0.05
 assert proxy_sync.sync_proxy_bones(bpy.context, line_proxy) == len(line_new_bone_names)
+recovered_middle_bone = model_armature.data.bones[line_new_bone_names[line_middle_row]]
 assert (recovered_middle_bone.head_local - recovered_middle_head).length > 0.04
 
 settings.browser_items.clear()

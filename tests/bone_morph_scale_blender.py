@@ -13,6 +13,7 @@ if not hasattr(bpy.types.Object, "mmd_type"):
     addon_utils.enable("bl_ext.blender_org.mmd_tools")
 addon_utils.disable("mmd_station", default_set=False)
 import mmd_station
+from mmd_station.blender_compat import select_bone
 mmd_station.register()
 from mmd_station import mmd_bone_morph_scale as scale
 from mmd_station import mmd_morph_editor as editor
@@ -67,7 +68,7 @@ assert abs(morph.data[1].rotation.angle - 0.3) < 1.0e-5
 
 # The ordinary plus captures all three transform channels.
 arm.data.bones.active = child.bone
-child.bone.select = True
+select_bone(arm, child.name)
 assert bpy.ops.surface_proxy.add_morph_offset() == {"FINISHED"}
 close(morph.data[-1].spx_scale, child.scale)
 assert morph.data[-1].bone == "Child"
@@ -102,7 +103,7 @@ bpy.context.view_layer.objects.active = arm
 bpy.ops.object.mode_set(mode="POSE")
 extra = arm.pose.bones["InheritedOnly"]
 arm.data.bones.active = extra.bone
-extra.bone.select = True
+select_bone(arm, extra.name)
 extra.scale = (2, 2, 2)
 assert bpy.ops.surface_proxy.add_morph_offset() == {"FINISHED"}
 assert len(morph.data) == 3

@@ -10,6 +10,8 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 bpy.ops.preferences.addon_enable(module="bl_ext.blender_org.mmd_tools")
 
+from mmd_station.blender_compat import action_fcurves
+
 import mmd_station
 from mmd_station.mmd_physics import _mmd_api
 from mmd_station.physics_preview.runtime import align_model_physics_to_pose
@@ -135,7 +137,7 @@ output_action.name = "PoseSource · Physics Bake"
 output_action["mmd_station_physics_generated"] = True
 output_action["mmd_station_physics_source_uid"] = "pose-source-uid"
 output_action.pop("mmd_station_action_uid", None)
-output_curve = output_action.fcurves.find(
+output_curve = action_fcurves(output_action).find(
     f'pose.bones["{bone.name}"].location',
     index=0,
 )

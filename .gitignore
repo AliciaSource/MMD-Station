@@ -37,3 +37,6 @@ _archive/
 .idea/
 .DS_Store
 Thumbs.db
+
+# Local-only validation artifacts
+/_temporary_cleanup/

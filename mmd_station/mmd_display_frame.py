@@ -1,3 +1,4 @@
+from .blender_compat import bone_hidden, select_bones
 from .i18n import iface, report
 import importlib
 
@@ -112,8 +113,8 @@ def _selected_bone_names(context, armature):
     return tuple(bone.name for bone in armature.data.bones if bone.name in selected)
 
 
-def _bone_is_visible(bone):
-    if bone.hide:
+def _bone_is_visible(bone, armature):
+    if bone_hidden(armature, bone):
         return False
     collections = tuple(getattr(bone, "collections", ()))
     return not collections or any(
@@ -603,9 +604,7 @@ class SPX_OT_SelectCheckedDisplayBones(Operator):
         armature.select_set(True)
         context.view_layer.objects.active = armature
         bpy.ops.object.mode_set(mode="POSE")
-        selected = set(valid_names)
-        for bone in armature.data.bones:
-            bone.select = bone.name in selected
+        select_bones(armature, valid_names)
         armature.data.bones.active = armature.data.bones[valid_names[-1]]
         skipped = len(checked_names) - len(valid_names)
         message = f"已将 {len(valid_names)} 根勾选骨骼选入 Blender"
@@ -689,7 +688,7 @@ class SPX_OT_SmartFillDisplayFrameBones(Operator):
         bone_names = [
             bone.name
             for bone in armature.data.bones
-            if bone.name not in registered and _bone_is_visible(bone)
+            if bone.name not in registered and _bone_is_visible(bone, armature)
         ]
         added = _append_bone_items(frame, bone_names)
         if not added:

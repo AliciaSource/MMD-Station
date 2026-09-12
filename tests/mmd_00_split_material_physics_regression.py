@@ -147,7 +147,13 @@ try:
     proxy_mesh = proxy.mesh
     assert proxy_mesh is not None
     assert len(proxy_mesh.data.vertices) == source_vertex_count
-    assert tuple(key.name for key in proxy_mesh.data.shape_keys.key_blocks) == source_shape_names
+    proxy_shape_names = tuple(key.name for key in proxy_mesh.data.shape_keys.key_blocks)
+    assert proxy_shape_names == source_shape_names, {
+        "missing": sorted(set(source_shape_names) - set(proxy_shape_names)),
+        "extra": sorted(set(proxy_shape_names) - set(source_shape_names)),
+        "first_mismatch": next((index for index, pair in enumerate(zip(source_shape_names, proxy_shape_names))
+                                if pair[0] != pair[1]), None),
+    }
     assert {group.name for group in proxy_mesh.vertex_groups} == source_group_names
     assert [
         modifier.object

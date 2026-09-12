@@ -24,6 +24,7 @@ import mmd_tools
 mmd_tools.register()
 
 import mmd_station
+from mmd_station.blender_compat import select_bones
 from mmd_station.mmd_ik_runtime import evaluator, lifecycle
 from mmd_station.physics_preview import runtime
 
@@ -58,9 +59,7 @@ ik_bone = armature.pose.bones[IK_NAME]
 
 
 def select_ik():
-    for bone in armature.data.bones:
-        bone.select = False
-    ik_bone.bone.select = True
+    select_bones(armature, (IK_NAME,))
     armature.data.bones.active = ik_bone.bone
 
 

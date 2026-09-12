@@ -19,6 +19,7 @@ import mmd_tools
 mmd_tools.register()
 
 import mmd_station
+from mmd_station.blender_compat import select_bones
 from mmd_station.mmd_ik_runtime import evaluator
 from mmd_station.physics_preview import runtime
 
@@ -87,10 +88,8 @@ assert bpy.ops.surface_proxy.create_mmd_ik_runtime() == {"FINISHED"}
 
 session = evaluator._SESSIONS[root.name]
 armature = runtime._model_armature(root)
-for bone in armature.data.bones:
-    bone.select = False
 ik_bone = armature.pose.bones["足ＩＫ.L"]
-ik_bone.bone.select = True
+select_bones(armature, (ik_bone.name,))
 armature.data.bones.active = ik_bone.bone
 armature.select_set(True)
 bpy.context.view_layer.objects.active = armature
@@ -156,9 +155,7 @@ finally:
 evaluator._depsgraph_update_post(bpy.context.scene)
 
 pose_bone = armature.pose.bones["全ての親"]
-for bone in armature.data.bones:
-    bone.select = False
-pose_bone.bone.select = True
+select_bones(armature, (pose_bone.name,))
 armature.data.bones.active = pose_bone.bone
 
 settings.preview_solver_target = "PMX"

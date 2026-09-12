@@ -32,6 +32,8 @@ ctypes.CDLL = tracked_cdll
 addon_utils.enable("bl_ext.blender_org.mmd_tools", default_set=False)
 addon_utils.enable("mmd_station", default_set=False)
 assert not loads, loads
+from mmd_station.blender_compat import action_fcurves
+
 from mmd_station.mmd_physics import _mmd_api
 from mmd_station.physics_preview import runtime
 from mmd_station.physics_preview import cache as physics_cache
@@ -114,7 +116,7 @@ def action_signature():
     action = armature.animation_data.action
     return (action.name, [
         (curve.data_path, curve.array_index, [tuple(p.co) for p in curve.keyframe_points])
-        for curve in action.fcurves
+        for curve in action_fcurves(action)
     ])
 
 

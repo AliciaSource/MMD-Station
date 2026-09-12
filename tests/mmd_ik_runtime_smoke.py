@@ -258,7 +258,11 @@ assert preview_session.armature == canonical
 preview_session.prepare_step()
 assert preview_session.step_solver()
 preview_session.apply_step()
-assert session.external_transforms
+# The current runtime isolates physics output instead of feeding it into IK.
+assert not session.external_transforms
+assert not hasattr(preview_session, "runtime_adapter")
+assert not hasattr(__import__("mmd_station.mmd_ik_runtime.evaluator", fromlist=["evaluator"]),
+                   "submit_physics_feedback")
 physics_runtime.stop_preview(root)
 assert not session.external_transforms
 assert is_active(root)

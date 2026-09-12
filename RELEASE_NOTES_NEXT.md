@@ -7,3 +7,5 @@
 - Exclude detached meshes from material lists, prioritize exact MMD names during Blender material naming, and recover stale material Morph references through unique in-model Blender/MMD names.
 
 - Isolate bone-to-vertex morph conversion from active poses, other bone/vertex/group morphs and animation drivers; include bone scale and avoid context-dependent morph slider operators.
+
+- Support Blender 5.x layered Actions, owner-scoped animation slots, bone selection/visibility and UV selection across Morph, IK, VMD and physics workflows while preserving Blender 4.4/4.5 support. Preserve slot identity during Action copies and restoration, and skip unusable legacy MMD Tools probes while retaining the valid official extension dependency.

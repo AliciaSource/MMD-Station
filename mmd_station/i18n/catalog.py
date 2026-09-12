@@ -1,6 +1,7 @@
 """Generated English catalog for the existing Chinese MMD Station msgids."""
 
 ENGLISH = {
+    "动作包含多个槽位：请指定动画所属对象": "Multiple Action slots require an explicit animation owner",
     "MMD 材质名": "MMD Material Name",
     "MMD 材质名：全部材质或未唯一匹配": "MMD Material Name: all materials or no unique match",
     "新增或更新活动骨骼详情项，读取位移、旋转和缩放": "Add or update the active bone offset, capturing location, rotation and scale",
@@ -13,6 +14,7 @@ ENGLISH = {
     '缩放 JSON 读取失败：{error}': 'Failed to read scale JSON: {error}',
     '已导入 {imported} 项缩放；跳过 {skipped} 项': 'Imported {imported} scale entries; skipped {skipped}',
 
+    '无法为动作创建 F-Curve：分层动作通道不可用': 'Unable to create an F-Curve for the Action: the layered Action channel is unavailable',
     '合并': 'Join',
     '合并模型网格': 'Join Model Meshes',
     '使用 mmd_tools 合并所选 MMD 模型的全部 Mesh，并保持 PMX 材质顺序': 'Use mmd_tools to join all Meshes of the selected MMD model while preserving PMX material order',

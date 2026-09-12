@@ -1,0 +1,101 @@
+[
+  {
+    "script": "native_bake_isolation_blender",
+    "name": "CLOTH_preview_MMD",
+    "args": [
+      "CLOTH",
+      "preview",
+      "MMD",
+      "{temporary}/native.json"
+    ],
+    "result": "{temporary}/native.json"
+  },
+  {
+    "script": "native_bake_isolation_blender",
+    "name": "CLOTH_preview_PMX",
+    "args": [
+      "CLOTH",
+      "preview",
+      "PMX",
+      "{temporary}/native.json"
+    ],
+    "result": "{temporary}/native.json"
+  },
+  {
+    "script": "native_bake_isolation_blender",
+    "name": "CLOTH_sequential_MMD",
+    "args": [
+      "CLOTH",
+      "sequential",
+      "MMD",
+      "{temporary}/native.json"
+    ],
+    "result": "{temporary}/native.json"
+  },
+  {
+    "script": "native_bake_isolation_blender",
+    "name": "CLOTH_sequential_PMX",
+    "args": [
+      "CLOTH",
+      "sequential",
+      "PMX",
+      "{temporary}/native.json"
+    ],
+    "result": "{temporary}/native.json"
+  },
+  {
+    "script": "native_bake_isolation_blender",
+    "name": "SOFT_BODY_preview_MMD",
+    "args": [
+      "SOFT_BODY",
+      "preview",
+      "MMD",
+      "{temporary}/native.json"
+    ],
+    "result": "{temporary}/native.json"
+  },
+  {
+    "script": "native_bake_isolation_blender",
+    "name": "SOFT_BODY_preview_PMX",
+    "args": [
+      "SOFT_BODY",
+      "preview",
+      "PMX",
+      "{temporary}/native.json"
+    ],
+    "result": "{temporary}/native.json"
+  },
+  {
+    "script": "native_bake_isolation_blender",
+    "name": "SOFT_BODY_sequential_MMD",
+    "args": [
+      "SOFT_BODY",
+      "sequential",
+      "MMD",
+      "{temporary}/native.json"
+    ],
+    "result": "{temporary}/native.json"
+  },
+  {
+    "script": "native_bake_isolation_blender",
+    "name": "SOFT_BODY_sequential_PMX",
+    "args": [
+      "SOFT_BODY",
+      "sequential",
+      "PMX",
+      "{temporary}/native.json"
+    ],
+    "result": "{temporary}/native.json"
+  },
+  {
+    "script": "native_bake_isolation_blender",
+    "name": "RIGID_BODY_idle_MMD",
+    "args": [
+      "RIGID_BODY",
+      "idle",
+      "MMD",
+      "{temporary}/native.json"
+    ],
+    "result": "{temporary}/native.json"
+  }
+]

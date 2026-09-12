@@ -1,3 +1,4 @@
+from ..blender_compat import assign_action
 from ..execution_guard import scene_access_allowed
 import concurrent.futures
 import ctypes
@@ -248,7 +249,7 @@ def align_model_physics_to_pose(root):
     alignment_completed = False
     try:
         if alignment_action is not original_action:
-            armature.animation_data.action = alignment_action
+            assign_action(armature.animation_data, alignment_action)
             dynamic_bones = {
                 rigid.mmd_rigid.bone
                 for rigid in rigids
@@ -290,7 +291,7 @@ def align_model_physics_to_pose(root):
         alignment_completed = True
     except Exception:
         if alignment_action is not original_action:
-            armature.animation_data.action = original_action
+            assign_action(armature.animation_data, original_action)
             armature.update_tag(refresh={"OBJECT"})
             bpy.context.scene.frame_set(
                 bpy.context.scene.frame_current,

@@ -12,7 +12,10 @@ sys.path.insert(0, str(PROJECT_ROOT))
 
 bpy.ops.preferences.addon_enable(module="bl_ext.blender_org.mmd_tools")
 
+from mmd_station.blender_compat import action_fcurves
+
 import mmd_station
+from mmd_station.blender_compat import select_bones
 from mmd_station.mmd_physics import _mmd_api
 from mmd_station.physics_preview.bake import (
     BakeJob,
@@ -78,7 +81,7 @@ add_rigid("BakeDynamic", 1, -0.3, physics_bone)
 
 source = bpy.data.actions.new("BakeSource")
 armature.animation_data_create().action = source
-source_curve = source.fcurves.new(
+source_curve = action_fcurves(source).new(
     f'pose.bones["{bpy.utils.escape_identifier(bone.name)}"].location',
     index=0,
 )
@@ -142,9 +145,9 @@ cache_header, checkpoints = physics_cache.read_cache(output)
 assert cache_header is not None
 assert sorted(checkpoints) == [0, 1, 3]
 bone_prefix = f'pose.bones["{bpy.utils.escape_identifier(physics_bone.name)}"]'
-assert output.fcurves.find(f"{bone_prefix}.location", index=0) is not None
-assert output.fcurves.find(f"{bone_prefix}.rotation_quaternion", index=0) is not None
-assert len(source.fcurves) == 1
+assert action_fcurves(output).find(f"{bone_prefix}.location", index=0) is not None
+assert action_fcurves(output).find(f"{bone_prefix}.rotation_quaternion", index=0) is not None
+assert len(action_fcurves(source)) == 1
 legacy_segments = _segments(output)
 legacy_segments[0].pop("simulation_preroll")
 _store_segments(output, legacy_segments)
@@ -186,7 +189,7 @@ second = job.finish()
 segments = _segments(armature.animation_data.action)
 assert [(item["start"], item["end"]) for item in segments] == [(1, 3), (4, 5)]
 assert second["continuity"] == "CONTINUE"
-location_curve = armature.animation_data.action.fcurves.find(
+location_curve = action_fcurves(armature.animation_data.action).find(
     f"{bone_prefix}.location",
     index=0,
 )
@@ -210,7 +213,7 @@ oracle.close()
 repair_output = armature.animation_data.action
 settings.physics_repair_start = 2
 settings.physics_repair_end = 5
-original_anchor_x = repair_output.fcurves.find(
+original_anchor_x = action_fcurves(repair_output).find(
     f"{bone_prefix}.location",
     index=0,
 ).evaluate(3)
@@ -220,9 +223,7 @@ bpy.ops.object.select_all(action="DESELECT")
 armature.select_set(True)
 bpy.context.view_layer.objects.active = armature
 bpy.ops.object.mode_set(mode="POSE")
-for pose_bone in armature.pose.bones:
-    pose_bone.bone.select = False
-armature.pose.bones[physics_bone.name].bone.select = True
+select_bones(armature, (physics_bone.name,))
 expected_safe = _action_basis(
     repair_output,
     armature.pose.bones[physics_bone.name],
@@ -241,7 +242,7 @@ bpy.ops.object.mode_set(mode="OBJECT")
 repair_layer = _repair_layers(repair_output)[0]
 assert sorted(repair_layer["anchors"]) == ["3"]
 original_end = [
-    repair_output.fcurves.find(f"{bone_prefix}.location", index=index).evaluate(5)
+    action_fcurves(repair_output).find(f"{bone_prefix}.location", index=index).evaluate(5)
     for index in range(3)
 ]
 repair_job = BakeJob(bpy.context, "REPAIR", repair_layer=repair_layer)
@@ -261,14 +262,14 @@ repair_segment = repair_job.finish()
 assert repair_segment["repair_id"] == repair_layer["id"]
 assert _repair_layers(armature.animation_data.action)[0]["status"] == "COMPLETED"
 assert [(item["start"], item["end"]) for item in _segments(armature.animation_data.action)] == [(1, 3), (4, 5)]
-repaired_anchor_x = armature.animation_data.action.fcurves.find(
+repaired_anchor_x = action_fcurves(armature.animation_data.action).find(
     f"{bone_prefix}.location",
     index=0,
 ).evaluate(3)
 assert abs(repaired_anchor_x - original_anchor_x) > 1.0e-4
 assert abs(repaired_anchor_x) < 10.0
 repaired_end = [
-    armature.animation_data.action.fcurves.find(
+    action_fcurves(armature.animation_data.action).find(
         f"{bone_prefix}.location",
         index=index,
     ).evaluate(5)
@@ -311,7 +312,7 @@ assert bpy.ops.surface_proxy.delete_mmd_physics_bake_segment(
 ) == {"FINISHED"}
 remaining = _segments(armature.animation_data.action)
 assert len(remaining) == 1 and remaining[0]["status"] == "STALE"
-location_curve = armature.animation_data.action.fcurves.find(
+location_curve = action_fcurves(armature.animation_data.action).find(
     f"{bone_prefix}.location",
     index=0,
 )
