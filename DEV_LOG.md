@@ -1,5 +1,14 @@
 # Development Log
 
+## 2026-09-12 - v1.0.3-dev Blender 5.x 兼容
+
+- 新增 `mmd_station/blender_compat.py`：Blender 5.0 起 Action 改为分层结构（layers → strips → channelbags），`Action.fcurves`、`Action.groups` 与 `Bone.select` 均被移除。兼容层用首个通道包模拟旧 fcurves 视图（new/find/remove/clear/遍历），按数据路径与所属 ID 推断 slot 类型（OBJECT/KEY）并在赋值后显式链接 `action_slot`，另提供 `select_bones`、`select_bone`、`bone_selected`、`selected_bone_names`、`set_uv_selection` 与 `import_optional_module`；骨骼选择按版本分流（4.4/4.5 读 `Bone.select`，5.0 起读 `PoseBone.select`），插件与测试都不再写死单一版本的选中标志。
+- `import_optional_module` 取代 mmd_tools 探测处的裸 `except ImportError`：插件在 `mmd_ik_runtime/export_hook.py`、`vmd_hook.py`、`pmx_hook.py`、`runtime.py` 与 `physics_preview/presentation_proxy.py` 里按“扩展路径优先、`mmd_tools` 兜底”查找 mmd_tools，任一候选抛任何异常都按“不可用”跳过，不再中断插件注册。
+- Morph 编辑器、物理预览烘焙/缓存/运行时、IK 运行时、显示帧与物理面板改用兼容层；IK 取键与变换 modal 的选中骨骼读取改为经 `bone_selected`，修正 5.x 读取 `pose_bone.bone.select` 抛 AttributeError 的问题，并修好显示帧回归用例遗留的缩进错误。实测 5.2 下 `PoseBone.select` 确实驱动 `context.selected_pose_bones`，选中类操作与 4.4 行为一致。
+- 导出 Morph 桥接新建临时 ShapeKey 后显式 `value = 0.0`：Blender 5.0 起新建形态键默认值为 1.0，否则会污染导出形态数据。
+- 在 Blender 5.2.1 LTS 实测：插件从真实安装目录经 `bpy.ops.preferences.addon_enable` 启用成功（即用户报错的那一步）；分层 slot 链接后物体与形态键动画均按帧求值（`KEKey` 通道）；全量离线回归 20 项通过（含 `headless_smoke`、`mmd_morph_editor_regression`、`physics_bake_regression`、`mmd_display_frame_regression`、`mmd_io_regression`、`type2_chain_translation_regression`），i18n 目录覆盖门槛与 HEAD 安全扫描通过。其余用例需要作者的机器路径与 .blend 素材（硬编码 `D:\MOD\...`、`C:\Users\A\...`）或旧式顶层 `mmd_tools` 包，本机无法运行。
+- 用户报错 `'module' object has no attribute 'ActionFCurves'` 的根因已完整复现：addons 目录里的旧版 `mmd_tools` 2.8.1 在 5.2 下无法导入（`auto_load` 扫描到 `core/vmd/importer.py` 的函数注解 `bpy.types.ActionFCurves`，该类型 5.0 起已移除），而插件注册链 `register → register_mmd_ik_runtime_services → export_hook.install → _fileio_modules → import mmd_tools.operators.fileio` 只捕获 `ImportError`，于是 AttributeError 冒泡成安装失败。v1.0.2 与补丁前版本在“旧版 mmd_tools 可导入”环境下均能复现该报错，改探测逻辑后即使旧版仍在也能正常启用；旧版 2.8.1 已移出 addons 目录，本机改用扩展版 mmd_tools 4.5.14。已知遗留差异：4.5.14 的 `FnModel.realign_bone_ids` 改为按 MMD 层级重排，`bone_physics_creator_smoke` 的骨骼顺序断言因此不再成立（与本次兼容层无关，未改排序语义）。未 push、未 tag、未打 ZIP；物理/IK 原生化路径仍需真实模型工作流确认。
+
 ## 2026-09-07 - v1.0.2 正式版发布
 
 - 按用户当前授权向 AliciaSource/MMD-Station 推送并发布正式 v1.0.2；将 PRERELEASE 设为 None，保留 1.0.2 版本及现有双语手册，英文 Release notes 描述按需 DLL、原生后台烘焙隔离、Morph 延迟结构初始化与线程 RNA 隔离，并明确第三方覆盖边界。

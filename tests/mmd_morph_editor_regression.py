@@ -1693,6 +1693,8 @@ for morph_type, morph_name in empty_morph_names.items():
 cleanup_vertex_keep = root.mmd_root.vertex_morphs.add()
 cleanup_vertex_keep.name = nonempty_morph_names["vertex_morphs"]
 cleanup_vertex_key = mesh_a.shape_key_add(name=cleanup_vertex_keep.name)
+# Blender 5.0 defaults new shape keys to 1.0 instead of 0.0.
+cleanup_vertex_key.value = 0.0
 cleanup_vertex_key.data[0].co.x += 1.0e-3
 cleanup_uv_keep = root.mmd_root.uv_morphs.add()
 cleanup_uv_keep.name = nonempty_morph_names["uv_morphs"]
@@ -1747,14 +1749,17 @@ threshold_partial = root.mmd_root.vertex_morphs.add()
 threshold_partial.name = "ThresholdPartial"
 threshold_partial_name = threshold_partial.name
 partial_small = mesh_a.shape_key_add(name=threshold_partial.name)
+partial_small.value = 0.0
 partial_small.data[0].co.x += 5.0e-5
 partial_large = mesh_b.shape_key_add(name=threshold_partial.name)
+partial_large.value = 0.0
 partial_large.data[0].co.x += 2.0e-4
 threshold_empty = root.mmd_root.vertex_morphs.add()
 threshold_empty.name = "ThresholdEmpty"
 threshold_empty_name = threshold_empty.name
 for mesh_object in (mesh_a, mesh_b):
     key_block = mesh_object.shape_key_add(name=threshold_empty.name)
+    key_block.value = 0.0
     key_block.data[0].co.x += 5.0e-5
 ensure_morph_states(root)
 settings.morph_editor_type = "vertex_morphs"

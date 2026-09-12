@@ -1,6 +1,7 @@
 """Generated English catalog for the existing Chinese MMD Station msgids."""
 
 ENGLISH = {
+    '无法为动作创建 F-Curve：分层动作通道不可用': 'Unable to create an F-Curve for the Action: the layered Action channel is unavailable',
     '合并': 'Join',
     '合并模型网格': 'Join Model Meshes',
     '使用 mmd_tools 合并所选 MMD 模型的全部 Mesh，并保持 PMX 材质顺序': 'Use mmd_tools to join all Meshes of the selected MMD model while preserving PMX material order',

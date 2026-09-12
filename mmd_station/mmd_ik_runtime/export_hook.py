@@ -1,6 +1,6 @@
-import importlib
 from contextlib import contextmanager
 
+from ..blender_compat import import_optional_module
 from .pmx_payload import restore_source_ik_and_bone_morphs
 from .runtime import export_restore_runtime, export_switch_to_canonical
 
@@ -14,9 +14,8 @@ def _fileio_modules():
         "bl_ext.blender_org.mmd_tools.operators.fileio",
         "mmd_tools.operators.fileio",
     ):
-        try:
-            module = importlib.import_module(name)
-        except ImportError:
+        module = import_optional_module(name)
+        if module is None:
             continue
         if all(module.ExportPmx is not item.ExportPmx for item in modules):
             modules.append(module)

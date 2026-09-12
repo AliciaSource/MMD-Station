@@ -1,8 +1,9 @@
 from dataclasses import dataclass
 import hashlib
-import importlib
 
 import bpy
+
+from ..blender_compat import import_optional_module
 
 
 _COLLECTION_PREFIX = "_MMD_STATION_PHYSICS_VIEW_"
@@ -81,11 +82,9 @@ def _rebuild_mmd_edge_preview(obj, settings):
         "bl_ext.blender_org.mmd_tools.operators.material",
         "mmd_tools.operators.material",
     ):
-        try:
-            material_module = importlib.import_module(module_name)
+        material_module = import_optional_module(module_name)
+        if material_module is not None:
             break
-        except ImportError:
-            continue
     if material_module is None:
         raise RuntimeError("Unable to load the mmd_tools edge preview implementation")
 

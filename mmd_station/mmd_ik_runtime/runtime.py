@@ -1,9 +1,10 @@
-import importlib
 import json
 import uuid
 
 import bpy
 from bpy.props import StringProperty
+
+from ..blender_compat import import_optional_module
 
 
 STATE_KEY = "spx_mmd_ik_runtime_state"
@@ -35,13 +36,11 @@ class MMDIKRuntimeError(RuntimeError):
 
 
 def _import_mmd_module(suffix):
-    errors = []
     for base in ("bl_ext.blender_org.mmd_tools", "mmd_tools"):
-        try:
-            return importlib.import_module(f"{base}.{suffix}")
-        except ImportError as error:
-            errors.append(error)
-    raise MMDIKRuntimeError("需要先安装并启用官方 mmd_tools 扩展") from errors[-1]
+        module = import_optional_module(f"{base}.{suffix}")
+        if module is not None:
+            return module
+    raise MMDIKRuntimeError("需要先安装并启用官方 mmd_tools 扩展")
 
 
 def mmd_model_api():

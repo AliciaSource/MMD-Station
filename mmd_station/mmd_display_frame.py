@@ -1,3 +1,4 @@
+from .blender_compat import select_bones
 from .i18n import iface, report
 import importlib
 
@@ -603,9 +604,7 @@ class SPX_OT_SelectCheckedDisplayBones(Operator):
         armature.select_set(True)
         context.view_layer.objects.active = armature
         bpy.ops.object.mode_set(mode="POSE")
-        selected = set(valid_names)
-        for bone in armature.data.bones:
-            bone.select = bone.name in selected
+        select_bones(armature, valid_names)
         armature.data.bones.active = armature.data.bones[valid_names[-1]]
         skipped = len(checked_names) - len(valid_names)
         message = f"已将 {len(valid_names)} 根勾选骨骼选入 Blender"

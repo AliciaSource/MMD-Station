@@ -12,6 +12,7 @@ bpy.ops.preferences.addon_enable(module="bl_ext.blender_org.mmd_tools")
 
 import mmd_station
 from bl_ext.blender_org.mmd_tools.core.model import Model
+from mmd_station.blender_compat import select_bones, selected_bone_names
 from mmd_station.mmd_display_frame import (
     FRAME_SELECTED_PROPERTY,
     ITEM_SELECTED_PROPERTY,
@@ -52,8 +53,7 @@ add_bone(armature, "SelectedBone", 1.0)
 add_bone(armature, "MissingBone", 2.0)
 add_bone(armature, "HiddenBone", 3.0)
 bpy.ops.object.mode_set(mode="POSE")
-for bone in armature.data.bones:
-    bone.select = bone.name == "SelectedBone"
+select_bones(armature, ("SelectedBone",))
 armature.data.bones.active = armature.data.bones["SelectedBone"]
 armature.data.bones["HiddenBone"].hide = True
 
@@ -98,9 +98,7 @@ assert "MissingMorphResidual" not in {item.name for item in frame.data}
 assert {"SelectedBone", "MissingBone"} <= {item.name for item in frame.data}
 assert bpy.ops.surface_proxy.select_checked_display_bones() == {"FINISHED"}
 assert armature.mode == "POSE"
-assert {
-    bone.name for bone in armature.data.bones if bone.select
-} == {"SelectedBone", "MissingBone"}
+assert selected_bone_names(armature) == {"SelectedBone", "MissingBone"}
 
 assert bpy.ops.object.mode_set(mode="OBJECT") == {"FINISHED"}
 add_mesh_with_shape_key(armature, "VertexDetailed")

@@ -13,6 +13,7 @@ sys.path.insert(0, str(PROJECT_ROOT))
 bpy.ops.preferences.addon_enable(module="bl_ext.blender_org.mmd_tools")
 
 import mmd_station
+from mmd_station.blender_compat import select_bones
 from mmd_station.mmd_physics import _mmd_api
 from mmd_station.physics_preview.bake import (
     BakeJob,
@@ -220,9 +221,7 @@ bpy.ops.object.select_all(action="DESELECT")
 armature.select_set(True)
 bpy.context.view_layer.objects.active = armature
 bpy.ops.object.mode_set(mode="POSE")
-for pose_bone in armature.pose.bones:
-    pose_bone.bone.select = False
-armature.pose.bones[physics_bone.name].bone.select = True
+select_bones(armature, (physics_bone.name,))
 expected_safe = _action_basis(
     repair_output,
     armature.pose.bones[physics_bone.name],

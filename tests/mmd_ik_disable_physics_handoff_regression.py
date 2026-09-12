@@ -24,6 +24,7 @@ import mmd_tools
 mmd_tools.register()
 
 import mmd_station
+from mmd_station.blender_compat import select_bones
 from mmd_station.mmd_ik_runtime import evaluator
 from mmd_station.physics_preview import runtime
 
@@ -83,9 +84,7 @@ assert maximum_rigid_error < 1.0e-6, maximum_rigid_error
 armature.select_set(True)
 bpy.context.view_layer.objects.active = armature
 bpy.ops.object.mode_set(mode="POSE")
-for bone in armature.data.bones:
-    bone.select = False
-ik_bone.bone.select = True
+select_bones(armature, (ik_bone.name,))
 armature.data.bones.active = ik_bone.bone
 assert bpy.ops.pose.user_transforms_clear(only_selected=False) == {"FINISHED"}
 bpy.context.view_layer.update()

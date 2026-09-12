@@ -1,3 +1,4 @@
+from ..blender_compat import action_fcurves, assign_action
 from ..i18n import iface, report
 import json
 import time
@@ -131,7 +132,7 @@ def _update_repair_range(settings, layer):
 
 
 def _curve_value(action, data_path, index, frame, fallback):
-    curve = action.fcurves.find(data_path, index=index)
+    curve = action_fcurves(action).find(data_path, index=index)
     return fallback if curve is None else float(curve.evaluate(frame))
 
 
@@ -392,9 +393,11 @@ def _point_snapshot(point):
 
 
 def _replace_curve_range(action, data_path, index, group, start, end, samples):
-    curve = action.fcurves.find(data_path, index=index)
+    curve = action_fcurves(action).find(data_path, index=index)
     if curve is None:
-        curve = action.fcurves.new(data_path, index=index, action_group=group)
+        curve = action_fcurves(action).new(
+            data_path, index=index, action_group=group
+        )
     retained = [
         _point_snapshot(point)
         for point in curve.keyframe_points
@@ -434,10 +437,10 @@ def _rebuild_curve_points(curve, points):
 
 
 def _restore_curve_range(output, source, data_path, index, start, end):
-    output_curve = output.fcurves.find(data_path, index=index)
+    output_curve = action_fcurves(output).find(data_path, index=index)
     if output_curve is None:
         return
-    source_curve = source.fcurves.find(data_path, index=index)
+    source_curve = action_fcurves(source).find(data_path, index=index)
     retained = [
         _point_snapshot(point)
         for point in output_curve.keyframe_points
@@ -449,7 +452,7 @@ def _restore_curve_range(output, source, data_path, index, start, end):
         if start <= float(point.co.x) <= end
     ]
     if not retained and not restored:
-        output.fcurves.remove(output_curve)
+        action_fcurves(output).remove(output_curve)
         return
     _rebuild_curve_points(output_curve, retained + restored)
 
@@ -753,7 +756,7 @@ class BakeJob:
 
     def _prepare(self):
         self.work_armature.animation_data_create()
-        self.work_armature.animation_data.action = self.source_action
+        assign_action(self.work_armature.animation_data, self.source_action)
         normalize_fast_frame = self.mode == "FAST"
         restore_fast_frame = normalize_fast_frame and self.original_frame != self.simulation_start
         try:
@@ -884,7 +887,7 @@ class BakeJob:
 
     def _build_action_bindings(self, action):
         bindings = []
-        for curve in action.fcurves:
+        for curve in action_fcurves(action):
             if curve.mute or not curve.is_valid:
                 continue
             owner_path, separator, property_name = curve.data_path.rpartition(".")
@@ -928,7 +931,7 @@ class BakeJob:
         self._evaluate_action_bindings(self.action_bindings, frame)
 
     def restore_display_state(self):
-        self.armature.animation_data.action = self.original_action
+        assign_action(self.armature.animation_data, self.original_action)
         if not self.fast_mode:
             self.scene.frame_set(self.original_frame)
             self.context.view_layer.update()
@@ -959,7 +962,7 @@ class BakeJob:
         frame, store_output = self.steps[self.frame_index]
         self.current_frame = frame
         if self.work_armature.animation_data.action is not self.source_action:
-            self.work_armature.animation_data.action = self.source_action
+            assign_action(self.work_armature.animation_data, self.source_action)
         if self.fast_mode:
             self._evaluate_source_action(frame)
         else:
@@ -1114,7 +1117,7 @@ class BakeJob:
                 previous_output["mmd_station_physics_superseded"] = True
                 previous_output.name = final_name + " · Previous"
         output.name = final_name
-        self.armature.animation_data.action = output
+        assign_action(self.armature.animation_data, output)
         self.output_action = output
         self.close(restore_action=False)
         return segment
@@ -1265,7 +1268,7 @@ class SPX_OT_ClearMMDPhysicsBake(Operator):
         root = settings.mmd_root
         armature = runtime._model_armature(root)
         if armature.animation_data is not None and armature.animation_data.action is output:
-            armature.animation_data.action = source
+            assign_action(armature.animation_data, source)
         physics_cache.remove_cache(output)
         bpy.data.actions.remove(output, do_unlink=True)
         return {"FINISHED"}

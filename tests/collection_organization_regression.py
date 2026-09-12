@@ -11,6 +11,7 @@ bpy.ops.preferences.addon_enable(module="bl_ext.blender_org.mmd_tools")
 
 import mmd_station
 from bl_ext.blender_org.mmd_tools.core.model import Model
+from mmd_station.blender_compat import select_bones
 from mmd_station.mmd_physics import _mmd_api
 
 
@@ -37,8 +38,7 @@ for index, name in enumerate(bone_names):
     bone.parent = parent
     parent = bone
 bpy.ops.object.mode_set(mode="POSE")
-for bone in armature.data.bones:
-    bone.select = bone.name in bone_names
+select_bones(armature, bone_names)
 armature.data.bones.active = armature.data.bones[bone_names[-1]]
 
 settings = bpy.context.scene.surface_proxy_creator

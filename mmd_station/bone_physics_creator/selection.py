@@ -1,3 +1,5 @@
+from ..blender_compat import select_bones
+
 import bpy
 
 
@@ -32,8 +34,7 @@ def restore_bone_selection(context, armature, mode, selected_names, active_name)
     bpy.ops.object.mode_set(mode=mode)
     selected = set(selected_names)
     if mode == "POSE":
-        for bone in armature.data.bones:
-            bone.select = bone.name in selected
+        select_bones(armature, selected)
         armature.data.bones.active = armature.data.bones.get(active_name)
     else:
         for bone in armature.data.edit_bones:

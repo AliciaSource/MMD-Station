@@ -1,3 +1,4 @@
+from .blender_compat import select_bone, select_bones
 from .execution_guard import scene_access_allowed
 from .i18n import iface, report
 import importlib
@@ -2824,11 +2825,9 @@ class SPX_OT_SelectMMDItem(Operator):
             context.view_layer.objects.active = armature
             bpy.ops.object.mode_set(mode="POSE")
             if not self.extend:
-                for bone in armature.data.bones:
-                    bone.select = False
-            bone = armature.data.bones[self.target_name]
-            bone.select = True
-            armature.data.bones.active = bone
+                select_bones(armature, ())
+            select_bone(armature, self.target_name)
+            armature.data.bones.active = armature.data.bones[self.target_name]
         else:
             obj = bpy.data.objects.get(self.target_name)
             if obj is None:
@@ -3638,8 +3637,7 @@ class SPX_OT_SelectCheckedMMDItems(Operator):
             armature.select_set(True)
             context.view_layer.objects.active = armature
             bpy.ops.object.mode_set(mode="POSE")
-            for bone in armature.data.bones:
-                bone.select = bone.name in {item.target_name for item in items}
+            select_bones(armature, {item.target_name for item in items})
             armature.data.bones.active = armature.data.bones.get(items[-1].target_name)
         else:
             active = None

@@ -1,3 +1,4 @@
+from ..blender_compat import bone_selected
 from ..i18n import report
 import bpy
 from bpy.props import EnumProperty
@@ -58,7 +59,9 @@ def _direct_pose_keying(context, keying_set, delete=False):
         return {"CANCELLED"}
     selected = tuple(context.selected_pose_bones or ())
     if not selected:
-        selected = tuple(bone for bone in active.pose.bones if bone.bone.select)
+        selected = tuple(
+            bone for bone in active.pose.bones if bone_selected(bone)
+        )
     if not selected:
         return {"CANCELLED"}
     lowered = keying_set.lower()

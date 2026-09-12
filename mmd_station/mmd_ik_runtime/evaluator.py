@@ -1,3 +1,4 @@
+from ..blender_compat import action_fcurves, assign_action, bone_selected
 from ..execution_guard import scene_access_allowed
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -75,7 +76,7 @@ def _transform_modal_pose_matrices(armature):
     return {
         pose_bone.name: pose_bone.matrix_basis.copy()
         for pose_bone in armature.pose.bones
-        if pose_bone.bone.select
+        if bone_selected(pose_bone)
     }
 
 
@@ -301,7 +302,7 @@ def _action_frame_signature(canonical, frame):
     if action is None:
         return ()
     values = []
-    for curve in action.fcurves:
+    for curve in action_fcurves(action):
         if not curve.data_path.startswith('pose.bones["'):
             continue
         for point in curve.keyframe_points:
@@ -554,7 +555,7 @@ class Session:
             for pose_bone in canonical.pose.bones
         }
         changed = False
-        for curve in action.fcurves:
+        for curve in action_fcurves(action):
             owner_path, separator, channel = curve.data_path.rpartition(".")
             pose_bone = paths.get(owner_path) if separator else None
             basis = self.input_basis.get(pose_bone.name) if pose_bone else None
@@ -605,7 +606,7 @@ class Session:
                 self.restore_input(update=False)
             _restore_constraints(runtime, self.muted_constraints)
             if runtime.animation_data is not None:
-                runtime.animation_data.action = self.original_action
+                assign_action(runtime.animation_data, self.original_action)
             runtime.update_tag(refresh={"OBJECT"})
             if update:
                 bpy.context.view_layer.update()
@@ -935,7 +936,7 @@ def suspend_sessions_for_undo_redo():
             selected_names=tuple(
                 pose_bone.name
                 for pose_bone in canonical.pose.bones
-                if pose_bone.bone.select
+                if bone_selected(pose_bone)
             ) if canonical is not None else (),
         )
         session.suspended = True
@@ -1005,7 +1006,7 @@ def resume_sessions_after_undo_redo(scene=None):
             else tuple(
                 pose_bone.name
                 for pose_bone in canonical.pose.bones
-                if pose_bone.bone.select
+                if bone_selected(pose_bone)
             )
         )
         selected = tuple(

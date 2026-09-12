@@ -1,14 +1,17 @@
-# MMD Station v1.0.2
+# MMD Station v1.0.3
 
-## Fixed
+## Unreleased
 
-- Load native physics libraries on demand instead of preloading both backends when the add-on is enabled.
-- Pause live scene writes during native background bakes and resume preview afterward without clearing Cloth or Soft Body caches. Keep bone-animation baking and mesh-cache baking as separate, sequential workflows.
-- Defer structural Morph setup outside frame callbacks and protect scene-update timers during locked background jobs.
-- Dispatch updater UI callbacks on the main thread, snapshot update preferences before worker use, and keep parallel physics workers away from Blender RNA.
+### Added
 
-## Compatibility
+- Run on Blender 5.x: layered actions store keyframes in per-slot channelbags, so MMD Station now creates and links the matching animation slot instead of using the removed `Action.fcurves` API. Object, armature, NLA-strip and shape-key animation all keep playing back.
 
-Validated in Blender 4.4.3 with MMD and PMX backends, Cloth and Soft Body caches, live preview enabled, sequential bone-to-mesh baking, and the mmd_tools native rigid-body bake entry point. This does not establish compatibility with every third-party bake implementation.
+### Fixed
 
-Install the attached `mmd_station-1.0.2.zip`. MMD Tools remains required. Save your work and restart Blender after updating.
+- Morph and shape-key animation on Blender 5.x, including VMD morph import and export, where new shape keys default to value `1.0` instead of `0.0`.
+- Bone selection, IK runtime, physics preview baking and display-frame panels no longer raise attribute errors on Blender 5.x. Bone selection is read and written through one helper per Blender version, so Blender 4.4 and 4.5 keep using `Bone.select`.
+- Enabling the add-on no longer fails when an outdated mmd_tools build sits on the add-on path. MMD Tools modules are now probed tolerantly, so a legacy copy that cannot even be imported on this Blender version is skipped instead of aborting registration with an `ActionFCurves` error.
+
+### Compatibility
+
+- Still requires MMD Tools. Validated in Blender 5.2.1 LTS with the packaged add-on enabled from a real user install directory, plus the offline headless smoke and regression suites. Blender 4.4 remains supported.

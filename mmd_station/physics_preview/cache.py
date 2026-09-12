@@ -1,3 +1,4 @@
+from ..blender_compat import action_fcurves
 from ..execution_guard import scene_access_allowed
 import hashlib
 import json
@@ -106,7 +107,7 @@ def context_hash(root, source_action, session, settings):
             ),
         )
     for curve in sorted(
-        source_action.fcurves,
+        action_fcurves(source_action),
         key=lambda item: (item.data_path, item.array_index),
     ):
         _hash_value(digest, curve.data_path)

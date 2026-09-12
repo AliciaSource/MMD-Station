@@ -31,6 +31,7 @@ from mmd_station.mmd_ik_runtime.evaluator import (
     _depsgraph_update_post,
     is_active,
 )
+from mmd_station.blender_compat import select_bone
 from mmd_station.mmd_ik_runtime.runtime import runtime_state
 
 
@@ -57,7 +58,7 @@ bpy.ops.object.mode_set(mode="POSE")
 pose_bone = armature.pose.bones.get("全ての親") or next(iter(armature.pose.bones))
 pose_bone_name = pose_bone.name
 armature.data.bones.active = pose_bone.bone
-pose_bone.bone.select = True
+select_bone(armature, pose_bone_name)
 
 assert bpy.ops.surface_proxy.create_mmd_ik_runtime() == {"FINISHED"}
 assert is_active(root)

@@ -1,3 +1,9 @@
+from .blender_compat import (
+    action_fcurves,
+    assign_action,
+    link_strip_action,
+    set_uv_selection,
+)
 from .execution_guard import scene_access_allowed
 from .i18n import iface, report
 import importlib
@@ -1143,7 +1149,7 @@ def _remap_morph_state_animation_paths(root, old_uids):
     changed = False
     for action in tuple(_iter_animation_actions(animation_data) or ()):
         grouped = {}
-        for curve in tuple(action.fcurves):
+        for curve in tuple(action_fcurves(action)):
             uid = None
             index_match = _MORPH_STATE_INDEX_PATH.fullmatch(curve.data_path)
             if index_match is not None:
@@ -1173,7 +1179,7 @@ def _remap_morph_state_animation_paths(root, old_uids):
                 if curve is canonical:
                     continue
                 _merge_fcurve_points(curve, canonical)
-                action.fcurves.remove(curve)
+                action_fcurves(action).remove(curve)
                 changed = True
             if canonical.data_path != target_path:
                 canonical.data_path = target_path
@@ -1200,7 +1206,7 @@ def _iter_animation_actions(animation_data):
 
 def _morph_curves(action, path_names, state_by_name):
     result = []
-    for curve in tuple(action.fcurves):
+    for curve in tuple(action_fcurves(action)):
         morph_name = path_names.get(curve.data_path)
         state = state_by_name.get(morph_name)
         if state is not None:
@@ -1209,9 +1215,11 @@ def _morph_curves(action, path_names, state_by_name):
 
 
 def _copy_fcurve(source, destination_action, data_path):
-    destination = destination_action.fcurves.find(data_path, index=source.array_index)
+    destination = action_fcurves(destination_action).find(
+        data_path, index=source.array_index
+    )
     if destination is None:
-        destination = destination_action.fcurves.new(
+        destination = action_fcurves(destination_action).new(
             data_path,
             index=source.array_index,
             action_group="Morph",
@@ -1248,6 +1256,7 @@ def _copy_nla_strip(source_strip, destination_track, destination_action):
         round(source_strip.frame_start),
         destination_action,
     )
+    link_strip_action(strip, destination_action)
     for attribute in (
         "action_frame_start",
         "action_frame_end",
@@ -1292,7 +1301,7 @@ def _migrate_placeholder_animation(root, skip_existing=False):
             _morph_state_data_path(state): state for state in root.spx_morph_states
         }
         for action in tuple(_iter_animation_actions(root.animation_data) or ()):
-            for curve in action.fcurves:
+            for curve in action_fcurves(action):
                 state = state_by_path.get(curve.data_path)
                 if state is not None:
                     existing_uids.add(state.uid)
@@ -1321,7 +1330,7 @@ def _migrate_placeholder_animation(root, skip_existing=False):
                 if skip_existing:
                     existing_uids.add(state.uid)
             if root.animation_data.action is None:
-                root.animation_data.action = destination_action
+                assign_action(root.animation_data, destination_action)
 
     destination_actions = {}
     for source_track in animation_data.nla_tracks:
@@ -1377,9 +1386,9 @@ def _remove_imported_shape_key_curves(root):
         path_names = _shape_key_action_paths(shape_keys)
         animation_data = shape_keys.animation_data
         for action in tuple(_iter_animation_actions(animation_data) or ()):
-            for curve in tuple(action.fcurves):
+            for curve in tuple(action_fcurves(action)):
                 if path_names.get(curve.data_path) in morph_names:
-                    action.fcurves.remove(curve)
+                    action_fcurves(action).remove(curve)
 
 
 def _expanded_import_targets(root, imported_uids):
@@ -1571,7 +1580,7 @@ def _vmd_export_morph_curves(root):
     }
     curves = []
     used_names = set()
-    for curve in action.fcurves:
+    for curve in action_fcurves(action):
         state = states_by_path.get(curve.data_path)
         if state is None or not state.morph_name or state.morph_name in used_names:
             continue
@@ -1647,9 +1656,13 @@ def _vmd_export_morph_bridge(context):
             shape_keys = target.data.shape_keys
         for _curve, state in curves:
             if state.morph_name not in shape_keys.key_blocks:
-                added_shape_keys.append(
-                    target.shape_key_add(name=state.morph_name, from_mix=False)
+                key_block = target.shape_key_add(
+                    name=state.morph_name,
+                    from_mix=False,
                 )
+                # Blender 5.0 defaults new shape keys to 1.0 instead of 0.0.
+                key_block.value = 0.0
+                added_shape_keys.append(key_block)
 
         basis = shape_keys.key_blocks[0]
         previous_basis_mute = basis.mute
@@ -1658,6 +1671,7 @@ def _vmd_export_morph_bridge(context):
         animation_data = shape_keys.animation_data_create()
         previous_action = animation_data.action
         temporary_action = bpy.data.actions.new(".MMD Station VMD Export Morph")
+        assign_action(animation_data, temporary_action)
         for curve, state in curves:
             key_block = shape_keys.key_blocks.get(state.morph_name)
             if key_block is not None:
@@ -1666,14 +1680,13 @@ def _vmd_export_morph_bridge(context):
                     temporary_action,
                     key_block.path_from_id("value"),
                 )
-        animation_data.action = temporary_action
         yield
     finally:
         if target is not None and target.data.shape_keys is not None:
             shape_keys = target.data.shape_keys
             animation_data = shape_keys.animation_data
             if animation_data is not None and animation_data.action == temporary_action:
-                animation_data.action = previous_action
+                assign_action(animation_data, previous_action)
             if previous_basis_mute is not None and shape_keys.key_blocks:
                 shape_keys.key_blocks[0].mute = previous_basis_mute
             if (
@@ -3496,7 +3509,7 @@ def _create_uv_morph_preview(root, mesh_object, morph):
         temp_data = temp_layer.data
         for index, loop in enumerate(mesh.loops):
             selected = loop.vertex_index in offset_map
-            temp_data[index].select = selected
+            set_uv_selection(temp_data[index], selected)
             if selected:
                 temp_data[index].uv = source_data[index].uv + offset_map[loop.vertex_index]
     uv_layers.active = temp_layer
