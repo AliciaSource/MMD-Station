@@ -1,5 +1,13 @@
 # Development Log
 
+## 2026-09-12 - v1.0.3 正式版
+
+- 用户本轮明确授权 push 和发布；将 `_version.py` 的 PRERELEASE 设为 None，保留 `(1, 0, 3)` 版本，不在发布后自动返回 dev。合并 PR #1、本地 Morph/材质功能和 IK 清除修复均随本版本交付；原有未提交 ABI5 DLL 保持原样，正式包只取已提交的 Git 内容。
+- 沿用 11b35b0 的全量验证结论：321 个 Blender 配置和 29 项离线测试通过；发布轮没有再修改功能代码。正式 ZIP 另外在 Blender 4.4.3 / 4.5.13 LTS / 5.2.1 LTS 各执行 headless、兼容 API、更新器、物理烘焙及真实 IK undo 五项，共 15/15；逐模块断言实际加载提取后的正式包而非仓库源码。离线测试本轮重新执行 29/29 通过。
+- `pack.ps1` 对提交和 ZIP 均执行安全扫描；66 个文件的集合及内容与 Git 一致，二进制逐字节验证，文本只允许 Git 换行转换。最终包从精确 v1.0.3 tag 生成；稳定 ZIP 作为 GitHub Release asset，不包含测试、临时产物或本机配置。
+- 真实 Blender 4.4 的开发 Junction 已移除，安装独立正式 ZIP；启用、版本、Scene/Object 属性、IK 导出 hook 及卸载烟测通过，全部安装文件与 ZIP 逐字节一致。未修改/保存用户偏好、未关闭用户窗口，保存工程后重启 Blender 生效。用户环境已有的 RetopoPlanes / SeparateMaterial / SymmetricTranslation unregister 异常仍独立存在，不归因于本插件。
+- 发布目标为 AliciaSource/MMD-Station 的 main 和 v1.0.3，规范本地提交后经安全 pre-push hook 推送，GitHub Release 为非 draft、非 prerelease，英文说明与 ZIP 同版本。发布和验证临时产物限定在 `_temporary_cleanup/release-1.0.3-20260912/`，不纳入 Git 或安装包；正式 ZIP 保留在 dist/。
+
 ## 2026-09-12 - v1.0.3-dev IK 清除与撤销状态修复及多版本设计规则
 
 - `evaluator.py` 修复无持久 PMX 的当前模型 live session 在 undo/redo 时被无条件关闭重建：记录不保留 RNA 指针的骨架/IK/Morph 定义签名及 authoring session ID，普通姿态撤销/F9 保持同一 session 和 solver，骨骼 rest/层级、IK 限制、附加变换、Morph 定义或会话身份变化仍重建。没有放宽原 F9 `<1e-6` / 链位置 `<1e-5` 门槛。
@@ -607,8 +615,3 @@
 
 - 在 Material Morph 详情面板的运算模式控件上方新增并排的 `预设：隐藏` 与 `预设：显示`，仅批量处理当前 Material Morph 详情列表中已勾选的 offset 行；没有勾选时明确取消并提示，不修改蓝色活动行或其它未勾选行。所有详情列表统一新增 `全选 / 全不选 / 反选`：Material、UV、Bone、Group 操作当前 Morph 的 offset 行，Vertex 操作当前 Morph 命中的 Mesh 行。
 - 两个预设都把运算模式设为 `ADD`，并完整清零 Specular RGB、Shininess、Ambient RGB、Edge Weight、Base/Sphere/Toon Texture RGBA，避免旧参数残留；`隐藏`将 Diffuse Alpha 与 Edge Alpha 设为 `-1`，`显示`将两者设为 `1`，Diffuse/Edge RGB 均为 `0`。应用后立即重新计算当前 Morph Root，使非零滑条下的材质输出同步更新。版本保持 V0.1.8，源码 Junction 直接生效，不打包 ZIP、不 push。
-
-## 2026-08-28 - V0.1.8 Morph 列表统计与选择按钮统一
-
-- 在 Morph 编辑器列表和选择按钮之间新增统计行，显示全部五类 Morph 的总数量、当前类型 Tab 的 Morph 数量，以及当前 Tab 内已勾选数量；统计直接读取现有 `spx_morph_states` 缓存，不触发额外模型扫描或 Runtime 更新。
-- 三个选择按钮与 MMD 查看器统一为相同顺序和文案：`全选 / 全不选 / 反选`。按钮仍只作用于当前 Morph 类型 Tab，因而“已勾选”统计与实际按钮作用范围保持一致。版本保持 V0.1.8，源码 Junction 直接生效，不打包 ZIP、不 push。
