@@ -1,4 +1,5 @@
 import sys
+import os
 from pathlib import Path
 
 import bpy
@@ -28,12 +29,19 @@ mmd_station.register()
 root = bpy.data.objects[ROOT_NAME]
 root.pop("spx_mmd_ik_source_pmx", None)
 expected_pmx = Path(root["import_folder"]) / PMX_NAME
-assert evaluator._resolve_live_source_path(root).resolve() == expected_pmx.resolve()
+resolved_pmx = evaluator._resolve_live_source_path(root)
+if expected_pmx.is_file():
+    assert resolved_pmx.resolve() == expected_pmx.resolve()
+else:
+    # Moved .blend fixtures may no longer have their original import folder.
+    # Exercise the supported current-model fallback instead of skipping IK.
+    assert not resolved_pmx.is_file()
 settings = bpy.context.scene.surface_proxy_creator
 settings.mmd_ik_root = root
 assert bpy.ops.surface_proxy.create_mmd_ik_runtime() == {"FINISHED"}
 
 session = evaluator._SESSIONS[root.name]
+assert session.pmx_path == (str(resolved_pmx) if resolved_pmx.is_file() else "<current model>")
 armature = runtime._model_armature(root)
 armature.select_set(True)
 bpy.context.view_layer.objects.active = armature
@@ -76,7 +84,7 @@ maximum_pose_translation = max(
 )
 assert maximum_pose_translation < 100.0, maximum_pose_translation
 
-settings.preview_solver_target = "MMD"
+settings.preview_solver_target = os.environ.get("SPX_TEST_SOLVER_TARGET", "MMD")
 settings.preview_scope = "MODEL"
 settings.preview_frequency = 60
 settings.preview_substeps = 10
@@ -114,6 +122,7 @@ for name, cleared in cleared_basis.items():
     )
 assert maximum_input_error < 1.0e-6, maximum_input_error
 assert preview_session.consecutive_tick_failures == 0
+assert preview_session.auto_reset_count > 0
 
 root_name = root.name
 original_session = evaluator._SESSIONS[root_name]
@@ -155,4 +164,5 @@ assert preview_session.consecutive_tick_failures == 0
 
 runtime.stop_preview(root)
 bpy.ops.surface_proxy.remove_mmd_ik_runtime()
-print("MMD_IK_CLEAR_USER_TRANSFORMS_REGRESSION_OK")
+print("MMD_IK_CLEAR_USER_TRANSFORMS_REGRESSION_OK",
+      settings.preview_solver_target, f"input_error={maximum_input_error:.9g}")

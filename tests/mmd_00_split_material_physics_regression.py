@@ -1,9 +1,12 @@
 import sys
+from array import array
+import hashlib
 import statistics
 import time
 from pathlib import Path
 
 import bpy
+import numpy as np
 from mathutils import Vector
 
 
@@ -33,6 +36,24 @@ source_shape_names = tuple(
     key.name for key in source.data.shape_keys.key_blocks
 )
 source_group_names = {group.name for group in source.vertex_groups}
+
+
+def shape_digest(key, vertex_order=None):
+    coordinates = np.empty((len(key.data), 3), dtype=np.float32)
+    key.data.foreach_get("co", coordinates.reshape(-1))
+    if vertex_order is not None:
+        coordinates = coordinates[vertex_order]
+    return hashlib.sha256(coordinates.tobytes()).digest()
+
+
+source_shape_digests = {
+    key.name: shape_digest(key) for key in source.data.shape_keys.key_blocks
+}
+# Track original vertex identity through Blender's material split and join.
+vertex_id_name = "mmd_test_original_vertex"
+assert vertex_id_name not in source.data.attributes
+vertex_ids = source.data.attributes.new(vertex_id_name, "INT", "POINT")
+vertex_ids.data.foreach_set("value", array("i", range(source_vertex_count)))
 
 
 def update_median(target, samples=8):
@@ -117,6 +138,18 @@ separated = [
 ]
 assert len(separated) > 1
 assert sum(len(obj.data.vertices) for obj in separated) == source_vertex_count
+separated_shape_names = tuple(dict.fromkeys(
+    key.name for obj in separated for key in obj.data.shape_keys.key_blocks
+))
+# Some Blender versions add an extra reference-key copy during mesh.separate.
+# The proxy must preserve its actual inputs, not silently delete those keys.
+assert set(source_shape_names) <= set(separated_shape_names)
+assert tuple(name for name in separated_shape_names if name in source_shape_names) == source_shape_names
+split_added_shape_keys = tuple(name for name in separated_shape_names if name not in source_shape_names)
+separated_shape_digests = {
+    obj.name: {key.name: shape_digest(key) for key in obj.data.shape_keys.key_blocks}
+    for obj in separated
+}
 source_states = {
     obj.name: (
         obj.hide_get(),
@@ -148,12 +181,18 @@ try:
     assert proxy_mesh is not None
     assert len(proxy_mesh.data.vertices) == source_vertex_count
     proxy_shape_names = tuple(key.name for key in proxy_mesh.data.shape_keys.key_blocks)
-    assert proxy_shape_names == source_shape_names, {
-        "missing": sorted(set(source_shape_names) - set(proxy_shape_names)),
-        "extra": sorted(set(proxy_shape_names) - set(source_shape_names)),
-        "first_mismatch": next((index for index, pair in enumerate(zip(source_shape_names, proxy_shape_names))
+    assert proxy_shape_names == separated_shape_names, {
+        "missing": sorted(set(separated_shape_names) - set(proxy_shape_names)),
+        "extra": sorted(set(proxy_shape_names) - set(separated_shape_names)),
+        "first_mismatch": next((index for index, pair in enumerate(zip(separated_shape_names, proxy_shape_names))
                                 if pair[0] != pair[1]), None),
     }
+    proxy_vertex_ids = np.empty(source_vertex_count, dtype=np.int32)
+    proxy_mesh.data.attributes[vertex_id_name].data.foreach_get("value", proxy_vertex_ids)
+    vertex_order = np.argsort(proxy_vertex_ids)
+    assert np.array_equal(proxy_vertex_ids[vertex_order], np.arange(source_vertex_count))
+    for name, expected_digest in source_shape_digests.items():
+        assert shape_digest(proxy_mesh.data.shape_keys.key_blocks[name], vertex_order) == expected_digest, name
     assert {group.name for group in proxy_mesh.vertex_groups} == source_group_names
     assert [
         modifier.object
@@ -235,6 +274,7 @@ finally:
     runtime.stop_preview(root)
 
 for obj in separated:
+    assert {key.name: shape_digest(key) for key in obj.data.shape_keys.key_blocks} == separated_shape_digests[obj.name]
     hidden, hide_viewport, hide_render, collection_names, modifier_states = source_states[
         obj.name
     ]
@@ -257,6 +297,7 @@ for obj in separated:
 print(
     "MMD_00_SPLIT_MATERIAL_PHYSICS_REGRESSION_OK",
     f"meshes={len(separated)}",
+    f"split_added_shape_keys={split_added_shape_keys!r}",
     f"baseline_ms={baseline_ms:.3f}",
     f"proxy_ms={proxy_ms:.3f}",
     f"baseline_tick_ms={baseline_tick_ms:.3f}",

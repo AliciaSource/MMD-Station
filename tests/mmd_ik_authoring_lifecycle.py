@@ -116,15 +116,27 @@ bpy.context.view_layer.update()
 _depsgraph_update_post(bpy.context.scene)
 bpy.ops.ed.undo_push(message="MMD IK authoring edit")
 assert bpy.ops.ed.undo() == {"FINISHED"}
-from mmd_station.mmd_ik_runtime.lifecycle import _rebuild_timer
+from mmd_station.mmd_ik_runtime.lifecycle import _resume_undo_redo_timer
 
-_rebuild_timer()
+
+def finish_undo_redo():
+    # Headless execution must drain the same callback that the UI schedules.
+    # The load/rebuild timer does not rebind existing undo-invalidated sessions.
+    if bpy.app.timers.is_registered(_resume_undo_redo_timer):
+        bpy.app.timers.unregister(_resume_undo_redo_timer)
+    _resume_undo_redo_timer()
+
+
+original_solver = session.solver
+finish_undo_redo()
 root = bpy.data.objects.get(root_name)
 assert root is not None and is_active(root)
+assert _SESSIONS[root.name] is session and session.solver is original_solver
 assert bpy.ops.ed.redo() == {"FINISHED"}
-_rebuild_timer()
+finish_undo_redo()
 root = next(obj for obj in bpy.data.objects if getattr(obj, "mmd_type", "") == "ROOT")
 assert is_active(root)
+assert _SESSIONS[root.name] is session and session.solver is original_solver
 
 armature = FnModel.find_armature_object(root)
 session = _SESSIONS[root.name]

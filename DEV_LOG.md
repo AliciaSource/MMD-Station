@@ -1,5 +1,15 @@
 # Development Log
 
+## 2026-09-12 - v1.0.3-dev IK 清除与撤销状态修复及多版本设计规则
+
+- `evaluator.py` 修复无持久 PMX 的当前模型 live session 在 undo/redo 时被无条件关闭重建：记录不保留 RNA 指针的骨架/IK/Morph 定义签名及 authoring session ID，普通姿态撤销/F9 保持同一 session 和 solver，骨骼 rest/层级、IK 限制、附加变换、Morph 定义或会话身份变化仍重建。没有放宽原 F9 `<1e-6` / 链位置 `<1e-5` 门槛。
+- 原 clear-user 用例的旧 import folder 已不存在；明确采用已有当前模型回退后，又复现了约 0.065973386 的输入旋转误差。`physics_preview/runtime.py` 仅在 live IK 启用且全骨骼清除触发自动重置时保留本模型已清除输入，不让旧的已求解启动姿态反灌 IK；仍恢复刚体/关节快照，未启用 live IK、显式手动重置和其它模型恢复规则不变；完整 smoke 已捕获并排除初版对非 IK 重置的影响。
+- 原 `Basis.001` 失败重新归类为拆分输入与测试基线不一致：未启用 MMD Station 时，4.5.13 原生材质拆分已在新 Mesh 添加额外 key。没有更改代理合并生产代码或删除用户 ShapeKey；改测实际拆分输入的完整名称并集，并新增原始顶点 ID、162 个原 ShapeKey 全顶点坐标 SHA256、一切拆分源停止预览前后坐标一致性断言。性能门槛保持不变。
+- 新增不依赖私有资产的 `mmd_ik_memory_undo_regression.py`：实际 `ed.undo` RNA 重建、清除/非零姿态撤销、定义变更重建、禁用会话、自动/显式快照恢复及 PMX 显式/唯一/歧义/缺失来源；F9 和重复清除增加同一会话身份断言，clear-user 增加 PMX 后端组合。同步 `AGENTS.md` / `CLAUDE.md`，涉及 Blender API 的功能设计或调整须主动检查并回归 4.4.x / 4.5 LTS / 5.2.x，未测版本须明示。
+- 全量运行发现旧 authoring 测试在真实 undo/redo 后手动执行了错误的 load/rebuild timer，未跑实际调度的 undo-resume timer，导致 4.5 失效 RNA 映射。用例修正恢复入口并增加双向 undo/redo 的 session/solver 身份断言，三版本保存/重开通过。
+- 本轮完整矩阵及定向复跑最终 321/321 个 Blender 配置通过：三版本主依赖各通用 29 + 原生烘焙 9 + 真实资产 31；MMD Tools 4.5.14 各通用 29 + 原生烘焙 9。离线 pytest 29/29，总计 350/350；不重复计诊断及复跑。F9/重复清除/clear-user 的原输入及姿态误差均为 0。两个性能波动用例预先固定三次独立串行复跑共 6/6，原门槛不改，原失败和最终数值均在验证报告中保留。三版本真实 undo 与 Morph 行选择保持会话、源码 AST、暂存树安全扫描通过。真实 4.4 Junction 启用/属性/导出 hook/卸载通过；用户配置的三项第三方 unregister 异常另行记录，不作为 MMD Station 功能通过证据。
+- 继续 v1.0.3-dev，真实 Blender 4.4 使用已有源码 Junction；未保存输入工程或用户偏好，未改上游 mmd_tools、DLL、PMX 协议或所有权隔离。既存 ABI5 DLL 原样排除提交。本地提交后不 push/tag/打包/发布；临时产物仅在本项目 `_temporary_cleanup/ik-proxy-fixes-20260912/` 内；删除命令在进程执行前被策略拒绝，文件仍保留供用户手动清理，上轮 `pr1-compat-20260912/` 也仍保留。
+
 ## 2026-09-12 - v1.0.3-dev 本地合并 Blender 5.x PR 与三版本全量自动化验证
 
 - 原日志已有版本条目超出工作区上限；本轮按规则保留最新 100 条，较旧的 55 条仍可从合并第一父提交或备份引用查回，不影响任何源码提交。
@@ -602,9 +612,3 @@
 
 - 在 Morph 编辑器列表和选择按钮之间新增统计行，显示全部五类 Morph 的总数量、当前类型 Tab 的 Morph 数量，以及当前 Tab 内已勾选数量；统计直接读取现有 `spx_morph_states` 缓存，不触发额外模型扫描或 Runtime 更新。
 - 三个选择按钮与 MMD 查看器统一为相同顺序和文案：`全选 / 全不选 / 反选`。按钮仍只作用于当前 Morph 类型 Tab，因而“已勾选”统计与实际按钮作用范围保持一致。版本保持 V0.1.8，源码 Junction 直接生效，不打包 ZIP、不 push。
-
-## 2026-08-28 - V0.1.8 Group Morph Bone/UV 贡献归零复位
-
-- 修复 Group Morph 从非零降到 `0` 时 Bone Morph 或 UV Morph 可能保持上一帧贡献、无法复位的问题。根因是 Group 更新路径只在当前有效权重中仍存在非零 Bone/UV 值时才调用 `_sync_placeholder_weights()`；当 Group 的最后一份 Bone/UV 贡献恰好归零，`needs_runtime` 变为假，已经存在的 mmd_tools 轻量 Runtime 因而没有收到新的零值，placeholder ShapeKey 和受驱动骨骼继续停在旧值。
-- Group 更新与通用帧更新路径现在区分“是否需要首次创建 Runtime”和“Runtime 是否已经存在”：非零贡献仍按需首次绑定；一旦 Runtime 已存在，无论本次权重是否全部归零，都会同步全部 Bone/UV Morph 的当前有效权重，把消失的 Group 贡献显式写回 `0` 或剩余的直接滑条值。Material 与 Vertex Morph 路径未改。
-- 回归用例将直接 Bone Morph 值保持为 `0.3`，再由 Group 叠加到 `2.7`，随后把 Group 从 `1` 拉回 `0`；断言作为骨骼 Runtime 驱动源的 placeholder Bone Morph 精确回到 `0.3`，不再残留 Group 的 `2.4` 贡献。版本保持 V0.1.8，源码 Junction 直接生效，不打包 ZIP、不 push。

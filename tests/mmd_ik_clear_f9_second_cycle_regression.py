@@ -90,6 +90,7 @@ def finish_resume():
     if bpy.app.timers.is_registered(lifecycle._resume_undo_redo_timer):
         bpy.app.timers.unregister(lifecycle._resume_undo_redo_timer)
     lifecycle._resume_undo_redo_timer()
+    assert evaluator._SESSIONS[root.name] is session
     bpy.context.view_layer.update()
     step_physics()
 

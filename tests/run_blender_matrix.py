@@ -25,6 +25,7 @@ CASES = (
     "mirror_vertex_group_conversion_smoke", "mmd_coordinate_adapter_test",
     "mmd_display_frame_regression", "mmd_export_profile_regression",
     "mmd_io_regression", "mmd_material_order_regression", "mmd_morph_editor_regression",
+    "mmd_ik_memory_undo_regression",
     "mmd_ordering_user_control_regression", "mmd_rigid_scale_diagnostic_regression",
     "mmd_shadow_regression", "physics_bake_regression", "physics_pose_alignment_regression",
     "proxy_creation_no_overwrite_smoke", "time_driver_unit",

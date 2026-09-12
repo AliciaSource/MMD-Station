@@ -1226,14 +1226,15 @@ class PreviewSession:
             required = 1
         return changed >= required
 
-    def _restore_start_snapshot(self):
+    def _restore_start_snapshot(self, preserve_pose=False):
         self._rebind_blender_data(force=True)
         self.pose_input.invalidate()
         root_delta = self.root.matrix_world @ self.saved_root_matrix.inverted_safe()
-        for name, matrix_basis in self.saved_pose_basis.items():
-            pose_bone = self.armature.pose.bones.get(name)
-            if pose_bone is not None:
-                pose_bone.matrix_basis = matrix_basis
+        if not preserve_pose:
+            for name, matrix_basis in self.saved_pose_basis.items():
+                pose_bone = self.armature.pose.bones.get(name)
+                if pose_bone is not None:
+                    pose_bone.matrix_basis = matrix_basis
         for name, matrix_world in self.saved_rigid_matrices.items():
             rigid = bpy.data.objects.get(name)
             if rigid is not None:
@@ -1244,10 +1245,13 @@ class PreviewSession:
                 joint.matrix_world = root_delta @ matrix_world
         _update_view_layer()
 
-    def reset_solver(self):
+    def reset_solver(self, preserve_pose=False):
         if self.closed:
             return
-        self.world.reset()
+        if preserve_pose:
+            self.world.reset(preserve_pose_session=self)
+        else:
+            self.world.reset()
 
     def _prepare_mmd_tools_step(self):
         if self._rebind_blender_data():
@@ -1258,7 +1262,17 @@ class PreviewSession:
             )
         broad_pose_reset = self._broad_pose_reset_detected()
         if broad_pose_reset:
-            self.reset_solver()
+            from ..mmd_ik_runtime.evaluator import is_live
+
+            # A full user-transforms clear is an authored input, not a request
+            # to restore the old pose. Reset physics without replaying solved
+            # IK output into the independent native evaluator's input cache.
+            identity = Matrix.Identity(4)
+            cleared_pose = is_live(self.root) and all(
+                not _matrix_changed(pose_bone.matrix_basis, identity, epsilon=1.0e-6)
+                for pose_bone in self.armature.pose.bones
+            )
+            self.reset_solver(preserve_pose=cleared_pose)
             self.auto_reset_count += 1
             self.settings.preview_status = (
                 f"运行中：已自动重置物理 {self.auto_reset_count} 次"
@@ -1545,14 +1559,17 @@ class PreviewWorld:
         session.world = None
         session.solver = None
 
-    def reset(self, prepared_session=None):
+    def reset(self, prepared_session=None, preserve_pose_session=None):
         bodies = []
         joints = []
         body_source_eulers = []
         joint_source_eulers = []
         for session in self.sessions:
             if session is not prepared_session:
-                session._restore_start_snapshot()
+                if session is preserve_pose_session:
+                    session._restore_start_snapshot(preserve_pose=True)
+                else:
+                    session._restore_start_snapshot()
                 session.rebuild_descriptors()
             session.body_offset = len(bodies)
             session.joint_offset = len(joints)

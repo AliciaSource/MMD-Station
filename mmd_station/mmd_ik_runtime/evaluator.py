@@ -47,6 +47,75 @@ def _resolve_live_source_path(root):
     return source_path
 
 
+def _definition_properties(value, exclude=()):
+    """Snapshot authored RNA values without retaining undo-invalidated pointers."""
+    if value is None:
+        return ()
+    entries = []
+    for prop in value.bl_rna.properties:
+        name = prop.identifier
+        if name in {"rna_type", "active_data"} or name in exclude:
+            continue
+        if prop.type == "COLLECTION":
+            item = tuple(_definition_properties(child) for child in getattr(value, name))
+        elif prop.is_readonly:
+            continue
+        else:
+            item = getattr(value, name)
+            if prop.type == "POINTER":
+                item = (
+                    item.name_full,
+                    item.library.filepath if item.library else "",
+                ) if isinstance(item, bpy.types.ID) else None
+            elif getattr(prop, "is_array", False):
+                item = tuple(item)
+            elif isinstance(item, set):
+                item = tuple(sorted(item))
+        entries.append((name, item))
+    return tuple(entries)
+
+
+def _current_model_definition(root, canonical):
+    """Identify the native bone definition, excluding pose and presentation state.
+
+    A memory-only solver has no persistent PMX path. Pose undo may reuse it, but
+    rest-bone, hierarchy, IK-limit, append-transform or Morph edits must rebuild.
+    Do not use RNA pointers here: Blender can replace them during undo.
+    """
+    pose_fields = (
+        "lock_location", "lock_rotation", "is_mmd_shadow_bone",
+        *(prefix + axis for prefix in (
+            "lock_ik_", "use_ik_limit_", "ik_min_", "ik_max_",
+        ) for axis in "xyz"),
+    )
+    bones = []
+    for pose_bone in canonical.pose.bones:
+        bone = pose_bone.bone
+        bones.append((
+            bone.name, bone.parent.name if bone.parent else "", bone.use_connect,
+            tuple(value for row in bone.matrix_local for value in row),
+            tuple(bone.tail_local),
+            tuple(tuple(item) if hasattr(item, "__len__") else item
+                  for item in (getattr(pose_bone, name, None) for name in pose_fields)),
+            _definition_properties(getattr(pose_bone, "mmd_bone", None),
+                                   exclude=("is_additional_transform_dirty",)),
+            tuple(_definition_properties(
+                constraint,
+                exclude=("mute", "influence") if constraint.type == "IK"
+                or constraint.name.lower().startswith("mmd_") else ("influence",),
+            )
+                  for constraint in pose_bone.constraints
+                  if constraint.type in {"IK", "LIMIT_ROTATION"}
+                  or constraint.name.lower().startswith("mmd_")),
+        ))
+    mmd_root = root.mmd_root
+    return (
+        tuple(bones), mmd_root.ik_loop_factor,
+        tuple(tuple(_definition_properties(morph) for morph in getattr(mmd_root, name))
+              for name in ("bone_morphs", "group_morphs")),
+    )
+
+
 def _pose_bone_name(pose_bone):
     mmd = getattr(pose_bone, "mmd_bone", None)
     for value in (
@@ -400,6 +469,8 @@ class Session:
     output_indices: tuple | None = None
     input_bone_names: frozenset = frozenset()
     undo_redo_transaction: UndoRedoPoseTransaction | None = None
+    definition_signature: tuple = ()
+    runtime_session_id: str = ""
 
     def output_bone_names(self):
         indices = (
@@ -834,6 +905,10 @@ def start_live(root, input_basis=None, update=True):
         action_input=bool(state.get("action_input", False)),
         output_indices=output_indices,
         input_bone_names=input_bones,
+        definition_signature=(
+            _current_model_definition(root, canonical) if not source_path.is_file() else ()
+        ),
+        runtime_session_id=state.get("session_id", ""),
         input_basis={
             name: matrix.copy()
             for name, matrix in (
@@ -867,6 +942,11 @@ def stop(root, update=True):
 
 def is_active(root):
     return root is not None and root.name in _SESSIONS
+
+
+def is_live(root):
+    session = _SESSIONS.get(root.name) if root is not None else None
+    return session is not None and session.live
 
 
 def enable_action_input(root):
@@ -969,13 +1049,21 @@ def resume_sessions_after_undo_redo(scene=None):
         state = runtime_state(root) if root is not None else None
         canonical = canonical_armature(root, state) if state else None
         source_path = _resolve_live_source_path(root) if root else Path()
+        same_source = (
+            not source_path.is_file()
+            and canonical is not None
+            and session.definition_signature == _current_model_definition(root, canonical)
+            if session.pmx_path == "<current model>"
+            else source_path.is_file()
+            and source_path.resolve() == Path(session.pmx_path).resolve()
+        )
         if (
             not session.live
             or not state
             or not state.get("enabled")
             or canonical is None
-            or not source_path.is_file()
-            or source_path.resolve() != Path(session.pmx_path).resolve()
+            or state.get("session_id", "") != session.runtime_session_id
+            or not same_source
         ):
             session.solver.close()
             _SESSIONS.pop(root_name, None)

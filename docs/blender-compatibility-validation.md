@@ -2,7 +2,37 @@
 
 日期：2026-09-12。开发版本：`1.0.3-dev`。
 
-## 合并范围与结论
+## 合并后追加修复与最终复测（2026-09-12）
+
+下方原合并矩阵保留为历史基线；本节记录用户要求继续修复后的结果，不把原来的失败追写成当时已通过。
+
+- **当前模型 IK 的撤销/F9**：内存生成的 PMX 定义原先因没有持久文件路径，在每次 undo/redo 时被视为失效，关闭并重建 solver，丢失清除事务。现在通过不依赖 RNA 指针的骨架/IK/Morph 定义签名与 authoring session ID 判断能否重用；姿态撤销保留同一 session/solver，rest pose、层级、IK 限制、附加变换或 Morph 定义改变仍重建。
+- **清除姿态后的物理自动重置**：解决旧 PMX 路径前置条件后，原 clear-user 测试进一步暴露约 `0.065973386` 的输入旋转误差。启用 live IK 时，全骨骼 identity 清除触发物理恢复不再将启动时已求解姿态写回骨骼、误当作新的 IK 用户输入。只保留本次清除发起模型的输入；未启用 live IK、显式手动重置、其它模型和刚体/关节启动快照恢复规则不变。完整 smoke 捕获了初版改动影响非 IK 重置的问题，最终通过上述作用域限制消除。
+- **旧测试 PMX 路径**：输入 `.blend` 的 import folder 已失效，文件不存在。用例明确覆盖已有的当前模型回退，不跳过后面的 IK/物理清除与 session 身份断言；独立合成回归另测显式源、唯一源、歧义目录和缺失源。
+- **拆分 ShapeKey 归类修正**：未启用 MMD Station 的独立探针，在 Blender 4.5.13 原生 `mesh.separate(type="MATERIAL")` 后同样观察到 97 个新拆分 Mesh 各有额外 `Basis.001`，原 Mesh 仍为 162 keys。因此此前“代理添加了 ShapeKey”的推断不成立。代理未改生产逻辑、没有删除任何 key；回归改为与实际拆分输入的完整有序名称并集严格比较，并新增原始顶点 ID 跟踪、162 个原 key 全顶点坐标 SHA256 一致、停止预览后所有拆分源 ShapeKey 坐标不变检查。误差和性能门槛不放宽。
+- 新增 `mmd_ik_memory_undo_regression`：无需本机资产，实际调用 `ed.undo` 验证 RNA 重建后的会话复用，同时覆盖正常非零姿态撤销、结构变更重建、关闭会话，以及自动/显式物理快照恢复边界。默认通用矩阵从 28 项增为 29 项。
+- 完整矩阵发现旧 `mmd_ik_authoring_lifecycle` 用例在实际 undo/redo 后错误手动执行 load/rebuild timer，没有执行 UI 真正调度的 undo-resume timer，留下失效 RNA 映射。测试现在调用实际调度的恢复回调，增加 undo 和 redo 后同一 session/solver 断言；三版本 authoring 保存与重开已通过，不靠失效 RNA 内存恰好尚未覆盖的偶然结果。
+- 同步 `AGENTS.md` / `CLAUDE.md`：凡新功能设计或旧功能调整涉及 Blender API，自动检查支持版本的 API 可用性、签名、默认值和运行行为，并按风险运行 4.4.x / 4.5 LTS / 5.2.x 回归。已有兼容层不是未来所有新 API 无条件自动兼容的保证。
+
+本次重新运行完整矩阵，再针对发现的问题复跑相关用例；同一配置的重复诊断不重复计数。最终共 **321/321 个 Blender 配置用例通过**，另有 **29/29 离线 pytest**（其中包含 5 项 i18n），合计 **350/350**。
+
+| 最终测试组 | Blender 4.4.3 | Blender 4.5.13 LTS | Blender 5.2.1 LTS |
+| --- | ---: | ---: | ---: |
+| 通用回归，MMD Tools 4.5.13 | 29/29 | 29/29 | 29/29 |
+| 原生烘焙，MMD Tools 4.5.13 | 9/9 | 9/9 | 9/9 |
+| 实际资产及运行时，MMD Tools 4.5.13 | 31/31 | 31/31 | 31/31 |
+| 通用回归，MMD Tools 4.5.14 | 29/29 | 29/29 | 29/29 |
+| 原生烘焙，MMD Tools 4.5.14 | 9/9 | 9/9 | 9/9 |
+
+实际资产矩阵在原 28 组上增加 F9 的 MMD/PMX 两种物理组合及 clear-user 的 PMX 组合。三版本全部 F9 组合的输入/显示/链位置误差为 0，重复清除误差为 0，clear-user 两后端输入误差为 0。两种依赖的三版本合成回归均覆盖真实 undo 和 Morph 行选择不重建 native 定义。
+
+性能测量存在运行波动：4.4 的 tick median 一次为 `9.176 ms`，5.2 的代理 update 一次为 `11.295 / 8.512 ms`，未通过原门槛；另一次 5.2 运行与追加诊断进程重叠，不取作串行验收。没有改门槛或一直重试到遇到一次成功，而是预先固定两个波动用例各三次独立串行复跑，结果 **6/6 通过**：4.4 tick median 为 `6.175 / 6.240 / 6.118 ms`、p95 为 `7.674 / 7.718 / 6.915 ms`，三个 pose SHA256 相同；5.2 proxy update 为 `9.481 / 8.781 / 9.439 ms`，对应原模型基线为 `11.119 / 10.959 / 11.708 ms`，三次 tick 和 update 的相对门槛均通过。其它性能配置也通过独立串行矩阵，未以并跑数据替代。
+
+源码 AST、暂存树安全扫描、diff 空白检查和两层项目规则同步检查通过。没有修改 DLL、上游 mmd_tools 或输入工程；保持 `1.0.3-dev`，仅本地提交，不 push/tag/打包/发布。本轮临时日志、导出和隔离配置均集中于 `_temporary_cleanup/ik-proxy-fixes-20260912/`；删除命令在创建进程前被执行策略拒绝，故文件仍保留待手动清理，未声称已删除。上轮 `pr1-compat-20260912/` 仍保留；两者均被 Git 忽略，不进入发布包。所有本轮矩阵 runner 已结束。
+
+真实 Blender 4.4 Junction 装载再次通过启用、版本、属性、导出 hook 和卸载断言；未保存偏好。该用户配置退出时仍出现 RetopoPlanes、SeparateMaterial、SymmetricTranslation 各自的 unregister 异常，不来自本次 MMD Station 调用栈，也不据此声称整个第三方插件环境无异常。
+
+## 原合并范围与结论（历史基线）
 
 - 本地非快进合并 [PR #1](https://github.com/AliciaSource/MMD-Station/pull/1)，PR 提交为 `e8c387c0fac0db698dc5e61b308958817a504a66`。
 - 第一父提交保留本机 `28bc2bb`，以及其前面的 `f833b46`、`2d34f4b`；没有用远端代码覆盖本机的 Morph 隔离、材质 identity 或骨骼缩放 sidecar 功能。
@@ -30,7 +60,7 @@ Windows x64；每例使用独立 Blender 进程和隔离配置。主矩阵固定
 
 ### 通用回归：每个版本 28 项
 
-`run_blender_matrix.py` 的默认 CASES 列表是准确的执行清单，覆盖：
+合并提交 `61624a7` 中 `run_blender_matrix.py` 的默认 CASES 列表为本次历史基线的 28 项清单，覆盖：
 
 - 新增兼容回归：多对象/多 slot Action、非首槽位求值、复制/绑定/恢复、NLA、F-Curve 创建/查找/删除/清空、OBJECT/KEY 隔离、Blender 4.x UNSPECIFIED 旧槽位、ShapeKey 初值与已有值保留、UV 选择的独立 BMesh 读回、卸载/重新注册。
 - 缺失及抛 AttributeError 的旧式 `mmd_tools` 包探测；有效的官方扩展仍是前提，未声称没有 MMD Tools 也可使用全部宿主功能。

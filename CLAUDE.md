@@ -22,6 +22,14 @@
 - Keep the product and package identity exactly `MMD Station` / `mmd_station`.
 - Preserve legacy `surface_proxy.*` operators, Scene property names, custom
   properties, and saved `.blend` persistence identifiers.
+- Whenever a new feature design or an adjustment to existing behavior involves
+  Blender APIs, automatically review cross-version compatibility without waiting
+  for the user to request it. Prefer the shared `blender_compat.py` helpers;
+  check API availability, signatures, defaults, and runtime behavior across the
+  supported Blender versions. Run risk-appropriate multi-version regressions
+  using the current 4.4.x, 4.5 LTS, and 5.2.x matrix, and update that matrix when
+  supported versions change. Passing on one version is not evidence of general
+  compatibility; record any untested versions or version-specific limitations.
 
 ## Credential and private endpoint protection
 
